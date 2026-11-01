@@ -115,6 +115,32 @@ class PlannerSkills(unittest.TestCase):
                          {"hold", "look", "reach", "grab", "release"})
         self.assertLessEqual(set(brain.PLANNER_SKILLS), set(SKILLS))
 
+    def test_the_planner_cannot_emit_rest(self) -> None:
+        # `rest` exists on the intent schema so a writer can ask for the clip
+        # return, but a brain that says "hold" means freeze. Nothing in the
+        # constitution offers `rest`, and PLAN rejects it as an unknown skill.
+        self.assertIn("rest", SKILLS)
+        self.assertNotIn("rest", brain.PLANNER_SKILLS)
+        self.assertNotIn("rest", brain.CONSTITUTION)
+
+    def test_rest_is_rejected_by_the_planner_parser(self) -> None:
+        class RestReply(ChatPatchMixin, unittest.TestCase):
+            reply = '{"skill":"rest","side":"none","target":null}'
+
+        case = RestReply("run")
+        case.setUp()
+        try:
+            result = brain.plan(
+                config=brain.BrainConfig(),
+                seed="",
+                frame=fake_frame(),
+                live="heard: hi",
+            )
+        finally:
+            case.tearDown()
+        self.assertFalse(result.ok)
+        self.assertIn("rest", result.error)
+
 
 class PromptText(unittest.TestCase):
     def test_seed_names_the_green_cartridge_the_slot_and_the_lever(self) -> None:
