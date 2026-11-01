@@ -208,6 +208,24 @@ reconciled before anyone writes the loop twice:
   0.02 m default, so "stop when FLAG_SATURATED and error is large" needs a
   tolerance that reflects the controller, or the glow cue instead.
 
+**Closed loop measured in the sim 2026-11-01** (`research/pixel-servo-sim.md`):
+the servo moves the wrist in the right direction and never converges. Every
+in-frame target improved by 0.3–0.9 of the frame and then stalled; none reached
+the deadband. Two causes, both structural:
+
+- The arm saturates 0.19–0.32 m short of the commanded point at every depth, so
+  the servo keeps re-commanding a pose the body cannot occupy.
+- Pixel error shrinks with depth (0.51 at 0.25 m → 0.07 at 0.70 m) while that
+  positional gap does not, because a pixel constrains only the **ray**. "Pixel
+  error 0.07" was a hand 0.20 m from its target. Do not report a converged pixel
+  error as an arrival.
+
+And a fact that outranks the tuning: in the hold clip the right wrist sits 0.64 m
+below the head at yaw −73° / pitch −82°, so its pixel is (1.31, 1.41) — **outside a
+90° frustum**. In-frame targets are nowhere near the hand, and points near the hand
+are not in frame. Fix the base pose (or give `look` a pitch axis) before tuning a
+gain; no gain fixes an arm that cannot see what it is reaching for.
+
 ## 8. In-range signals
 
 Superhot gives three different "you may act now" signals, and conflating them
