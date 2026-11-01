@@ -106,3 +106,23 @@ them as live safety.
   observation against a single non-falling control.
 - Nothing with Monado or the game attached.
 - The settle-before-latch fix in §2 is proposed, not implemented or tested.
+
+## 7. Fix: settle on the clip before the bus may latch
+
+`spike/wbc/body_view.py` now takes `--settle-s` (default 2.0) and, before the main
+loop, steps `rest()` and publishes, so the first pose the bus can latch is one the
+body can stand in. Commands that arrive during the settle queue in the bus.
+
+Same session parameters, same reach that previously fell:
+
+| | before | after |
+| --- | ---: | ---: |
+| idle `res_r` at the latched pose | 0.132 | **0.0183** |
+| reach 0.55 m as the first command | FALL_RISK at +4.5 s, process exited | no fall, settles at 0.13 |
+
+The residual against the latched pose drops 7×, and the reach completes. The
+proposed mechanism held: the latch was freezing a startup transient, and a
+transient is not a pose to hold.
+
+One session, one trial. The retest is the same reach that failed, which is the
+right control, but the "before" column is still a single observation.

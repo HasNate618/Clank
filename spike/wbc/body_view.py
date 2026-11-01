@@ -475,6 +475,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--out", required=True, help="directory for body_latest.jpg and body_state.json")
     ap.add_argument("--seconds", type=float, default=0.0, help="0 = run forever")
     ap.add_argument("--fps", type=float, default=10.0, help="render cadence (policy still runs at 50 Hz)")
+    ap.add_argument("--settle-s", type=float, default=2.0,
+                    help="seconds to hold the clip before the bus may latch a pose")
     ap.add_argument("--clip", default=None, help="motion clip (default: the hold clip)")
     ap.add_argument("--control", default=None,
                     help="Unix socket that accepts {\"verb\": ...} or a full BodyCommand")
@@ -559,6 +561,25 @@ def main(argv: list[str] | None = None) -> int:
 
     plan = reel_plan(executor) if args.reel else None
     phase_name = ""
+
+    # Settle on the clip before the bus is allowed to latch a pose.
+    #
+    # MEASURED 2026-11-01 (`research/live-body-runtime.md` §2): the bus latches the
+    # first state it is given, which is one control tick after reset - a transient.
+    # The body could not hold it (idle residual 0.132 m), and a 0.55 m reach issued
+    # from that pose set FLAG_FALL_RISK at +4.5 s and this process exited with
+    # "FALL detected, stopping". Re-running the identical reach from a settled body
+    # does not fall.
+    #
+    # `rest` is the clip's equilibrium, so holding it for a moment means the first
+    # pose the bus can latch is one the body can actually stand in. Commands that
+    # arrive during the settle queue in the bus and are taken after it.
+    if bus is not None and args.settle_s > 0:
+        settle_until = time.monotonic() + args.settle_s
+        while time.monotonic() < settle_until:
+            bus.publish_state(executor.step(rest(), now_ns=time.monotonic_ns()))
+            time.sleep(control_period)
+        print(f"body_view: settled on the clip for {args.settle_s:.1f}s", flush=True)
     print(
         f"body_view: {'reel' if plan else 'hold'} clip {executor.clip} -> {out}",
         flush=True,
