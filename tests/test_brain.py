@@ -63,6 +63,33 @@ class PlanParser(ChatPatchMixin, unittest.TestCase):
         self.assertFalse(result.ok)
 
 
+class PromptText(unittest.TestCase):
+    def test_seed_names_the_green_cartridge_the_slot_and_the_lever(self) -> None:
+        s = brain.DEFAULT_SEED.lower()
+        self.assertIn("store clerk", s)
+        self.assertIn("green", s)
+        self.assertIn("ghost", s)
+        self.assertIn("lever", s)
+
+    def test_seed_and_constitution_do_not_list_positions(self) -> None:
+        blob = brain.CONSTITUTION + "\n" + brain.DEFAULT_SEED
+        for word in ("TOP-LEFT", "TOP-RIGHT", "BOTTOM-LEFT", "BOTTOM-RIGHT"):
+            self.assertNotIn(word, blob)
+
+    def test_constitution_schema_has_no_pixel_key(self) -> None:
+        self.assertIn('"skill"', brain.CONSTITUTION)
+        self.assertNotIn("pixel", brain.CONSTITUTION.lower())
+        for banned in ("fire", "strike", "dodge", "twitch", "insert", "pull"):
+            self.assertNotIn(banned, brain.CONSTITUTION.lower())
+
+    def test_live_block_carries_glow_and_ghost(self) -> None:
+        text = brain.live_block("take my card", "empty", "holding", 0.0, "yes", "reach right → done", ghost="no")
+        self.assertIn("glow=yes", text)
+        self.assertIn("ghost=no", text)
+        self.assertIn("right=holding", text)
+        self.assertNotIn("current goal", text.lower())
+
+
 class Occupancy(unittest.TestCase):
     def test_release_on_an_empty_hand_is_held(self) -> None:
         d = brain.assemble(

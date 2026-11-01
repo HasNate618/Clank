@@ -84,11 +84,19 @@ side is "none" for hold and look, and is "left" or "right" for reach, grab and \
 release.
 
 Do what the voice asked. Do not invent extra chores. If you cannot see the \
-thing, look toward it. If you are unsure, hold.\
+thing, look. If you are unsure, hold.
+
+Grab only when glow is yes. A yellow ghost means the held thing will go into \
+the slot if you release. A full hand cannot grab; use the other hand or \
+release.\
 """
 
 #: Asked once, verbatim. One instruction, no choreography.
-DEFAULT_SEED = "use the store clerk cartridge"
+DEFAULT_SEED = (
+    "use the store clerk cartridge (green label).\n"
+    "a cartridge goes in the glowing slot; a yellow ghost means you may release.\n"
+    "pull the lever down to start the job."
+)
 
 THIRDS_ROWS = ("TOP", "MIDDLE", "BOTTOM")
 THIRDS_COLS = ("LEFT", "MIDDLE", "RIGHT")
@@ -230,11 +238,19 @@ def extract_json_object(text: str) -> dict[str, Any] | None:
     return None
 
 
-def live_block(heard: str, left: str, right: str, yaw_rad: float, glow: str, last: str) -> str:
+def live_block(
+    heard: str,
+    left: str,
+    right: str,
+    yaw_rad: float,
+    glow: str,
+    last: str,
+    ghost: str = "unknown",
+) -> str:
     """The only per-turn context. No task list, no current-goal line."""
     return (
         f"heard: {heard.strip() if heard.strip() else '(none)'}\n"
-        f"self:  left={left} right={right} yaw={yaw_rad:.2f} glow={glow}\n"
+        f"self:  left={left} right={right} yaw={yaw_rad:.2f} glow={glow} ghost={ghost}\n"
         f"last:  {last}"
     )
 
@@ -640,6 +656,7 @@ def run_turn(
     right: str = "empty",
     yaw_rad: float = 0.0,
     glow: str = "unknown",
+    ghost: str = "unknown",
     last: str = "(none)",
     wav: bytes | None = None,
     turn: int = 0,
@@ -648,7 +665,7 @@ def run_turn(
 ) -> TurnRecord:
     """One complete turn: PLAN, then GROUND only if the plan needs a location."""
     started = time.monotonic()
-    live = live_block(heard, left, right, yaw_rad, glow, last)
+    live = live_block(heard, left, right, yaw_rad, glow, last, ghost=ghost)
     plan_result = plan(config, seed, frame, live, transcript=history, wav=wav,
                        default_side="right" if right == "empty" else "left")
 
@@ -673,7 +690,13 @@ def run_turn(
         plan=plan_result,
         ground=ground_result,
         decision=decision,
-        self_state={"left": left, "right": right, "yaw_rad": yaw_rad, "glow": glow},
+        self_state={
+            "left": left,
+            "right": right,
+            "yaw_rad": yaw_rad,
+            "glow": glow,
+            "ghost": ghost,
+        },
         elapsed_ms=(time.monotonic() - started) * 1000.0 + elapsed_ms,
     )
 
