@@ -10,6 +10,10 @@ from pathlib import Path
 
 from clank.preview import PreviewCapture, atomic_replace, newest_png
 
+#: A real PNG header, because the capture primitive rejects an empty or truncated
+#: file even when the screenshooter exits 0.
+PNG_BYTES = b"\x89PNG\r\n\x1a\nfixture"
+
 
 class FakeRun:
     def __init__(self, fail: str | None = None) -> None:
@@ -25,7 +29,7 @@ class FakeRun:
             return subprocess.CompletedProcess(argv, 1, "", "screen failed")
         cwd = Path(kwargs["cwd"])
         shot = cwd / "wayland-screenshot.png"
-        shot.write_bytes(b"PNG")
+        shot.write_bytes(PNG_BYTES)
         now = time.time_ns()
         os.utime(shot, ns=(now, now))
         return subprocess.CompletedProcess(argv, 0, "", "")
@@ -206,7 +210,7 @@ class PreviewTests(unittest.TestCase):
             run = FakeRun()
             capture = self.make_capture(base, run)
             self.assertTrue(capture.capture_once())
-            self.assertEqual((base / "latest.png").read_bytes(), b"PNG")
+            self.assertEqual((base / "latest.png").read_bytes(), PNG_BYTES)
             self.assertEqual(capture.status()["errors"], 0)
             self.assertEqual(capture.status()["frames"], 1)
             self.assertEqual([call[0] for call in run.calls], [["weston-screenshooter"]])

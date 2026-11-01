@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import os
 import re
 import shutil
@@ -8,10 +9,11 @@ import subprocess
 import tempfile
 import threading
 import time
-from datetime import datetime, timezone
+from collections.abc import Callable
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Callable
 
+from .capture import capture_frame
 from .config import Config
 
 
@@ -35,18 +37,6 @@ def newest_png(directory: Path, started_ns: int) -> Path | None:
 
 def atomic_replace(tmp: Path, destination: Path) -> None:
     os.replace(tmp, destination)
-
-
-def _command_error(label: str, result: subprocess.CompletedProcess) -> str:
-    stderr = result.stderr
-    if isinstance(stderr, bytes):
-        detail = stderr.decode(errors="replace")
-    else:
-        detail = str(stderr or "")
-    detail = detail.strip()[-400:]
-    if detail:
-        return f"{label} exited {result.returncode}: {detail}"
-    return f"{label} exited {result.returncode}"
 
 
 class PreviewCapture:
@@ -78,7 +68,6 @@ class PreviewCapture:
         self.stop_event = stop_event or threading.Event()
         self.run = run
         self.log = log or (lambda message: None)
-        self._capture_root = self.work_dir / "preview-capture"
         self._thread: threading.Thread | None = None
         self._state = "new"
         self._state_lock = threading.Lock()
@@ -146,44 +135,25 @@ class PreviewCapture:
                     self._dropped += 1
 
     def capture_once(self) -> bool:
-        frame_dir = self._capture_root / str(time.monotonic_ns())
-        tmp: Path | None = None
         try:
-            frame_dir.mkdir(parents=True, exist_ok=True)
-            started_ns = time.time_ns()
-            env = os.environ.copy()
-            env["XDG_RUNTIME_DIR"] = str(self.runtime_dir)
-            env["WAYLAND_DISPLAY"] = self.wayland_display
-            result = self.run(
-                [self.screenshooter],
-                cwd=str(frame_dir),
-                env=env,
+            capture_frame(
+                screenshooter=self.screenshooter,
+                runtime_dir=self.runtime_dir,
+                wayland_display=self.wayland_display,
+                work_dir=self.work_dir,
+                destination=self.publish_path,
                 timeout=5,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
+                run=self.run,
             )
-            if result.returncode != 0:
-                raise RuntimeError(_command_error("screenshooter", result))
-            png = newest_png(frame_dir, started_ns)
-            if png is None:
-                raise RuntimeError("screenshooter produced no new PNG")
-            atomic_replace(png, self.publish_path)
             with self._lock:
                 self._frames += 1
-                self._last_frame_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+                self._last_frame_at = datetime.now(UTC).isoformat().replace("+00:00", "Z")
             return True
         except Exception as exc:
             with self._lock:
                 self._errors += 1
             self._warn(str(exc))
             return False
-        finally:
-            shutil.rmtree(frame_dir, ignore_errors=True)
-            if tmp is not None:
-                try:
-                    tmp.unlink()
-                except OSError:
-                    pass
 
     def _warn(self, message: str) -> None:
         now = time.monotonic()
@@ -197,10 +167,8 @@ class PreviewCapture:
 
 
 def _kill_group(pid: int) -> None:
-    try:
+    with contextlib.suppress(ProcessLookupError):
         os.killpg(os.getpgid(pid), signal.SIGTERM)
-    except ProcessLookupError:
-        pass
 
 
 def preview_smoke(cfg: Config) -> int:
@@ -300,8 +268,7 @@ def preview_smoke(cfg: Config) -> int:
                 else:
                     result = subprocess.run(
                         [magick, str(latest), "-colorspace", "gray", "-format", "%[fx:mean]", "info:"],
-                        stdout=subprocess.PIPE,
-                        stderr=subprocess.PIPE,
+                        capture_output=True,
                         text=True,
                         timeout=10,
                     )
@@ -321,12 +288,8 @@ def preview_smoke(cfg: Config) -> int:
                 try:
                     proc.wait(timeout=3)
                 except subprocess.TimeoutExpired:
-                    try:
+                    with contextlib.suppress(ProcessLookupError):
                         os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-                    except ProcessLookupError:
-                        pass
                     proc.wait(timeout=3)
-        try:
+        with contextlib.suppress(FileNotFoundError):
             (runtime / socket_name).unlink()
-        except FileNotFoundError:
-            pass

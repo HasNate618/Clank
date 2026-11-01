@@ -5,14 +5,13 @@
 `(r, g, b)` ints. Something has to turn a PNG into those lists, and Pillow is not
 allowed inside `clank/`. So decoding lives here, in the spike, with the venv.
 
-Capture goes through `clank.preview.PreviewCapture.capture_once` rather than a
-second screenshooter wrapper: that function already knows the two traps found the
-hard way - the tool ignores its output argument and writes a *timestamped* filename
-into the current directory, and the game only appears when its window is forward.
-
-MEASURED 2026-10-30: `weston-screenshooter` is not blocked; an earlier note claiming
-so was wrong. It writes `wayland-screenshot-<ts>.png` into the cwd whatever path you
-pass, which is exactly what `newest_png` handles.
+Capture goes through `clank.capture.capture_frame`, which knows the two traps found
+the hard way: the tool ignores its output argument and writes a *timestamped*
+filename into the current directory, and the game only appears when its window is
+forward. Measured 2026-11-01: the compositor's PNG is **vertically mirrored**
+(GL renderer reports `screen capture uses y-flip: yes`), so absolute screen
+coordinates need `load_upright()` rather than `load()`. The dashboard/VNC canvas is
+upright; do not mix the two orientations in one comparison.
 """
 
 from __future__ import annotations
@@ -23,7 +22,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
-from clank.preview import PreviewCapture  # noqa: E402
+from clank.capture import capture_frame  # noqa: E402
 
 
 @dataclass(frozen=True)
@@ -39,7 +38,12 @@ class Frame:
 
 
 def load(path: str | Path) -> Frame:
-    """Decode a PNG (or anything Pillow reads) into a `Frame`, in RGB."""
+    """Decode a PNG (or anything Pillow reads) into a `Frame`, in RGB.
+
+    This preserves the file's orientation. A `weston-screenshooter` frame from the
+    live VNC session is vertically mirrored; use `load_upright` before reading
+    absolute screen coordinates from it.
+    """
     from PIL import Image  # imported late so --help works without the venv
 
     with Image.open(path) as image:
@@ -89,6 +93,18 @@ def downscale(frame: Frame, step: int) -> Frame:
     return Frame(width=width, height=len(out), rows=out)
 
 
+def load_upright(path: str | Path) -> Frame:
+    """Decode a compositor screenshot and flip it to the game's real orientation.
+
+    The live session's GL/VNC compositor writes captured frames mirrored across the
+    horizontal axis (signs read upside down but left-to-right). Reversing the row
+    order restores upright; tests cannot check this without a session, so the
+    evidence is the readable signage in `research/capture.md`.
+    """
+    frame = load(path)
+    return Frame(width=frame.width, height=frame.height, rows=list(reversed(frame.rows)))
+
+
 def capture(
     *,
     screenshooter: str,
@@ -99,23 +115,14 @@ def capture(
 ) -> Path:
     """Capture one frame and publish it to `destination`.
 
-    Returns the published path. Raises `RuntimeError` when the capture produced no
-    new PNG, which is also how a dead compositor shows up.
+    Returns the published path. Raises `CaptureError` when the compositor produced
+    no usable PNG, which is also how a dead compositor shows up. The published file
+    is in the compositor's orientation (vertically mirrored); see `load_upright`.
     """
-    shot = PreviewCapture(
-        width=0,
-        height=0,
-        panel_height=0,
-        fps=0.0,
+    return capture_frame(
         screenshooter=screenshooter,
-        runtime_dir=Path(runtime_dir),
+        runtime_dir=runtime_dir,
         wayland_display=wayland_display,
-        work_dir=Path(work_dir),
-        publish_path=Path(destination),
+        work_dir=work_dir,
+        destination=destination,
     )
-    if not shot.capture_once():
-        raise RuntimeError("capture_once reported failure")
-    published = Path(destination)
-    if not published.exists():
-        raise RuntimeError(f"capture published nothing at {published}")
-    return published
