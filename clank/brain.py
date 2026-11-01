@@ -83,6 +83,13 @@ def outcome_from_flags(flags: int) -> str:
     `FLAG_FALL_RISK` and `FLAG_UNSUPPORTED` map to "done" only because the
     constitution offers three words and no more. They are recorded in the trace,
     not invented into the model-facing vocabulary.
+
+    **Warning, measured 2026-11-01** (`research/sonic-reach-envelope.md`): at the
+    contract's default `tolerance_m` of 0.02 m this flag is set on *every* reach,
+    because ordinary SONIC tracking error is 0.035–0.18 m. So the word is
+    currently uninformative — every turn reads "saturated". Do not build a retry
+    rule on it until the tolerance is set from a measurement. The plumbing here is
+    correct; the flag's threshold is not.
     """
     if flags & FLAG_SATURATED:
         return "saturated"
