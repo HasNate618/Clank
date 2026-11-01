@@ -222,3 +222,112 @@ class SocketTestCase(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class HoldLatchesOnce(unittest.TestCase):
+    """A freeze-hold must pin a pose, not chase the body.
+
+    MEASURED in the sim (`research/p2-soak.md`): `hold()` driven by a live
+    `publish_state()` every tick drifts 0.444 m over 20 s at 0.0413 m/s RMS,
+    because `channel_pose` rule 3 returns the LAST ACHIEVED pose - the target
+    follows the body, so nothing pulls it back. The same command with the pose
+    latched once drifts 0.0226 m at 6.9e-5 m/s. The corruption is here: the bus
+    handed the executor a fresh snapshot every call.
+    """
+
+    def moved_state(self) -> BodyState:
+        """A body that has drifted a long way from `published_state()`."""
+        base = published_state()
+        far = Pose((0.60, -0.55, 0.20), (0.0, 0.0, 0.0, 1.0))
+        return BodyState(
+            **{
+                **base.__dict__,
+                "right_hand": far,
+                "left_hand": far,
+                "head": far,
+                "t_mono_ns": base.t_mono_ns + 20_000_000_000,
+            }
+        )
+
+    def test_the_hold_does_not_follow_the_body(self) -> None:
+        clock = FakeClock(0)
+        bus = CommandBus(clock=clock)
+        bus.publish_state(published_state())
+        first = bus.take(now_ns=0)
+        self.assertEqual(first.right_hand, REACHED_RIGHT)
+
+        # The body moves a long way while the model thinks. The hold must not.
+        bus.publish_state(self.moved_state())
+        clock.now_ns = 1_000_000_000
+        second = bus.take(now_ns=1_000_000_000)
+        self.assertEqual(second.authority, FREEZE_HOLD_AUTH)
+        self.assertEqual(second.right_hand, REACHED_RIGHT)
+
+    def test_the_latch_survives_many_ticks(self) -> None:
+        bus = CommandBus(clock=FakeClock(0))
+        bus.publish_state(published_state())
+        bus.take(now_ns=0)
+        for i in range(1, 50):
+            bus.publish_state(self.moved_state())
+            cmd = bus.take(now_ns=i * 20_000_000)
+            self.assertEqual(cmd.right_hand, REACHED_RIGHT)
+
+    def test_an_expired_command_latches_too(self) -> None:
+        clock = FakeClock(0)
+        bus = CommandBus(clock=clock)
+        bus.publish_state(published_state())
+        bus.push(BodyCommand(seq=1, t_mono_ns=0, ttl_ms=100, authority=AUTH_ROOT_VEL,
+                             v_xy=(0.4, 0.0)))
+        clock.now_ns = 500_000_000
+        expired = bus.take(now_ns=clock.now_ns)
+        self.assertEqual(expired.authority, FREEZE_HOLD_AUTH)
+        bus.publish_state(self.moved_state())
+        clock.now_ns = 600_000_000
+        later = bus.take(now_ns=clock.now_ns)
+        self.assertEqual(later.right_hand, REACHED_RIGHT)
+
+    def test_a_new_command_clears_the_latch(self) -> None:
+        clock = FakeClock(0)
+        bus = CommandBus(clock=clock)
+        bus.publish_state(published_state())
+        bus.take(now_ns=0)
+        bus.push(BodyCommand(seq=2, t_mono_ns=0, ttl_ms=100,
+                             authority=AUTH_ROOT_VEL, v_xy=(0.4, 0.0)))
+        bus.take(now_ns=0)
+        # A new pose has been reached, so the next hold must latch the new one.
+        bus.publish_state(self.moved_state())
+        clock.now_ns = 400_000_000
+        fresh = bus.take(now_ns=clock.now_ns)
+        self.assertEqual(fresh.right_hand.p, (0.60, -0.55, 0.20))
+
+    def test_rest_clears_the_latch(self) -> None:
+        clock = FakeClock(0)
+        bus = CommandBus(clock=clock)
+        bus.publish_state(published_state())
+        bus.take(now_ns=0)
+        bus.push(rest(seq=2, now_ns=0))
+        self.assertEqual(bus.take(now_ns=0).authority, 0)
+        bus.publish_state(self.moved_state())
+        clock.now_ns = 400_000_000
+        fresh = bus.take(now_ns=clock.now_ns)
+        self.assertEqual(fresh.right_hand.p, (0.60, -0.55, 0.20))
+
+    def test_an_explicit_hold_command_is_latched_too(self) -> None:
+        clock = FakeClock(0)
+        bus = CommandBus(clock=clock)
+        bus.publish_state(published_state())
+        bus.push(hold(seq=1, now_ns=0, ttl_ms=10_000))
+        self.assertEqual(bus.take(now_ns=0).right_hand, REACHED_RIGHT)
+        bus.publish_state(self.moved_state())
+        clock.now_ns = 20_000_000
+        later = bus.take(now_ns=clock.now_ns)
+        self.assertEqual(later.authority, FREEZE_HOLD_AUTH)
+        self.assertEqual(later.right_hand, REACHED_RIGHT)
+
+    def test_the_latch_is_not_shared_between_buses(self) -> None:
+        one, two = CommandBus(clock=FakeClock(0)), CommandBus(clock=FakeClock(0))
+        one.publish_state(published_state())
+        two.publish_state(published_state())
+        one.take(now_ns=0)
+        two.publish_state(self.moved_state())
+        self.assertEqual(two.take(now_ns=0).right_hand.p, (0.60, -0.55, 0.20))

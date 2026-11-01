@@ -27,8 +27,30 @@ import time
 from collections.abc import Callable
 from pathlib import Path
 
-from .body import BodyCommand, BodyState, hold
+from .body import BodyCommand, BodyState, FREEZE_HOLD_AUTH, hold
 from .validate import ValidationResult, validate_command
+
+
+def is_freeze_hold(cmd: BodyCommand) -> bool:
+    """True when `cmd` asks for nothing but the freeze-hold channels.
+
+    `hold()` claims head and both hands and leaves the poses empty so that the
+    bus can fill them from a snapshot. Neither a `rest` (empty authority) nor any
+    real skill is a hold, and both must release the latch.
+    """
+    return (cmd.authority & FREEZE_HOLD_AUTH) == FREEZE_HOLD_AUTH and not (
+        cmd.authority & ~FREEZE_HOLD_AUTH
+    )
+
+
+def _unbaked(cmd: BodyCommand) -> bool:
+    """A hold that still needs its poses filled in."""
+    return (
+        is_freeze_hold(cmd)
+        and cmd.head is None
+        and cmd.left_hand is None
+        and cmd.right_hand is None
+    )
 
 
 class CommandBus:
@@ -43,6 +65,11 @@ class CommandBus:
         self._seq_seen = -1
         self._ballistic: BodyCommand | None = None
         self._ballistic_end_ns = 0
+        #: The poses a freeze-hold is pinned to, latched once when the hold begins.
+        #: MEASURED (`research/p2-soak.md`): re-reading the live state every tick
+        #: made the target follow the body, which drifts 0.444 m over 20 s at
+        #: 0.0413 m/s RMS instead of holding. Latching once gives 6.9e-5 m/s.
+        self._latched: BodyState | None = None
 
     # ---- writes ---------------------------------------------------------
 
@@ -52,6 +79,11 @@ class CommandBus:
             if cmd.seq < self._seq_seen:
                 return False
             self._seq_seen = cmd.seq
+            if not is_freeze_hold(cmd):
+                # A new instruction retires the old snapshot: what comes next is a
+                # different place to stand still at. Cleared here rather than in
+                # take() so a command queued behind a ballistic also counts.
+                self._latched = None
 
             now = self._clock()
             if self._ballistic is not None and now < self._ballistic_end_ns and not cmd.preempt:
@@ -105,13 +137,25 @@ class CommandBus:
 
             cmd = self._latest
             if cmd is None:
-                return hold(now_ns=now, state=self._state)
+                return hold(now_ns=now, state=self._latched_state())
             if cmd.expires_at_ns() < now:
                 # Freeze-hold at what the body actually achieved, not at the
                 # standing clip. This is the path a finished reach takes, and an
                 # empty mask here would snap the wrist back and drop what it held.
-                return hold(seq=cmd.seq, now_ns=now, state=self._state)
+                return hold(seq=cmd.seq, now_ns=now, state=self._latched_state())
+            if _unbaked(cmd):
+                # An explicit `hold` verb over the socket: bake the latch into it so
+                # the executor never reaches `channel_pose` rule 3, which would read
+                # the live achieved pose and follow the body.
+                return hold(seq=cmd.seq, now_ns=cmd.t_mono_ns, ttl_ms=cmd.ttl_ms,
+                            state=self._latched_state())
             return cmd
+
+    def _latched_state(self) -> BodyState | None:
+        """The pose this hold is pinned to, taking the snapshot on first use."""
+        if self._latched is None:
+            self._latched = self._state
+        return self._latched
 
     def latest_state(self) -> BodyState | None:
         with self._lock:

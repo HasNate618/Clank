@@ -16,6 +16,11 @@
 | `hold(state=snapshot)` — latched **once** | 0.0226 m | **0.000069 m/s** | 0.000093 | no |
 | `rest()` — clip anchor | 0.0166 m | 0.0042 m/s | 0.0064 | no |
 
+**FIXED the same day** — see §7. `clank/bus.py` now latches the snapshot once. Re-run end-to-end
+through `bus.take()` + the executor: **0.000069 m/s, net 0.0226 m over 20 s**, on both the idle
+path and the expired-TTL path a finished reach takes. The figures below are the pre-fix
+measurement that motivated it, kept because they are the evidence.
+
 `hold()` drifts 0.44 m over twenty seconds. The same command with the pose
 latched once drifts 2.3 cm. **The latch is not a latch: it re-reads the live
 achieved pose every tick**, so the target follows the body. There is no restoring
@@ -81,3 +86,26 @@ way the unit test is the same: two consecutive `take()` calls with different
   not established.
 - The 0.0226 m net for the latched hold is ~1 cm/s over the first second before
   it settles; the steady-state figure is the 6.9×10⁻⁵ m/s.
+
+## 7. Fix, and the re-run
+
+`clank/bus.py` latches the state once (`_latched`) instead of handing the executor a
+fresh snapshot per tick. The latch is taken on the first `take()` that needs it,
+cleared when a command arrives that is not a freeze-hold (`is_freeze_hold`), and
+baked into an explicit `hold` verb so the executor never reaches `channel_pose`
+rule 3.
+
+| path | net 20 s | RMS last 10 s | p95 |
+| --- | ---: | ---: | ---: |
+| bus idle path | 0.0226 m | **0.000069 m/s** | 0.000093 |
+| bus, after a finished reach (expired TTL) | 0.0226 m | **0.000069 m/s** | 0.000093 |
+
+Both match the hand-latched control exactly, so the bus is no longer the
+difference. 370× better than the pre-fix 0.0413 m/s, and 60× better than `rest()`.
+
+Unit-level, 7 new tests in `tests/test_bus.py::HoldLatchesOnce`. Mutation-checked:
+restoring the trailing read fails 4, not clearing on a new command fails 2, and not
+baking an explicit hold fails 1.
+
+Still not measured: a left-arm soak, other anchor frames, or a soak with the game
+attached. The latch is correct in the sim and that is all this claims.

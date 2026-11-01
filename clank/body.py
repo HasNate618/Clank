@@ -336,6 +336,11 @@ def hold(
     the adapter fill the poses in when they do, and the executor falls back to
     the last state it achieved. With no state at all, the channels are claimed
     but carry no pose, and `channel_pose` answers with the clip.
+
+    Whatever supplies `state` must supply the **same snapshot** for the whole
+    hold. Re-reading a live state each tick turns `channel_pose` rule 3 into a
+    target that follows the body: measured at 0.444 m of drift over 20 s, against
+    0.023 m when the pose is latched once (`research/p2-soak.md`).
     """
     return BodyCommand(
         seq=seq,
