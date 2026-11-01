@@ -126,3 +126,57 @@ transient is not a pose to hold.
 
 One session, one trial. The retest is the same reach that failed, which is the
 right control, but the "before" column is still a single observation.
+
+## 8. Full stack launched: the robot is driving Job Simulator
+
+Started the whole thing programmatically — `./run.sh` (which takes the `nix develop`
+branch, since `weston`/`novnc` are not on the bare PATH) then
+`POST /api/session/start` on the dashboard. Session `20261101T223603Z-27abb1`.
+
+| component | state |
+| --- | --- |
+| Monado (remote driver, 4242) | alive, client connected |
+| Weston (VNC backend, 1920x1080, socket `clank-27abb1`) | alive |
+| noVNC proxy (6080) / VNC (5901) | alive / alive |
+| pose relay | alive — `handshake ok`, 50 Hz, heading +90 declared |
+| Job Simulator under Proton + OpenComposite | alive |
+| body_view | alive, autostarted by the orchestrator |
+
+Pose stream health from the session's `body_pose.csv`, last 500 rows:
+
+- **500/500 `live`**, no stale rows.
+- mean Δt **20.00 ms**, max gap 20.9 ms — a clean 50 Hz with no drops.
+
+So the loop works end to end: MuJoCo → `body_state.json` → relay → Monado →
+OpenComposite → the game. This is the first time that has been recorded as a
+single verified run rather than inferred from parts.
+
+Two operational notes worth keeping:
+
+1. The orchestrator scrubs `PYTHONPATH` for the body subprocess (the running body
+   has `PYTHONNOUSERSITE`/`PYTHONHASHSEED` and nothing else), which is why the e3
+   venv works under `nix develop` even though the devshell's `PYTHONPATH` breaks
+   that venv's numpy if you invoke it directly.
+2. A manual `body_view` must be stopped before a launch, or two of them write to
+   the same `sessions/body` directory.
+
+## 9. There is no headless way to get a game frame
+
+Blocking item for every visual measurement (FOV calibration, the blue-glow and
+yellow-ghost cue pairs). `[MEASURED 2026-11-01]`
+
+| path | outcome |
+| --- | --- |
+| `weston-screenshooter` | exits 0, writes nothing — the compositor has no screenshooter module |
+| `spike/vnc_grab.py` on 5901 | server offers RSA-AES256 and **authenticates a local account**: `Invalid username. Weston authenticates a local account` |
+| `ffmpeg -f x11grab` | this build has no `x11grab` |
+| ImageMagick `import` on the Xwayland display `:1` | cannot load `libX11` from a shell, and Xwayland is `-rootless` so root would be empty anyway |
+| `spike/c0/capture_game.sh` | Superhot-era: looks for a Superhot window via `hyprctl`, then `grim` on the desktop. Wrong stack, and the game is not on the desktop — it renders inside Weston's VNC output |
+
+The only working path is the interactive dashboard, where the operator types a VNC
+password into `#vnc-pass`. **That credential is a local-account password, so it is
+the operator's to use, not mine.**
+
+The fix worth making: have the orchestrator pass an explicit `--password` to
+weston's VNC backend from config, so the grab path is non-interactive and a rig can
+capture unattended. Until then, unattended capture does not exist.
