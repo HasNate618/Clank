@@ -11,14 +11,27 @@ def fake_frame(index: int = 0) -> Frame:
 
 class ChatPatchMixin:
     reply: str = ""
+    reply_error: str = ""
     _orig_chat = None
 
     def setUp(self) -> None:
+        self.chat_calls: list[dict] = []
         self._orig_chat = brain._chat
-        brain._chat = lambda *a, **k: brain.ModelReply(text=self.reply)
+        brain._chat = self._fake_chat
+
+    def _fake_chat(self, config, messages, max_tokens=None):
+        self.chat_calls.append({"messages": messages, "max_tokens": max_tokens})
+        return brain.ModelReply(text=self.reply, error=self.reply_error)
 
     def tearDown(self) -> None:
         brain._chat = self._orig_chat
+
+    def user_text(self) -> str:
+        """The text sent with the still on the last call."""
+        content = self.chat_calls[-1]["messages"][-1]["content"]
+        if isinstance(content, str):
+            return content
+        return "\n".join(part["text"] for part in content if part["type"] == "text")
 
 
 class ExtractJson(unittest.TestCase):
@@ -200,6 +213,107 @@ class CueGatesInTurn(ChatPatchMixin, unittest.TestCase):
         )
         self.assertEqual(record.decision.intent.skill, "hold")
         self.assertIn("glow is no", record.decision.reason)
+
+
+class ComposePixel(unittest.TestCase):
+    #: The hand-drawn tray box from the 2026-11-01 measurement.
+    box = (0.270, 0.325, 0.548, 0.566)
+
+    def test_top_right_of_the_measured_tray(self) -> None:
+        u, v = brain.compose_pixel(self.box, "TOP-RIGHT")
+        self.assertAlmostEqual(u, 0.270 + (0.548 - 0.270) * 0.75)
+        self.assertAlmostEqual(v, 0.325 + (0.566 - 0.325) * 0.25)
+
+    def test_bottom_left_takes_the_other_centre_of_each_axis(self) -> None:
+        u, v = brain.compose_pixel(self.box, "BOTTOM-LEFT")
+        self.assertAlmostEqual(u, 0.270 + (0.548 - 0.270) * 0.25)
+        self.assertAlmostEqual(v, 0.325 + (0.566 - 0.325) * 0.75)
+
+    def test_the_whole_frame_is_the_plain_image_quadrant(self) -> None:
+        u, v = brain.compose_pixel((0.0, 0.0, 1.0, 1.0), "TOP-LEFT")
+        self.assertEqual((u, v), (0.25, 0.25))
+
+
+class GroundQuad(ChatPatchMixin, unittest.TestCase):
+    box = (0.270, 0.325, 0.548, 0.566)
+
+    def test_store_clerk_top_right_composes_into_the_box(self) -> None:
+        self.reply = "TOP-RIGHT"
+        g = brain.ground(brain.BrainConfig(), fake_frame(), "STORE CLERK", box=self.box)
+        self.assertEqual(g.quadrant, "TOP-RIGHT")
+        self.assertEqual(g.methods, "quad")
+        self.assertIsNotNone(g.pixel)
+        self.assertAlmostEqual(g.pixel[0], 0.270 + (0.548 - 0.270) * 0.75)
+        self.assertAlmostEqual(g.pixel[1], 0.325 + (0.566 - 0.325) * 0.25)
+
+    def test_one_call_asking_the_bare_question(self) -> None:
+        self.reply = "TOP-LEFT"
+        brain.ground(brain.BrainConfig(), fake_frame(), "STORE CLERK")
+        self.assertEqual(len(self.chat_calls), 1)
+        self.assertEqual(self.chat_calls[0]["max_tokens"], 60)
+        self.assertEqual(
+            self.user_text(),
+            "Which position in this tray does the STORE CLERK occupy? "
+            "Answer with one of: TOP-LEFT, TOP-RIGHT, BOTTOM-LEFT, BOTTOM-RIGHT.",
+        )
+
+    def test_container_is_interpolated(self) -> None:
+        self.reply = "TOP-LEFT"
+        brain.ground(brain.BrainConfig(), fake_frame(), "lever", container="register")
+        self.assertIn("Which position in this register", self.user_text())
+
+    def test_prompt_names_only_the_asked_noun_and_the_answer_words(self) -> None:
+        self.reply = "TOP-LEFT"
+        brain.ground(brain.BrainConfig(), fake_frame(), "STORE CLERK")
+        blob = self.user_text()
+        self.assertIn("STORE CLERK", blob)
+        self.assertIn("TOP-LEFT", blob)  # answer vocabulary, not a layout table
+        for unasked in (
+            "AUTO MECHANIC",
+            "GOURMET CHEF",
+            "OFFICE WORKER",
+            "BLUE",
+            "GREEN",
+            "RED",
+        ):
+            self.assertNotIn(unasked, blob)
+
+    def test_top_right_with_a_space_still_parses(self) -> None:
+        self.reply = "The STORE CLERK cartridge is in the top right position."
+        g = brain.ground(brain.BrainConfig(), fake_frame(), "STORE CLERK")
+        self.assertEqual(g.quadrant, "TOP-RIGHT")
+        self.assertEqual(g.raw, self.reply)
+
+    def test_none_is_not_visible(self) -> None:
+        self.reply = "NONE"
+        g = brain.ground(brain.BrainConfig(), fake_frame(), "card")
+        self.assertEqual(g.error, "not visible")
+        self.assertIsNone(g.pixel)
+        self.assertIsNone(g.quadrant)
+
+    def test_unparseable_is_not_visible(self) -> None:
+        self.reply = "It is somewhere near the middle of the tray."
+        g = brain.ground(brain.BrainConfig(), fake_frame(), "card")
+        self.assertEqual(g.error, "not visible")
+        self.assertIsNone(g.pixel)
+        self.assertEqual(g.raw, self.reply)
+
+    def test_transport_error_is_not_read_as_not_visible(self) -> None:
+        self.reply_error = "transport: timed out"
+        g = brain.ground(brain.BrainConfig(), fake_frame(), "card")
+        self.assertEqual(g.error, "transport: timed out")
+        self.assertIsNone(g.pixel)
+
+    def test_cell_aliases_the_quadrant_and_to_dict_reports_the_box(self) -> None:
+        self.reply = "BOTTOM-LEFT"
+        g = brain.ground(brain.BrainConfig(), fake_frame(), "card", box=self.box)
+        self.assertEqual(g.cell, "BOTTOM-LEFT")
+        as_dict = g.to_dict()
+        self.assertEqual(as_dict["quadrant"], "BOTTOM-LEFT")
+        self.assertEqual(as_dict["cell"], "BOTTOM-LEFT")
+        self.assertEqual(as_dict["box"], list(self.box))
+        self.assertEqual(as_dict["pixel"], list(g.pixel))
+        self.assertEqual(as_dict["error"], "")
 
 
 if __name__ == "__main__":

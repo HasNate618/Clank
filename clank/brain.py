@@ -16,10 +16,11 @@ It does **not** move the body. It produces `Intent`s; the adapter compiles them.
 Two measurements decided the shape of this file, both taken against the live
 `LFM3-Omni-2B` endpoint on 2026-11-01:
 
-- A single "which of these 9 cells contains X?" question answered `E` (centre) for
-  an object that was in `H` (bottom-centre). A 9-way pick has a centre bias. Two
-  decomposed thirds questions answered `BOTTOM` correctly for the same image, so
-  grounding is decomposed rather than picked.
+- Every image-global grid collapses toward the image centre on this model: 3x3
+  thirds 3/12, a 9-cell single pick 0/12, a 4x4 grid 0/12. The same question asked
+  about a hand-drawn crop of the container scored 44/44 on the tray, and the
+  identical prompt on the full frame 9/12. So GROUND asks one quadrant question
+  about a container box the caller supplies; see `ground()`.
 - Without an explicit "all three keys always present" line the model omits `side`
   entirely and emits `{"skill": "look", "target": "human"}`, which the intent
   schema rejects. The constitution therefore states the schema as a requirement,
@@ -98,9 +99,12 @@ DEFAULT_SEED = (
     "pull the lever down to start the job."
 )
 
-THIRDS_ROWS = ("TOP", "MIDDLE", "BOTTOM")
-THIRDS_COLS = ("LEFT", "MIDDLE", "RIGHT")
-_CELL_LETTERS = "ABCDEFGHI"
+#: The four answers GROUND accepts. A tray quadrant is the smallest set that
+#: measured above chance on this model; see `ground()`.
+QUADRANTS = ("TOP-LEFT", "TOP-RIGHT", "BOTTOM-LEFT", "BOTTOM-RIGHT")
+
+#: Words a reply uses to refuse. All three become `error="not visible"`.
+_ABSENT_WORDS = ("NONE", "ABSENT", "NOT VISIBLE")
 
 
 @dataclass(frozen=True)
@@ -360,34 +364,37 @@ def plan(
 
 @dataclass(frozen=True)
 class Ground:
-    """Where the named noun is, as a 3x3 cell and a normalised pixel."""
+    """Where the named noun is: one quadrant of the container box, and a pixel.
+
+    `pixel` is the geometric centre of that quadrant inside `box`, in full-frame
+    `[0, 1]`. It is not a per-cartridge calibrated point: spec §10 records that an
+    uncalibrated quadrant centre misses GOURMET CHEF by 0.097, and the precision
+    path is the wrist-crop VERIFY (§11), not a game-specific offset table here.
+    """
 
     noun: str
-    row: int | None = None
-    col: int | None = None
+    quadrant: str | None = None
+    box: tuple[float, float, float, float] = (0.0, 0.0, 1.0, 1.0)
     pixel: tuple[float, float] | None = None
-    raw_row: str = ""
-    raw_col: str = ""
+    raw: str = ""
     error: str = ""
-    methods: str = "thirds"
+    methods: str = "quad"
     prompt_ms: float = 0.0
     decode_ms: float = 0.0
 
     @property
     def cell(self) -> str | None:
-        if self.row is None or self.col is None:
-            return None
-        return _CELL_LETTERS[self.row * 3 + self.col]
+        """Alias for `spike/brainview`, whose overlay Task 6 rewrites."""
+        return self.quadrant
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "noun": self.noun,
+            "quadrant": self.quadrant,
             "cell": self.cell,
-            "row": self.row,
-            "col": self.col,
+            "box": list(self.box),
             "pixel": list(self.pixel) if self.pixel else None,
-            "raw_row": self.raw_row,
-            "raw_col": self.raw_col,
+            "raw": self.raw,
             "error": self.error,
             "methods": self.methods,
             "prompt_ms": round(self.prompt_ms, 1),
@@ -395,15 +402,37 @@ class Ground:
         }
 
 
-def _match_word(text: str, options: tuple[str, ...], allow_none: bool) -> int | None:
-    """Return an index into `options`, -1 for NONE, or None when unparseable."""
-    upper = re.sub(r"[^A-Z ]", " ", text.upper())
-    tokens = upper.split()
-    if allow_none and ("NONE" in tokens or "NOT VISIBLE" in upper or "ABSENT" in tokens):
-        return -1
-    for index, option in enumerate(options):
-        if option in tokens:
-            return index
+def compose_pixel(
+    box: tuple[float, float, float, float], quadrant: str
+) -> tuple[float, float]:
+    """Geometric centre of `quadrant` inside `box`, in full-frame `[0, 1]`.
+
+    A pure function of the box and the answer: no per-cartridge offsets, because
+    an offset table is game layout inside the brain and spec §10 budgets the
+    wrist-crop VERIFY as the precision path instead.
+    """
+    u0, v0, u1, v1 = box
+    u = u0 + (u1 - u0) * ((1 if "RIGHT" in quadrant else 0) + 0.5) / 2
+    v = v0 + (v1 - v0) * ((1 if "BOTTOM" in quadrant else 0) + 0.5) / 2
+    return (u, v)
+
+
+def _match_quadrant(text: str) -> str | None:
+    """The first `QUADRANTS` answer in a reply, or None for absent/unparseable.
+
+    The reply is stripped to capitals and single spaces and matched as whole
+    words, so `TOP-RIGHT`, `TOP RIGHT` and `top, right!` are the same answer.
+    `NONE`, `NOT VISIBLE`, `ABSENT` and plain chatter all return None: presence
+    detection is unbuilt, so the caller treats an unreadable answer the same way
+    it treats a refusal, never as a guessed pixel.
+    """
+    words = " ".join(re.sub(r"[^A-Z ]", " ", text.upper()).split())
+    padded = f" {words} "
+    if any(f" {absent} " in padded for absent in _ABSENT_WORDS):
+        return None
+    for quadrant in QUADRANTS:
+        if f" {quadrant.replace('-', ' ')} " in padded:
+            return quadrant
     return None
 
 
@@ -411,83 +440,55 @@ def ground(
     config: BrainConfig,
     frame: Frame,
     noun: str,
+    box: tuple[float, float, float, float] = (0.0, 0.0, 1.0, 1.0),
+    container: str = "tray",
     transcript: list[str] | None = None,
 ) -> Ground:
-    """Locate `noun` by two decomposed questions rather than one 9-way pick.
+    """Ask which quadrant of `container` holds `noun`, then compose a pixel.
 
-    Measured 2026-11-01 on the business card (truth: bottom third, centre column,
-    `v ~ 0.73`):
+    Spec §10. The 3x3 image-global method this replaced is retired: measured
+    2026-11-01, thirds scored 3/12, a 9-cell single pick 0/12 and a 4x4 grid 0/12,
+    all collapsing toward the image centre. One name->quadrant question asked
+    about a crop of the tray scored 44/44 on the same box, and the identical
+    prompt on the full frame 9/12 - the crop is the whole difference.
 
-    - one 9-way "which cell" question answered `E`, the centre - a centre bias;
-    - the vertical third question answered `MIDDLE` for all five phrasings tried,
-      so it is stable but biased toward the middle band;
-    - a binary "is it in the lower half?" answered `YES`, correctly;
-    - recursive bisection with binary questions broke down entirely: past the
-      first question the 2B model narrates ("LOOKING AT THE IMAGE, ...") and it
-      answers `YES` on a frame that contains no card at all.
+    `box` is that crop, normalised `(u0, v0, u1, v1)`. It is arithmetic here, not
+    image processing: the still goes out whole and the answered quadrant is
+    composed back into full-frame coordinates. Finding the box automatically is
+    unbuilt; it is the caller's to supply.
 
-    So the coarse 3x3 form is kept because it is the only shape that answers
-    consistently, and its known centre bias is recorded rather than papered over.
-    A grounder that is honestly coarse is usable - the adapter servos and Job
-    Simulator's grab volumes are generous - whereas one that hallucinates
-    presence is not. The consequence is in the spec's E1 gate: pixel skills stay
-    off until grounding is measured against labelled cells, and the live answer
-    to precision is active perception (reach, let the game highlight what is
-    grabbable, then close), not a better question.
+    `transcript` is accepted so the call sites do not fork, but it is deliberately
+    **not** in the prompt: the 44/44 measurement is the bare question, and speech
+    is a second context channel nobody measured for this question. The prompt also
+    never lists the other cartridges or their positions - measured, the model
+    follows a supplied layout table 12/12 even when the table is deliberately
+    false.
     """
-    context = ""
-    if transcript:
-        context = "Context:\n" + "\n".join(f"- {line}" for line in transcript) + "\n\n"
-
-    row_prompt = (
-        f"{context}Which horizontal band of the image contains the {noun}: "
-        "TOP, MIDDLE, or BOTTOM? Reply with exactly one of those words, "
-        "or NONE if the object is not visible."
+    prompt = (
+        f"Which position in this {container} does the {noun} occupy? "
+        "Answer with one of: TOP-LEFT, TOP-RIGHT, BOTTOM-LEFT, BOTTOM-RIGHT."
     )
-    col_prompt = (
-        f"{context}Which vertical band of the image contains the {noun}: "
-        "LEFT, MIDDLE, or RIGHT? Reply with exactly one of those words, "
-        "or NONE if the object is not visible."
-    )
+    reply = _chat(config, [{"role": "user", "content": [
+        _image_part(frame), {"type": "text", "text": prompt},
+    ]}], max_tokens=60)
+    if reply.error:
+        return Ground(noun=noun, box=box, raw=reply.text, error=reply.error)
 
-    row_reply = _chat(config, [{"role": "user", "content": [
-        _image_part(frame), {"type": "text", "text": row_prompt},
-    ]}], max_tokens=12)
-    if row_reply.error:
-        return Ground(noun=noun, error=f"row: {row_reply.error}")
+    quadrant = _match_quadrant(reply.text)
+    if quadrant is None:
+        # NONE, ABSENT, or chatter we cannot read. Presence detection is unbuilt,
+        # so an unreadable answer is treated as absence, never as a guessed pixel.
+        return Ground(noun=noun, box=box, raw=reply.text.strip(), error="not visible",
+                      prompt_ms=reply.prompt_ms, decode_ms=reply.decode_ms)
 
-    row = _match_word(row_reply.text, THIRDS_ROWS, allow_none=True)
-    if row is None:
-        return Ground(noun=noun, raw_row=row_reply.text,
-                      error=f"row reply unparseable: {row_reply.text!r}")
-    if row == -1:
-        return Ground(noun=noun, raw_row=row_reply.text, error="not visible")
-
-    col_reply = _chat(config, [{"role": "user", "content": [
-        _image_part(frame), {"type": "text", "text": col_prompt},
-    ]}], max_tokens=12)
-    if col_reply.error:
-        return Ground(noun=noun, row=row, raw_row=row_reply.text,
-                      error=f"col: {col_reply.error}")
-
-    col = _match_word(col_reply.text, THIRDS_COLS, allow_none=True)
-    if col is None:
-        return Ground(noun=noun, row=row, raw_row=row_reply.text, raw_col=col_reply.text,
-                      error=f"col reply unparseable: {col_reply.text!r}")
-    if col == -1:
-        return Ground(noun=noun, row=row, raw_row=row_reply.text,
-                      raw_col=col_reply.text, error="not visible")
-
-    pixel = ((col + 0.5) / 3.0, (row + 0.5) / 3.0)
     return Ground(
         noun=noun,
-        row=row,
-        col=col,
-        pixel=pixel,
-        raw_row=row_reply.text.strip(),
-        raw_col=col_reply.text.strip(),
-        prompt_ms=row_reply.prompt_ms + col_reply.prompt_ms,
-        decode_ms=row_reply.decode_ms + col_reply.decode_ms,
+        quadrant=quadrant,
+        box=box,
+        pixel=compose_pixel(box, quadrant),
+        raw=reply.text.strip(),
+        prompt_ms=reply.prompt_ms,
+        decode_ms=reply.decode_ms,
     )
 
 
@@ -734,8 +735,10 @@ __all__ = [
     "Ground",
     "PLANNER_SKILLS",
     "Plan",
+    "QUADRANTS",
     "TurnRecord",
     "assemble",
+    "compose_pixel",
     "extract_json_object",
     "ground",
     "live_block",
