@@ -789,3 +789,74 @@ class OutcomeReachesThePrompt(ChatPatchMixin, unittest.TestCase):
             last="grab right target=card → done",
         )
         self.assertIn("grab right target=card → done", record.live)
+
+
+class ReachOutcome(unittest.TestCase):
+    """The game's own grab-range highlight is a better arrival oracle than a residual.
+
+    Measured 2026-11-01 (`research/sonic-reach-envelope.md`): at the contract's
+    0.02 m default tolerance `FLAG_SATURATED` is set on *every* reach, including
+    ones the body tracked well, because ordinary SONIC tracking error is
+    0.035-0.18 m. So the flag alone would tell the planner that every reach
+    failed. Job Simulator lights the object blue when the hand is in grab range,
+    which is the game answering the question instead of us inferring it.
+    """
+
+    def test_in_grab_range_is_done_even_when_the_flag_says_saturated(self) -> None:
+        self.assertEqual(brain.reach_outcome("yes", brain.FLAG_SATURATED), "done")
+
+    def test_out_of_grab_range_is_saturated(self) -> None:
+        self.assertEqual(brain.reach_outcome("no", 0), "saturated")
+
+    def test_an_unknown_cue_falls_back_to_the_flags(self) -> None:
+        self.assertEqual(brain.reach_outcome("unknown", 0), "done")
+        self.assertEqual(
+            brain.reach_outcome("unknown", brain.FLAG_TTL_EXPIRED), "timeout"
+        )
+
+    def test_a_yes_cue_beats_a_timeout(self) -> None:
+        # Both can be true at once: the command outlived its TTL and the hand is
+        # nevertheless in range. Arrival is the fact that matters.
+        self.assertEqual(brain.reach_outcome("yes", brain.FLAG_TTL_EXPIRED), "done")
+
+    def test_a_recognised_yes_is_only_yes(self) -> None:
+        # `yes`/`no` are the only two values that mean anything; anything else is
+        # a cue we did not measure, and guessing would be worse than the flag.
+        for cue in ("", "maybe", "YES", "1", "true"):
+            self.assertEqual(
+                brain.reach_outcome(cue, brain.FLAG_SATURATED), "saturated"
+            )
+
+
+class ReachOutcomeInThePrompt(ChatPatchMixin, unittest.TestCase):
+    def test_a_reach_in_grab_range_reads_done(self) -> None:
+        self.reply = '{"skill":"hold","side":"none","target":null}'
+        record = brain.run_turn(
+            brain.BrainConfig(), seed="", frame=fake_frame(),
+            heard="take my card", history=[],
+            last_action=("reach", "right", "card"),
+            state_flags=brain.FLAG_SATURATED, glow="yes",
+        )
+        self.assertIn("reach right target=card → done", record.live)
+
+    def test_a_reach_out_of_range_reads_saturated(self) -> None:
+        self.reply = '{"skill":"hold","side":"none","target":null}'
+        record = brain.run_turn(
+            brain.BrainConfig(), seed="", frame=fake_frame(),
+            heard="take my card", history=[],
+            last_action=("reach", "right", "card"),
+            state_flags=0, glow="no",
+        )
+        self.assertIn("reach right target=card → saturated", record.live)
+
+    def test_glow_does_not_change_a_look_outcome(self) -> None:
+        # The highlight is a hand-in-range signal. Letting it decide a look would
+        # make "the object is lit" mean "the head arrived", which is not measured.
+        self.reply = '{"skill":"hold","side":"none","target":null}'
+        record = brain.run_turn(
+            brain.BrainConfig(), seed="", frame=fake_frame(),
+            heard="look at the human", history=[],
+            last_action=("look", "none", None),
+            state_flags=brain.FLAG_SATURATED, glow="yes",
+        )
+        self.assertIn("look none target=null → saturated", record.live)

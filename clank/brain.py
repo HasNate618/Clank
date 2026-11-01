@@ -87,15 +87,35 @@ def outcome_from_flags(flags: int) -> str:
     **Warning, measured 2026-11-01** (`research/sonic-reach-envelope.md`): at the
     contract's default `tolerance_m` of 0.02 m this flag is set on *every* reach,
     because ordinary SONIC tracking error is 0.035–0.18 m. So the word is
-    currently uninformative — every turn reads "saturated". Do not build a retry
-    rule on it until the tolerance is set from a measurement. The plumbing here is
-    correct; the flag's threshold is not.
+    uninformative for a reach — every turn reads "saturated". Use
+    `reach_outcome()` instead when a glow cue is available.
     """
     if flags & FLAG_SATURATED:
         return "saturated"
     if flags & FLAG_TTL_EXPIRED:
         return "timeout"
     return "done"
+
+
+def reach_outcome(glow: str, flags: int) -> str:
+    """The outcome word for a **reach**, preferring the game's grab-range highlight.
+
+    Measured 2026-11-01: at the default 0.02 m tolerance `FLAG_SATURATED` fires on
+    every reach, including ones the body tracked well, because ordinary SONIC
+    tracking error is 0.035–0.18 m. Job Simulator paints the object blue when the
+    hand is in grab range, which answers "did the hand arrive" directly instead of
+    inferring it from tracking error that cannot carry the claim.
+
+    `glow` is the live-block cue: `"yes"`, `"no"`, or anything else for "we do not
+    know". Only the two measured values are honoured; an unrecognised string falls
+    back to the flags rather than being read as a `yes`, because a silently
+    mis-parsed cue would invent an arrival that never happened.
+    """
+    if glow == "yes":
+        return "done"
+    if glow == "no":
+        return "saturated"
+    return outcome_from_flags(flags)
 
 
 def last_line(
@@ -107,6 +127,7 @@ def last_line(
     a missing field reads as a schema it can leave out next time.
     """
     return f"{skill} {side} target={target or 'null'} → {outcome}"
+
 
 #: Skills that address one hand.
 PLANNER_SIDE_SKILLS = ("reach", "grab", "release")
@@ -900,7 +921,11 @@ def run_turn(
         # brain's. Composing them here is what makes a saturated reach visible
         # to the next PLAN turn - see `outcome_from_flags`.
         skill, side, target = last_action
-        last = last_line(skill, side, target, outcome_from_flags(state_flags))
+        # Only a reach asks the glow. It means "the hand is in grab range", which
+        # says nothing about whether a look arrived.
+        outcome = (reach_outcome(glow, state_flags) if skill == "reach"
+                   else outcome_from_flags(state_flags))
+        last = last_line(skill, side, target, outcome)
     live = live_block(heard, left, right, yaw_rad, glow, last, ghost=ghost)
     plan_result = plan(config, seed, frame, live, transcript=history, wav=wav,
                        default_side="right" if right == "empty" else "left")
@@ -987,6 +1012,7 @@ __all__ = [
     "live_block",
     "outcome_from_flags",
     "plan",
+    "reach_outcome",
     "run_turn",
     "verify",
 ]

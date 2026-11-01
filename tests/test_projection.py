@@ -256,3 +256,120 @@ class PixelError(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class Unproject(unittest.TestCase):
+    """The inverse: a pixel plus a depth becomes a root-relative wrist target.
+
+    `project_point` is only half a servo. The adapter can watch the wrist's pixel
+    drift toward a target pixel, but without this it has no way to say *where* to
+    put the hand - the `reach` verb takes offsets in metres from a human. So every
+    intent the brain can emit had no compile path.
+    """
+
+    def test_the_centre_pixel_is_a_point_on_the_gaze_axis(self) -> None:
+        point = projection.unproject((0.5, 0.5), IDENTITY, HALF_45, 2.0)
+        assert point is not None
+        for got, want in zip(point, (2.0, 0.0, 0.0)):
+            self.assertAlmostEqual(got, want)
+
+    def test_the_left_edge_is_the_robot_left(self) -> None:
+        # Pinned because it is easy to get backwards, and backwards drives the
+        # servo away from the target instead of toward it.
+        point = projection.unproject((0.0, 0.5), IDENTITY, HALF_45, 1.0)
+        assert point is not None
+        for got, want in zip(point, (1.0, 1.0, 0.0)):
+            self.assertAlmostEqual(got, want)
+
+    def test_the_top_edge_is_up(self) -> None:
+        point = projection.unproject((0.5, 0.0), IDENTITY, HALF_45, 1.0)
+        assert point is not None
+        for got, want in zip(point, (1.0, 0.0, 1.0)):
+            self.assertAlmostEqual(got, want)
+
+    def test_round_trip_through_project_point(self) -> None:
+        for pixel in ((0.5, 0.5), (0.0, 0.0), (1.0, 1.0), (0.2, 0.75)):
+            for head in (IDENTITY, yawed(30.0), yawed(-55.0)):
+                point = projection.unproject(pixel, head, HALF_45, 1.5)
+                assert point is not None
+                back = projection.project_point(head, point, HALF_45)
+                assert back is not None
+                self.assertAlmostEqual(back[0], pixel[0], places=6)
+                self.assertAlmostEqual(back[1], pixel[1], places=6)
+
+    def test_the_forward_depth_is_measured_along_the_gaze(self) -> None:
+        # Documented semantics: depth_m is the head-frame forward component, not
+        # the straight-line distance. A far-off-axis pixel therefore needs *less*
+        # depth to sit at the same range, and the projection must agree.
+        point = projection.unproject((0.0, 0.5), IDENTITY, HALF_45, 1.0)
+        assert point is not None
+        self.assertAlmostEqual(point[0], 1.0)          # forward component is depth
+        self.assertAlmostEqual(math.dist(point, (0.0, 0.0, 0.0)), math.sqrt(2.0))
+
+    def test_the_head_translation_is_added(self) -> None:
+        head = Pose((0.1, -0.2, 1.2), (0.0, 0.0, 0.0, 1.0))
+        point = projection.unproject((0.5, 0.5), head, HALF_45, 1.0)
+        assert point is not None
+        for got, want in zip(point, (1.1, -0.2, 1.2)):
+            self.assertAlmostEqual(got, want)
+
+    def test_a_depth_at_or_behind_the_camera_has_no_answer(self) -> None:
+        for depth in (0.0, -1.0):
+            self.assertIsNone(projection.unproject((0.5, 0.5), IDENTITY, HALF_45, depth))
+
+    def test_a_pixel_outside_the_frame_is_a_caller_bug(self) -> None:
+        # Not None: None would mean "no answer" and a caller would retry forever.
+        # A pixel outside [0, 1] cannot come from `clank.intent/1`.
+        for pixel in ((-0.1, 0.5), (1.1, 0.5), (0.5, -0.01), (0.5, 1.01)):
+            with self.assertRaises(ValueError):
+                projection.unproject(pixel, IDENTITY, HALF_45, 1.0)
+
+    def test_a_non_finite_pixel_or_depth_is_a_caller_bug(self) -> None:
+        for pixel in ((float("nan"), 0.5), (0.5, float("inf"))):
+            with self.assertRaises(ValueError):
+                projection.unproject(pixel, IDENTITY, HALF_45, 1.0)
+        with self.assertRaises(ValueError):
+            projection.unproject((0.5, 0.5), IDENTITY, HALF_45, float("nan"))
+
+
+class ServoStep(unittest.TestCase):
+    """One iteration of the pixel servo: where to put the wrist, and how wrong we are."""
+
+    def test_a_wrist_already_on_target_stops(self) -> None:
+        target, error = projection.servo_step(
+            (0.5, 0.5), (0.5, 0.5), IDENTITY, HALF_45, 1.0
+        )
+        self.assertIsNone(target)
+        self.assertAlmostEqual(error, 0.0)
+
+    def test_a_wrist_inside_the_deadband_stops(self) -> None:
+        target, error = projection.servo_step(
+            (0.5, 0.5), (0.503, 0.5), IDENTITY, HALF_45, 1.0, deadband=0.01
+        )
+        self.assertIsNone(target)
+        self.assertAlmostEqual(error, 0.003)
+
+    def test_an_off_target_wrist_gets_the_point_under_the_target_pixel(self) -> None:
+        target, error = projection.servo_step(
+            (0.2, 0.75), (0.5, 0.5), IDENTITY, HALF_45, 1.5
+        )
+        assert target is not None
+        self.assertGreater(error, 0.0)
+        back = projection.project_point(IDENTITY, target, HALF_45)
+        assert back is not None
+        self.assertAlmostEqual(back[0], 0.2, places=6)
+        self.assertAlmostEqual(back[1], 0.75, places=6)
+
+    def test_it_still_reports_the_error_when_it_cannot_answer(self) -> None:
+        # A zero depth is unanswerable, but swallowing the error would hide why.
+        target, error = projection.servo_step(
+            (0.2, 0.75), (0.5, 0.5), IDENTITY, HALF_45, 0.0
+        )
+        self.assertIsNone(target)
+        self.assertGreater(error, 0.0)
+
+    def test_a_negative_deadband_is_a_caller_bug(self) -> None:
+        with self.assertRaises(ValueError):
+            projection.servo_step(
+                (0.5, 0.5), (0.6, 0.5), IDENTITY, HALF_45, 1.0, deadband=-0.1
+            )

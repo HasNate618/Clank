@@ -198,3 +198,92 @@ def project_point(
 def pixel_error(target: tuple[float, float], actual: tuple[float, float]) -> float:
     """Euclidean distance in normalised pixels. The servo drives this to zero."""
     return math.hypot(target[0] - actual[0], target[1] - actual[1])
+
+
+def _rotate(q_xyzw: Sequence[float], v: Sequence[float]) -> tuple[float, float, float]:
+    """Rotate `v` by unit quaternion `q` (body -> world). The exact inverse of
+    `_rotate_inverse`, which is what makes `unproject` round-trip."""
+    x, y, z, w = q_xyzw
+    vx, vy, vz = v
+    tx = 2.0 * (y * vz - z * vy)
+    ty = 2.0 * (z * vx - x * vz)
+    tz = 2.0 * (x * vy - y * vx)
+    return (
+        vx + w * tx + (y * tz - z * ty),
+        vy + w * ty + (z * tx - x * tz),
+        vz + w * tz + (x * ty - y * tx),
+    )
+
+
+def unproject(
+    pixel: tuple[float, float],
+    head: Pose,
+    fov: Fov,
+    depth_m: float,
+) -> tuple[float, float, float] | None:
+    """The root-relative point that `pixel` looks at, `depth_m` in front.
+
+    `project_point` answers "which pixel is that point in". This answers the
+    question a servo actually needs: **where do I put the hand so that it lands on
+    that pixel**. Without it a pixel is unusable - the `reach` verb takes offsets in
+    metres, and nothing in `clank/` turned an intent's pixel into one.
+
+    `depth_m` is the **forward component along the head's gaze**, not the
+    straight-line distance. That choice makes the transform exact and cheap (it is
+    the inverse of the projection, not an approximation of it) at the cost of a
+    caller having to say how far forward it means. There is no depth sensor here:
+    the caller supplies a working distance, and the loop closes on the game's own
+    grab-range highlight rather than on a reconstructed 3D point.
+
+    Returns `None` when the geometry has no answer - at or behind the image plane.
+    Raises `ValueError` for a pixel outside `[0, 1]` or a non-finite argument: that
+    is a caller bug, and returning `None` would make a servo retry it forever.
+    """
+    u, v = pixel
+    if not (math.isfinite(u) and math.isfinite(v)):
+        raise ValueError(f"pixel must be finite, got {pixel!r}")
+    if not (0.0 <= u <= 1.0 and 0.0 <= v <= 1.0):
+        raise ValueError(f"pixel must be inside [0, 1], got {pixel!r}")
+    if not math.isfinite(depth_m):
+        raise ValueError(f"depth_m must be finite, got {depth_m!r}")
+    if depth_m <= _MIN_FORWARD:
+        return None
+
+    # Undo the two divisions in `project_point`, in the opposite order.
+    yaw = fov.angle_left - u * fov.horizontal
+    pitch = fov.angle_up - v * fov.vertical
+    fx = depth_m
+    fy = fx * math.tan(yaw)      # + toward the robot's left
+    fz = fx * math.tan(pitch)    # + up
+
+    rx, ry, rz = _rotate(head.q_xyzw, (fx, fy, fz))
+    return (rx + head.p[0], ry + head.p[1], rz + head.p[2])
+
+
+def servo_step(
+    target_pixel: tuple[float, float],
+    wrist_pixel: tuple[float, float],
+    head: Pose,
+    fov: Fov,
+    depth_m: float,
+    deadband: float = 0.0,
+) -> tuple[tuple[float, float, float] | None, float]:
+    """One iteration: the wrist target that puts the hand on `target_pixel`.
+
+    Returns `(point, error)`. `point` is `None` when the servo should stop - either
+    the wrist is already within `deadband` of the target pixel, or the geometry has
+    no answer. `error` is always reported, including on the `None` paths, so a
+    caller can tell "arrived" from "cannot answer" instead of seeing a silent stop.
+
+    This is deliberately stateless and unlatched: it does not know about joint
+    limits, reach, or the game's grab range, so it will happily name a point the arm
+    cannot occupy. The adapter clamps against `clank.validate` and terminates on the
+    blue highlight; a limit check here would make the pure function a second,
+    differently-wrong copy of those rules.
+    """
+    if not math.isfinite(deadband) or deadband < 0.0:
+        raise ValueError(f"deadband must be finite and >= 0, got {deadband!r}")
+    error = pixel_error(target_pixel, wrist_pixel)
+    if error <= deadband:
+        return None, error
+    return unproject(target_pixel, head, fov, depth_m), error

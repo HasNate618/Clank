@@ -182,6 +182,32 @@ A pixel error of zero means **on the ray**, not in grab range. Depth is §8.
 
 If `FLAG_SATURATED` is set and error is still large, stop. Do not grow the target past the envelope. The 0.156 m / 0.121 m residual is in the budget; if the servo saturates short of the pixel, that is the deliverable, not a retry loop.
 
+### 7.4 What exists, as of 2026-11-01
+
+`clank/projection.py` has `project_point()` (3D → pixel) and now `unproject()` and
+`servo_step()`, with 47 tests in `tests/test_projection.py`. Until `unproject`
+landed there was no pixel → wrist transform anywhere in `clank/`, so no intent the
+brain could emit had a compile path: `reach` takes metres from a human.
+
+Three things in §7 above do **not** match the implementation and should be
+reconciled before anyone writes the loop twice:
+
+- **Frame.** §7.2 derives the projection in the XR frame (−Z forward). The
+  implementation works in MuJoCo's root frame (+X forward, +Z up, +Y the robot's
+  left), because `BodyState` is root-relative and the root cancels. The two are
+  equivalent under an axis map; the spec's formula is the one that has to move.
+- **Depth.** §7.3 defers depth to §8, and there is no depth sensor. `unproject`
+  therefore takes `depth_m` as a caller-supplied **forward component along the
+  gaze**, and the loop closes on the blue highlight rather than on a
+  reconstructed 3D point. A servo target is "that pixel, that far in front" — not
+  a fix on an object.
+- **Envelope.** §7.3 clamps to "the measured ~0.20 m envelope". Measured
+  2026-11-01 the wrist translates to ≈0.70 m forward and tracks 0.45–0.59 m with
+  0.10–0.18 m residual (`research/sonic-reach-envelope.md`), so the 0.20 m clamp
+  is too tight. That same run found `FLAG_SATURATED` set on **every** reach at the
+  0.02 m default, so "stop when FLAG_SATURATED and error is large" needs a
+  tolerance that reflects the controller, or the glow cue instead.
+
 ## 8. In-range signals
 
 Superhot gives three different "you may act now" signals, and conflating them
