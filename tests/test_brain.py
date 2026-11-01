@@ -1,4 +1,6 @@
+import base64
 import unittest
+from unittest import mock
 
 from clank import brain
 from clank.brain import Ground, Plan
@@ -33,12 +35,35 @@ class ChatPatchMixin:
     def tearDown(self) -> None:
         brain._chat = self._orig_chat
 
-    def user_text(self) -> str:
-        """The text sent with the still on the last call."""
-        content = self.chat_calls[-1]["messages"][-1]["content"]
+    def user_text(self, call: int = -1) -> str:
+        """The text sent with the still on call `call` (default: the last)."""
+        content = self.chat_calls[call]["messages"][-1]["content"]
         if isinstance(content, str):
             return content
         return "\n".join(part["text"] for part in content if part["type"] == "text")
+
+    def image_sent(self, call: int = -1) -> str:
+        """The data URL of the still sent on call `call`."""
+        content = self.chat_calls[call]["messages"][-1]["content"]
+        image = next(part for part in content if part["type"] == "image_url")
+        return image["image_url"]["url"]
+
+
+class ScriptedChat(ChatPatchMixin):
+    """`ChatPatchMixin` with one reply per call, so PLAN/GROUND/VERIFY differ."""
+
+    script: list[str] = []
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.script = list(type(self).script)
+        self.calls = 0
+
+    def _fake_chat(self, config, messages, max_tokens=None):
+        self.chat_calls.append({"messages": messages, "max_tokens": max_tokens})
+        text = self.script[min(self.calls, len(self.script) - 1)] if self.script else ""
+        self.calls += 1
+        return brain.ModelReply(text=text)
 
 
 class ExtractJson(unittest.TestCase):
@@ -194,6 +219,21 @@ class CueGates(unittest.TestCase):
         self.assertFalse(d.accepted)
         self.assertIn("ghost is no", d.reason)
 
+    def test_release_into_slot_with_unknown_ghost_is_accepted(self) -> None:
+        # Pin from the Task 3 review: `unknown` never refuses. Without this, an
+        # edit to `if ghost != "yes"` passes the rest of this class and freezes
+        # the replay harness, which carries no game cues at all.
+        d = brain.assemble(
+            Plan(skill="release", side="right", target="slot"),
+            None,
+            seq=0,
+            t_mono_ns=0,
+            right="holding",
+            ghost="unknown",
+        )
+        self.assertTrue(d.accepted)
+        self.assertEqual(d.intent.skill, "release")
+
     def test_release_of_a_card_does_not_need_ghost(self) -> None:
         d = brain.assemble(
             Plan(skill="release", side="right", target="card"),
@@ -220,6 +260,107 @@ class CueGatesInTurn(ChatPatchMixin, unittest.TestCase):
         )
         self.assertEqual(record.decision.intent.skill, "hold")
         self.assertIn("glow is no", record.decision.reason)
+
+
+class RunTurnCrop(ScriptedChat, unittest.TestCase):
+    """`run_turn` crops the container box, grounds the crop, then verifies it."""
+
+    #: The hand-drawn tray box from the 2026-11-01 measurement.
+    box = (0.270, 0.325, 0.548, 0.566)
+    reach = '{"skill":"reach","side":"right","target":"STORE CLERK"}'
+    grab = '{"skill":"grab","side":"right","target":"STORE CLERK"}'
+
+    def crop(self, jpeg: bytes, box: tuple[float, float, float, float],
+             width: int = 1024) -> bytes:
+        """Stand-in for `frames.crop_jpeg`: ffmpeg is not required in a unit test."""
+        return jpeg + b"cropped"
+
+    def run_turn(self, script: list[str], **kwargs):
+        self.script = script
+        with mock.patch.object(brain, "crop_jpeg", side_effect=self.crop) as crop:
+            self.crop_mock = crop
+            return brain.run_turn(
+                brain.BrainConfig(),
+                seed="",
+                frame=fake_frame(),
+                heard="grab the store clerk",
+                history=[],
+                **kwargs,
+            )
+
+    def cropped_url(self) -> str:
+        jpeg = fake_frame().jpeg + b"cropped"
+        return "data:image/jpeg;base64," + base64.b64encode(jpeg).decode("ascii")
+
+    def test_ground_is_asked_about_the_crop_and_composes_into_the_box(self) -> None:
+        record = self.run_turn([self.reach, "TOP-RIGHT"], box=self.box)
+        self.crop_mock.assert_called_once_with(fake_frame().jpeg, self.box)
+        self.assertEqual(self.image_sent(1), self.cropped_url())
+        self.assertEqual(record.ground.box, self.box)
+        self.assertAlmostEqual(record.ground.pixel[0], 0.270 + 0.278 * 0.75)
+        self.assertAlmostEqual(record.ground.pixel[1], 0.325 + 0.241 * 0.25)
+        self.assertEqual(record.self_state["box"], list(self.box))
+        self.assertEqual(record.self_state["crop_error"], "")
+
+    def test_without_a_box_the_whole_frame_goes_out(self) -> None:
+        record = self.run_turn([self.reach, "TOP-RIGHT"])
+        self.crop_mock.assert_not_called()
+        self.assertEqual(self.image_sent(1), fake_frame().data_url())
+        self.assertEqual(record.ground.box, (0.0, 0.0, 1.0, 1.0))
+        self.assertIsNone(record.self_state["box"])
+
+    def test_a_failed_crop_grounds_the_whole_frame_instead_of_raising(self) -> None:
+        self.script = [self.reach, "TOP-LEFT"]
+        with mock.patch.object(brain, "crop_jpeg",
+                               side_effect=RuntimeError("ffmpeg: not found")):
+            record = brain.run_turn(
+                brain.BrainConfig(), seed="", frame=fake_frame(),
+                heard="grab the store clerk", history=[], box=self.box,
+            )
+        self.assertEqual(self.image_sent(1), fake_frame().data_url())
+        self.assertEqual(record.ground.box, (0.0, 0.0, 1.0, 1.0))
+        self.assertEqual(record.ground.pixel, (0.25, 0.25))
+        self.assertEqual(record.decision.intent.skill, "reach")
+        self.assertIn("not found", record.self_state["crop_error"])
+
+    def test_the_container_reaches_the_ground_question(self) -> None:
+        self.run_turn([self.reach, "TOP-LEFT"], container="register")
+        self.assertIn("Which position in this register", self.user_text(1))
+
+    def test_self_state_reports_the_cues_it_was_given(self) -> None:
+        # Pin: glow is reported, never recomputed inside the turn.
+        record = self.run_turn(['{"skill":"hold","side":"none"}'],
+                               glow="yes", ghost="yes")
+        self.assertEqual(record.self_state["glow"], "yes")
+        self.assertEqual(record.self_state["ghost"], "yes")
+        self.assertIn("glow=yes", record.live)
+        self.assertIn("ghost=yes", record.live)
+
+    def test_verify_mismatch_blocks_the_grab(self) -> None:
+        record = self.run_turn([self.grab, "TOP-RIGHT", "GOURMET CHEF"],
+                               glow="yes", box=self.box)
+        self.assertEqual(len(self.chat_calls), 3)
+        self.assertEqual(record.ground.error, "verify mismatch")
+        self.assertIsNone(record.ground.pixel)
+        self.assertEqual(record.decision.intent.skill, "hold")
+        self.assertIn("not visible", record.decision.reason)
+
+    def test_a_matching_verify_lets_the_grab_through(self) -> None:
+        record = self.run_turn([self.grab, "TOP-RIGHT", "the store clerk cartridge"],
+                               glow="yes", box=self.box)
+        self.assertEqual(record.decision.intent.skill, "grab")
+        self.assertIsNotNone(record.decision.intent.pixel)
+
+    def test_verify_sees_the_same_crop_as_ground(self) -> None:
+        self.run_turn([self.grab, "TOP-RIGHT", "GOURMET CHEF"],
+                      glow="yes", box=self.box)
+        self.assertEqual(self.image_sent(1), self.cropped_url())
+        self.assertEqual(self.image_sent(2), self.cropped_url())
+
+    def test_no_verify_without_glow_yes(self) -> None:
+        record = self.run_turn([self.grab, "TOP-RIGHT"], glow="unknown", box=self.box)
+        self.assertEqual(len(self.chat_calls), 2)
+        self.assertEqual(record.decision.intent.skill, "grab")
 
 
 class ComposePixel(unittest.TestCase):

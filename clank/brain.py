@@ -38,7 +38,7 @@ import urllib.request
 from dataclasses import dataclass, field
 from typing import Any
 
-from .frames import Frame
+from .frames import Frame, crop_jpeg
 from .intent import (
     LOOK_ARC_RAD,
     SKILLS,
@@ -452,10 +452,13 @@ def ground(
     about a crop of the tray scored 44/44 on the same box, and the identical
     prompt on the full frame 9/12 - the crop is the whole difference.
 
-    `box` is that crop, normalised `(u0, v0, u1, v1)`. It is arithmetic here, not
-    image processing: the still goes out whole and the answered quadrant is
-    composed back into full-frame coordinates. Finding the box automatically is
-    unbuilt; it is the caller's to supply.
+    `box` is that crop, normalised `(u0, v0, u1, v1)`. **`frame` must be the crop
+    of `box`** - make it with `frames.crop_jpeg`; `box` only composes the answer
+    back into full-frame coordinates. Handing a `box` to the whole still is wrong
+    by construction and nothing here can catch it: the pixel lands inside the box
+    but was derived from the entire image, which is the 9/12 measurement, not the
+    44/44 one. Finding the box automatically is unbuilt; it is the caller's to
+    supply.
 
     `transcript` is accepted so the call sites do not fork, but it is deliberately
     **not** in the prompt: the 44/44 measurement is the bare question, and speech
@@ -786,23 +789,74 @@ def run_turn(
     yaw_rad: float = 0.0,
     glow: str = "unknown",
     ghost: str = "unknown",
+    box: tuple[float, float, float, float] | None = None,
+    container: str = "tray",
     last: str = "(none)",
     wav: bytes | None = None,
     turn: int = 0,
     look_step: int = 1,
     elapsed_ms: float = 0.0,
 ) -> TurnRecord:
-    """One complete turn: PLAN, then GROUND only if the plan needs a location."""
+    """One turn: PLAN on the whole still, then crop, GROUND, VERIFY, ASSEMBLE.
+
+    PLAN sees the full frame - choosing a skill is a scene question and nothing
+    measured says a crop helps it. GROUND is asked about the crop of `box`: the
+    same name->quadrant question scored 44/44 on a tray crop and 9/12 on the full
+    frame (§10), so `box` is the difference between the live 9/12 and the measured
+    crop number. With `box=None` the whole frame goes out and the answer composes
+    over `(0, 0, 1, 1)` - the 9/12 path, unchanged.
+
+    A crop that cannot be cut is **not** a failed turn. `crop_jpeg` raising (no
+    ffmpeg, a malformed box) falls back to grounding the whole frame and records
+    the reason in `self_state["crop_error"]`, because losing the crop costs
+    accuracy while raising would cost the turn.
+
+    **Known simplification (spec §11):** VERIFY is specified as a crop around the
+    projected wrist, and what goes out here is the *container* crop. Projecting the
+    wrist needs adapter state - forward kinematics and the frozen head pose - which
+    `clank/` does not have. So the grab gate asks about the container: at
+    `glow=yes` in grab range the container is what fills that crop (§10 step 4),
+    and the check is still a name check against `target`, never a position. When
+    the adapter exposes the wrist, this is the call that changes.
+
+    VERIFY runs only when the plan is a grab, `glow` says the hand is in range, and
+    a `target` exists to match (§11). A mismatch is handed to `assemble` as a
+    `Ground` with no pixel, so the existing not-visible path refuses the grab: a
+    wrong name must block the hand, never be averaged into a position. The reply
+    the gate saw is kept in that `Ground`'s `raw`, so the refusal is auditable.
+    """
     started = time.monotonic()
     live = live_block(heard, left, right, yaw_rad, glow, last, ghost=ghost)
     plan_result = plan(config, seed, frame, live, transcript=history, wav=wav,
                        default_side="right" if right == "empty" else "left")
 
+    crop_error = ""
+    ground_frame = frame
+    ground_box: tuple[float, float, float, float] = (0.0, 0.0, 1.0, 1.0)
     ground_result: Ground | None = None
-    if plan_result.ok and plan_result.target and plan_result.skill in (
-        "reach", "look", "grab"
-    ):
-        ground_result = ground(config, frame, plan_result.target, transcript=history)
+    target = plan_result.target
+    if plan_result.ok and target and plan_result.skill in ("reach", "look", "grab"):
+        if box is not None:
+            try:
+                ground_frame = Frame(
+                    index=frame.index,
+                    t_s=frame.t_s,
+                    jpeg=crop_jpeg(frame.jpeg, box),
+                    source=f"{frame.source}:crop",
+                )
+                ground_box = box
+            except RuntimeError as exc:
+                crop_error = str(exc)
+        ground_result = ground(config, ground_frame, target, box=ground_box,
+                               container=container, transcript=history)
+
+    if plan_result.ok and target and plan_result.skill == "grab" and glow == "yes":
+        check = verify(config, ground_frame, target)
+        if not check.match:
+            # No pixel on purpose: the refusal has to travel the path the brain
+            # already has for "I cannot see it", not a new one invented here.
+            ground_result = Ground(noun=target, box=ground_box, raw=check.heard,
+                                   error="verify mismatch")
 
     decision = assemble(
         plan_result, ground_result, seq=seq,
@@ -825,6 +879,8 @@ def run_turn(
             "yaw_rad": yaw_rad,
             "glow": glow,
             "ghost": ghost,
+            "box": list(box) if box is not None else None,
+            "crop_error": crop_error,
         },
         elapsed_ms=(time.monotonic() - started) * 1000.0 + elapsed_ms,
     )

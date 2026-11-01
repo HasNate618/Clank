@@ -17,6 +17,10 @@ thought.
 `ReplaySource` is a development fixture. It shells out to `ffmpeg` to decompose a
 clip, which is a binary, not a Python dependency: `clank` still imports nothing
 outside the standard library, and the live path below needs no ffmpeg at all.
+
+`crop_jpeg` is the same trade for the container crop: GROUND is asked about a
+crop, so somebody has to cut one, and ffmpeg does it on stdin/stdout without the
+brain learning an image library.
 """
 
 from __future__ import annotations
@@ -29,6 +33,11 @@ from dataclasses import dataclass
 #: Wide enough that a 3x3 cell still contains enough pixels for the model, small
 #: enough that a turn's request stays a few hundred kilobytes of base64.
 DEFAULT_WIDTH = 960
+
+
+def _frac(value: float) -> str:
+    """A normalised crop fraction as ffmpeg reads it, without trailing zero noise."""
+    return f"{round(value, 3):g}"
 
 
 @dataclass(frozen=True)
@@ -119,6 +128,54 @@ class ReplaySource(FrameSource):
             jpeg=path.read_bytes(),
             source=f"replay:{self.video.name}",
         )
+
+
+def crop_jpeg(
+    jpeg: bytes,
+    box: tuple[float, float, float, float],
+    width: int = 1024,
+) -> bytes:
+    """Cut `box` out of a JPEG and resize it to `width`, through ffmpeg.
+
+    Spec §10. GROUND is asked about a crop of the container, not the whole frame:
+    measured 2026-11-01, the identical name->quadrant question scored 44/44 on a
+    tray crop and 9/12 on the full frame, and accuracy tracks how much of the
+    frame the container fills. `box` is normalised `(u0, v0, u1, v1)` - the same
+    tuple `brain.ground()` is handed, so the answer is composed back into
+    full-frame coordinates rather than crop coordinates.
+
+    The still goes in on stdin and the crop comes back on stdout, so no temporary
+    file is written and nothing in `clank` learns ffmpeg's output format. ffmpeg is
+    a binary, not a Python dependency: this module still imports nothing outside
+    the standard library.
+
+    Failure is a `RuntimeError` carrying ffmpeg's own message, never a bare
+    `subprocess` error: `run_turn` catches it and grounds the whole frame instead,
+    so a broken crop has to arrive as one catchable error rather than two.
+    """
+    u0, v0, u1, v1 = box
+    vf = (
+        f"crop=iw*{_frac(u1 - u0)}:ih*{_frac(v1 - v0)}"
+        f":iw*{_frac(u0)}:ih*{_frac(v0)},scale={width}:-1"
+    )
+    try:
+        result = subprocess.run(
+            [
+                "ffmpeg", "-y", "-loglevel", "error",
+                "-i", "pipe:0",
+                "-vf", vf,
+                "-f", "mjpeg", "pipe:1",
+            ],
+            input=jpeg,
+            capture_output=True,
+            check=True,
+        )
+    except subprocess.CalledProcessError as exc:
+        detail = exc.stderr.decode("utf-8", "replace").strip()
+        raise RuntimeError(f"ffmpeg could not crop {box}: {detail}") from exc
+    except OSError as exc:
+        raise RuntimeError(f"ffmpeg could not run for crop {box}: {exc}") from exc
+    return result.stdout
 
 
 class VncSource(FrameSource):
