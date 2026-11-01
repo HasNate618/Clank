@@ -168,7 +168,7 @@ The pass bars. `research/wbc-*.md` proposals are still judged against these.
 **Job Simulator: nothing is measured yet.** The target changed on 2026-10-31. Everything below is `[OPERATOR]` description plus one wiki citation, not measurement:
 
 - JobBot speaks instructions in the museum hub and inside each job `[CITED: https://jobsimulator.fandom.com/wiki/JobBot]`.
-- Level select is a museum hub: take a business card, take a cartridge from a tray, insert it into the machine, pull the lever.
+- Level select is a museum hub: take a business card, take a cartridge from a tray, insert it into the machine, pull the lever. In-range cues `[OPERATOR 2026-11-01]`: grabbables light **blue** when the hand is close; the cartridge slot is **painted blue**; a **yellow ghost cartridge** at the slot means release will insert. Superhot's green slot oracle does not apply. Playbook: `docs/superpowers/specs/2026-10-31-brain.md` §6.2.
 - Store Clerk opens with spoken chores: take a ticket, clear the counter, turn on the security camera.
 - There is **no time dilation and no combat**, so a think costs wall-clock.
 - **No state API exists.** That negative search result now matters more, not less (`RESEARCH.md` §12.5): occupancy can only come from the latched grip and pixels, never from telemetry.

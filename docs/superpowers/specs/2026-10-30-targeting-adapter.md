@@ -195,6 +195,25 @@ the pickup itself is the read-back. The second is the easiest problem in the who
 game - a hue gate, not perception. The third is what §8.4's tail statistic is for,
 and it is **not** used by the hub.
 
+### 8.6 Job Simulator (the current writer's game)
+
+The table above is Superhot. Job Simulator's cues are different
+`[OPERATOR 2026-11-01]` and are specified in
+`docs/superpowers/specs/2026-10-31-brain.md` §6.2:
+
+| Signal | Looks like | Confirmation |
+| --- | --- | --- |
+| **Blue proximity** | a grabbable/interactable near the hand lights blue | `grab` is now in range |
+| **Blue slot** | the cartridge slot itself is painted blue | destination for a held cartridge (GROUND / hue-gate centroid) |
+| **Yellow ghost** | a yellow ghost of the cartridge appears at the slot | the game will accept `release` (insert) |
+
+`clank/glow.py`'s green hue gate (`is_green` / `green_centroid`) is not this
+game. Do not implement a Job Simulator hub path against §8.1–§8.2. Conflating
+the slot's persistent blue with the proximity blue produces a grab at the slot
+from across the room; waiting for blue instead of yellow produces a never-release.
+Live fields are `glow` (wrist proximity) and `ghost` (insert cue), both reported,
+neither an auto-grab nor an auto-release.
+
 ### 8.1 Hub pickup: press, then look at the hand
 
 `reach` toward the disk until projection error is inside tolerance, then `grab`.
