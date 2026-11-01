@@ -501,14 +501,21 @@ def ground(
 class Verify:
     """Does the crop the game just highlighted actually show `noun`?
 
-    `match` is a word-subset test, not string equality: the crop question comes
-    back as a sentence ("the store clerk cartridge") and the planner's noun is a
-    label ("STORE CLERK"). Extra words are allowed; a missing one is a mismatch.
+    `match` is a word-subset test with a refusal guard, not string equality: the
+    crop question comes back as a sentence ("the store clerk cartridge") and the
+    planner's noun is a label ("STORE CLERK"). Extra words are allowed; a missing
+    noun word is a mismatch, and so is any negation word, so "not visible" and
+    "no card here" cannot pass as agreement.
 
     This is the grab gate, not a hint (spec §11): a wrong name must block the
-    grab rather than be averaged away. It is never an exception - `NONE`, an
-    empty reply, chatter and a transport error all arrive as `match=False`, with
-    the transport message kept in `error`.
+    grab rather than be averaged away, and a false match closes the hand on the
+    wrong object while a false mismatch only costs a turn - so the gate fails
+    closed. It is never an exception: `NONE`, an empty reply, chatter and a
+    transport error all arrive as `match=False`, with the transport message kept
+    in `error`.
+
+    `heard` is the stripped reply the gate compared and `raw` is that same
+    stripped reply, the form `Ground` keeps.
     """
 
     noun: str
@@ -516,6 +523,8 @@ class Verify:
     match: bool = False
     raw: str = ""
     error: str = ""
+    prompt_ms: float = 0.0
+    decode_ms: float = 0.0
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -524,20 +533,34 @@ class Verify:
             "match": self.match,
             "raw": self.raw,
             "error": self.error,
+            "prompt_ms": round(self.prompt_ms, 1),
+            "decode_ms": round(self.decode_ms, 1),
         }
 
 
+#: Words that turn a reply into a refusal. `_names_the_noun` fails closed on any
+#: of them, the same way `_match_quadrant` treats `_ABSENT_WORDS`.
+_NEGATION_WORDS = frozenset({"not", "no", "none", "absent", "never"})
+
+
 def _names_the_noun(noun: str, heard: str) -> bool:
-    """True when every alphabetic word of `noun` appears somewhere in `heard`.
+    """True when `heard` carries every alphabetic word of `noun`, and no refusal.
 
     Case and punctuation are stripped on both sides, so `"store clerk"` matches
-    `"It's the Store-Clerk cartridge."`. A noun with no alphabetic word cannot be
-    confirmed against anything, so it never matches.
+    `"It's the Store-Clerk cartridge."`. Words are compared whole: `"card"` is
+    not found in `"discard"`, and `"art"` is not found in `"cartridge"`.
+
+    Any negation word makes the reply a refusal rather than a name, so a reply
+    that holds every noun word still mismatches: `"the store clerk is not
+    visible"`, `"no card here"`. The gate decides a grab, so it fails closed. A
+    noun with no alphabetic word cannot be confirmed against anything, so it
+    never matches.
     """
     wanted = set(re.findall(r"[a-z]+", noun.lower()))
     if not wanted:
         return False
-    return wanted <= set(re.findall(r"[a-z]+", heard.lower()))
+    words = set(re.findall(r"[a-z]+", heard.lower()))
+    return wanted <= words and not (words & _NEGATION_WORDS)
 
 
 def verify(config: BrainConfig, frame: Frame, noun: str) -> Verify:
@@ -558,14 +581,17 @@ def verify(config: BrainConfig, frame: Frame, noun: str) -> Verify:
         _image_part(frame), {"type": "text", "text": prompt},
     ]}], max_tokens=40)
     if reply.error:
-        return Verify(noun=noun, raw=reply.text, error=reply.error)
+        return Verify(noun=noun, raw=reply.text.strip(), error=reply.error,
+                      prompt_ms=reply.prompt_ms, decode_ms=reply.decode_ms)
 
     heard = reply.text.strip()
     return Verify(
         noun=noun,
         heard=heard,
         match=_names_the_noun(noun, heard),
-        raw=reply.text,
+        raw=heard,
+        prompt_ms=reply.prompt_ms,
+        decode_ms=reply.decode_ms,
     )
 
 

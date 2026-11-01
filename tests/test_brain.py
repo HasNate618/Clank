@@ -12,6 +12,8 @@ def fake_frame(index: int = 0) -> Frame:
 class ChatPatchMixin:
     reply: str = ""
     reply_error: str = ""
+    reply_prompt_ms: float = 0.0
+    reply_decode_ms: float = 0.0
     _orig_chat = None
 
     def setUp(self) -> None:
@@ -21,7 +23,12 @@ class ChatPatchMixin:
 
     def _fake_chat(self, config, messages, max_tokens=None):
         self.chat_calls.append({"messages": messages, "max_tokens": max_tokens})
-        return brain.ModelReply(text=self.reply, error=self.reply_error)
+        return brain.ModelReply(
+            text=self.reply,
+            prompt_ms=self.reply_prompt_ms,
+            decode_ms=self.reply_decode_ms,
+            error=self.reply_error,
+        )
 
     def tearDown(self) -> None:
         brain._chat = self._orig_chat
@@ -341,6 +348,16 @@ class VerifyCrop(ChatPatchMixin, unittest.TestCase):
         v = brain.verify(brain.BrainConfig(), fake_frame(), "store clerk")
         self.assertTrue(v.match)
 
+    def test_a_negated_reply_does_not_match(self) -> None:
+        self.reply = "the store clerk is not visible"
+        v = brain.verify(brain.BrainConfig(), fake_frame(), "STORE CLERK")
+        self.assertFalse(v.match)
+
+    def test_no_in_the_reply_does_not_match(self) -> None:
+        self.reply = "no card here"
+        v = brain.verify(brain.BrainConfig(), fake_frame(), "card")
+        self.assertFalse(v.match)
+
     def test_none_does_not_match(self) -> None:
         self.reply = "NONE"
         v = brain.verify(brain.BrainConfig(), fake_frame(), "card")
@@ -351,6 +368,7 @@ class VerifyCrop(ChatPatchMixin, unittest.TestCase):
         v = brain.verify(brain.BrainConfig(), fake_frame(), "card")
         self.assertFalse(v.match)
         self.assertEqual(v.heard, "")
+        self.assertEqual(v.raw, "")
 
     def test_a_noun_with_no_words_cannot_match(self) -> None:
         self.reply = "a card"
@@ -362,6 +380,20 @@ class VerifyCrop(ChatPatchMixin, unittest.TestCase):
         v = brain.verify(brain.BrainConfig(), fake_frame(), "card")
         self.assertFalse(v.match)
         self.assertEqual(v.error, "transport: timed out")
+
+    def test_timings_are_reported_from_the_reply(self) -> None:
+        self.reply = "card"
+        self.reply_prompt_ms = 12.0
+        self.reply_decode_ms = 34.56
+        d = brain.verify(brain.BrainConfig(), fake_frame(), "card").to_dict()
+        self.assertEqual(d["prompt_ms"], 12.0)
+        self.assertEqual(d["decode_ms"], 34.6)
+
+    def test_a_transport_error_keeps_the_timings(self) -> None:
+        self.reply_error = "transport: timed out"
+        self.reply_decode_ms = 5.0
+        v = brain.verify(brain.BrainConfig(), fake_frame(), "card")
+        self.assertEqual(v.to_dict()["decode_ms"], 5.0)
 
     def test_one_call_asking_the_bare_question_about_the_crop(self) -> None:
         self.reply = "card"
@@ -386,8 +418,18 @@ class VerifyCrop(ChatPatchMixin, unittest.TestCase):
                 "match": True,
                 "raw": "the store clerk cartridge",
                 "error": "",
+                "prompt_ms": 0.0,
+                "decode_ms": 0.0,
             },
         )
+
+
+class NamesTheNoun(unittest.TestCase):
+    def test_card_is_not_found_inside_discard(self) -> None:
+        self.assertFalse(brain._names_the_noun("card", "discard"))
+
+    def test_art_is_not_found_inside_cartridge(self) -> None:
+        self.assertFalse(brain._names_the_noun("art", "cartridge"))
 
 
 if __name__ == "__main__":
