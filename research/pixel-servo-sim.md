@@ -71,6 +71,27 @@ Two facts, both important:
 So "the pixel servo converged to 0.074" would be a true number about a fact that
 does not matter: the hand was 0.20 m from where it was told to go.
 
+## 3.5 It is not a sign error, and the signal can vanish
+
+Checked before blaming the servo, because "moves a lot and never settles" is also
+what a flipped axis looks like. `unproject` round-trips **exactly** against the
+live head pose, not just the fixture:
+
+| target pixel | depth | pixel → point → pixel | error |
+| --- | ---: | --- | ---: |
+| (0.5, 0.5) | 0.3 | (0.298, 0.037, 0.400) → (0.5, 0.5) | 0.0 |
+| (0.2, 0.8) | 0.7 | (0.699, 0.350, 0.005) → (0.2, 0.8) | 0.0 |
+| (0.8, 0.2) | 0.7 | (0.698, −0.283, 0.791) → (0.8, 0.2) | 0.0 |
+
+So the commanded pose provably projects onto the target pixel. The convergence
+failure is reachability, full stop.
+
+It also exposed a failure mode the loop silently swallows: the wrist's forward
+component is only 0.087 m, so it is often **at or behind the head's image plane**,
+where `project_point` returns `None`. Nudging the wrist laterally, 2 of 3
+positions gave `None` — the servo had no error signal at all, and the probe's
+loop simply breaks. A pixel servo needs its wrist in front of its own camera.
+
 ## 4. What this means
 
 - The pixel servo is **not validated for the task**. It has never terminated on
