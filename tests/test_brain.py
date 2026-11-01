@@ -5,6 +5,7 @@ from unittest import mock
 from clank import brain
 from clank.brain import Ground, Plan
 from clank.frames import Frame
+from clank.intent import SKILLS
 
 
 def fake_frame(index: int = 0) -> Frame:
@@ -106,6 +107,13 @@ class PlanParser(ChatPatchMixin, unittest.TestCase):
             live="heard: hi",
         )
         self.assertFalse(result.ok)
+
+
+class PlannerSkills(unittest.TestCase):
+    def test_the_planner_skills_are_a_subset_of_the_intent_schema(self) -> None:
+        self.assertEqual(set(brain.PLANNER_SKILLS),
+                         {"hold", "look", "reach", "grab", "release"})
+        self.assertLessEqual(set(brain.PLANNER_SKILLS), set(SKILLS))
 
 
 class PromptText(unittest.TestCase):
@@ -220,9 +228,9 @@ class CueGates(unittest.TestCase):
         self.assertIn("ghost is no", d.reason)
 
     def test_release_into_slot_with_unknown_ghost_is_accepted(self) -> None:
-        # Pin from the Task 3 review: `unknown` never refuses. Without this, an
-        # edit to `if ghost != "yes"` passes the rest of this class and freezes
-        # the replay harness, which carries no game cues at all.
+        # Pins that `unknown` never refuses. Without this, an edit to
+        # `if ghost != "yes"` passes the rest of this class and freezes the
+        # replay harness, which carries no game cues at all.
         d = brain.assemble(
             Plan(skill="release", side="right", target="slot"),
             None,
@@ -260,6 +268,20 @@ class CueGatesInTurn(ChatPatchMixin, unittest.TestCase):
         )
         self.assertEqual(record.decision.intent.skill, "hold")
         self.assertIn("glow is no", record.decision.reason)
+
+    def test_run_turn_passes_hand_and_ghost_cues_to_assemble(self) -> None:
+        self.reply = '{"skill":"release","side":"right","target":"slot"}'
+        record = brain.run_turn(
+            brain.BrainConfig(),
+            seed="",
+            frame=fake_frame(),
+            heard="put it in the slot",
+            history=[],
+            right="holding",
+            ghost="no",
+        )
+        self.assertEqual(record.decision.intent.skill, "hold")
+        self.assertIn("ghost is no", record.decision.reason)
 
 
 class RunTurnCrop(ScriptedChat, unittest.TestCase):
@@ -340,10 +362,39 @@ class RunTurnCrop(ScriptedChat, unittest.TestCase):
         record = self.run_turn([self.grab, "TOP-RIGHT", "GOURMET CHEF"],
                                glow="yes", box=self.box)
         self.assertEqual(len(self.chat_calls), 3)
-        self.assertEqual(record.ground.error, "verify mismatch")
+        self.assertIn("verify mismatch", record.ground.error)
         self.assertIsNone(record.ground.pixel)
+        self.assertIsNotNone(record.verify)
+        self.assertFalse(record.verify.match)
         self.assertEqual(record.decision.intent.skill, "hold")
         self.assertIn("not visible", record.decision.reason)
+
+    def test_a_transport_error_during_verify_is_not_a_content_mismatch(self) -> None:
+        # A dead model server must not look like a wrong cartridge: the suffix
+        # carries the transport message and the Verify keeps it too.
+        with mock.patch.object(brain, "_chat", side_effect=[
+            brain.ModelReply(text=self.grab),
+            brain.ModelReply(text="TOP-RIGHT"),
+            brain.ModelReply(text="", error="transport: timed out"),
+        ]):
+            record = self.run_turn([self.grab], glow="yes", box=self.box)
+        self.assertIn("verify mismatch: ", record.ground.error)
+        self.assertIn("transport: timed out", record.ground.error)
+        self.assertTrue(record.verify.error)
+
+    def test_a_matching_verify_is_recorded_on_the_turn(self) -> None:
+        record = self.run_turn([self.grab, "TOP-RIGHT", "the store clerk cartridge"],
+                               glow="yes", box=self.box)
+        self.assertIsNotNone(record.verify)
+        self.assertTrue(record.verify.match)
+
+    def test_a_reach_at_glow_yes_is_never_verified(self) -> None:
+        # The gate is grab-only. Widening it would pay a VERIFY call for a
+        # reach, and a mismatch would overwrite the ground and downgrade it.
+        record = self.run_turn([self.reach, "TOP-RIGHT"], glow="yes", box=self.box)
+        self.assertEqual(len(self.chat_calls), 2)
+        self.assertEqual(record.decision.intent.skill, "reach")
+        self.assertIsNone(record.verify)
 
     def test_a_matching_verify_lets_the_grab_through(self) -> None:
         record = self.run_turn([self.grab, "TOP-RIGHT", "the store clerk cartridge"],

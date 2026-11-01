@@ -30,8 +30,10 @@ import pathlib
 import subprocess
 from dataclasses import dataclass
 
-#: Wide enough that a 3x3 cell still contains enough pixels for the model, small
-#: enough that a turn's request stays a few hundred kilobytes of base64.
+#: The width the replay stills are extracted at. The grounder consumes a resized
+#: still, not grid cells, so this is a detail/bandwidth trade: wide enough that a
+#: container crop still resolves, small enough that a turn's base64 stays a few
+#: hundred kilobytes. `crop_jpeg` picks its own width.
 DEFAULT_WIDTH = 960
 
 
@@ -149,11 +151,14 @@ def crop_jpeg(
     a binary, not a Python dependency: this module still imports nothing outside
     the standard library.
 
-    Failure is a `RuntimeError` carrying ffmpeg's own message, never a bare
+    A degenerate box is rejected before ffmpeg runs, and an ffmpeg failure or an
+    empty crop is a `RuntimeError` carrying ffmpeg's own message, never a bare
     `subprocess` error: `run_turn` catches it and grounds the whole frame instead,
     so a broken crop has to arrive as one catchable error rather than two.
     """
     u0, v0, u1, v1 = box
+    if u0 >= u1 or v0 >= v1:
+        raise RuntimeError(f"crop box {box} is degenerate: need u0 < u1 and v0 < v1")
     vf = (
         f"crop=iw*{_frac(u1 - u0)}:ih*{_frac(v1 - v0)}"
         f":iw*{_frac(u0)}:ih*{_frac(v0)},scale={width}:-1"
@@ -175,6 +180,9 @@ def crop_jpeg(
         raise RuntimeError(f"ffmpeg could not crop {box}: {detail}") from exc
     except OSError as exc:
         raise RuntimeError(f"ffmpeg could not run for crop {box}: {exc}") from exc
+    stderr_text = result.stderr.decode("utf-8", "replace").strip()
+    if not result.stdout:
+        raise RuntimeError(f"ffmpeg produced no crop for {box}: {stderr_text}")
     return result.stdout
 
 

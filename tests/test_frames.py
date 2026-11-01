@@ -53,7 +53,7 @@ class CropJpeg(unittest.TestCase):
         self.assertEqual(argv[-1], "pipe:1")
         self.assertEqual(run.call_args.kwargs["input"], self.jpeg)
 
-    def test_the_crop_failure_is_checked(self) -> None:
+    def test_the_ffmpeg_run_is_checked(self) -> None:
         _result, run = self.run_crop()
         self.assertTrue(run.call_args.kwargs["check"])
 
@@ -77,6 +77,28 @@ class CropJpeg(unittest.TestCase):
             with self.assertRaises(RuntimeError) as caught:
                 frames.crop_jpeg(self.jpeg, TRAY_BOX)
         self.assertIn("ffmpeg", str(caught.exception))
+
+    def test_an_empty_crop_is_a_runtime_error_not_a_silent_empty_image(self) -> None:
+        with mock.patch.object(frames.subprocess, "run",
+                               return_value=completed(b"", b"no frame decoded")):
+            with self.assertRaises(RuntimeError) as caught:
+                frames.crop_jpeg(self.jpeg, TRAY_BOX)
+        self.assertIn("no frame decoded", str(caught.exception))
+        self.assertIn("no crop", str(caught.exception))
+
+    def test_an_inverted_box_is_rejected_before_ffmpeg_runs(self) -> None:
+        with mock.patch.object(frames.subprocess, "run") as run:
+            with self.assertRaises(RuntimeError) as caught:
+                frames.crop_jpeg(self.jpeg, (0.5, 0.2, 0.4, 0.6))
+        run.assert_not_called()
+        self.assertIn("(0.5, 0.2, 0.4, 0.6)", str(caught.exception))
+
+    def test_a_zero_width_box_is_rejected_before_ffmpeg_runs(self) -> None:
+        with mock.patch.object(frames.subprocess, "run") as run:
+            with self.assertRaises(RuntimeError) as caught:
+                frames.crop_jpeg(self.jpeg, (0.4, 0.2, 0.4, 0.6))
+        run.assert_not_called()
+        self.assertIn("(0.4, 0.2, 0.4, 0.6)", str(caught.exception))
 
 
 class ReplayPrepare(unittest.TestCase):

@@ -187,6 +187,10 @@ class Session:
                 raise IndexError("no frames left")
             frame = self.source.frame(self.index)
             heard, history = self.heard_for(frame.t_s)
+            # Stub: no hand occupancy is passed, so both hands are always
+            # "empty" here. Every `release` is therefore refused and this
+            # instrument cannot show an insert; a refused release chip is this
+            # stub, not a brain error.
             record = run_turn(
                 self.config,
                 self.seed,
@@ -416,7 +420,7 @@ function render(st) {
         esc(JSON.stringify({skill:d.intent.skill, side:d.intent.side,
              pixel:d.intent.pixel, yaw_rad:d.intent.yaw_rad})) + '</span></span>' +
       '<span class="row"><b>verdict</b><span class="' +
-        (d.accepted ? 'accepted">ACCEPTED' : 'rejected">REJECTED') + '</span></span>' +
+        (d.accepted ? 'accepted">PLAN KEPT' : 'rejected">PLAN OVERRIDDEN') + '</span></span>' +
       (d.reason ? '<span class="row"><b>reason</b><span class="rejected">'+esc(d.reason)+'</span></span>' : '') +
       (d.note ? '<span class="row"><b>note</b><span class="tag">'+esc(d.note)+'</span></span>' : '') +
       '<span class="row"><b>turn ms</b><span class="tag">' + rec.elapsed_ms + '</span></span>';

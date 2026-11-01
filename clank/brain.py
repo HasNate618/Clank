@@ -5,9 +5,10 @@ owns three things and no others:
 
 1. **Prompt assembly** - a short constitution (body facts and an output schema),
    one injected seed, and a per-turn live block. There is no walkthrough here.
-2. **Two model calls** - PLAN (which skill, which side, which noun) and GROUND
-   (where in the image is that noun). They are separate calls on purpose; see
-   `ground()` for the measurement that forced the split.
+2. **Three model calls** - PLAN (which skill, which side, which noun), GROUND
+   (where in the image is that noun) and VERIFY (does that crop actually name the
+   noun, once the hand is at the container). They are separate calls on purpose;
+   see `ground()` and `verify()` for the measurements that forced the split.
 3. **The trace** - one `TurnRecord` per turn saying what it heard, saw, said, was
    told, and whether the intent survived `validate_intent`.
 
@@ -35,13 +36,12 @@ import re
 import time
 import urllib.error
 import urllib.request
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 from .frames import Frame, crop_jpeg
 from .intent import (
     LOOK_ARC_RAD,
-    SKILLS,
     Intent,
     validate_intent,
 )
@@ -384,7 +384,7 @@ class Ground:
 
     @property
     def cell(self) -> str | None:
-        """Alias for `spike/brainview`, whose overlay Task 6 rewrites."""
+        """Kept for older overlay readers: the `cell` key is the quadrant."""
         return self.quadrant
 
     def to_dict(self) -> dict[str, Any]:
@@ -698,6 +698,10 @@ def assemble(
                       else "target not grounded")
             # A named thing we cannot see is not a reason to guess a pixel; the
             # constitution already told the model to look when it cannot see.
+            # Accepted deviation, carried to the socket work: a GROUND *transport*
+            # error lands here too and yaws instead of freeze-holding (spec
+            # §11/§12). There is no motion to gate in this slice, and rewiring
+            # this path late risks the guard the whole design leans on.
             fallback = Intent(skill="look", side="none", source="vlm", seq=seq,
                               t_mono_ns=t_mono_ns,
                               yaw_rad=LOOK_ARC_RAD * (1 if look_step % 2 else -1))
@@ -755,6 +759,7 @@ class TurnRecord:
     plan: Plan
     ground: Ground | None
     decision: Decision
+    verify: Verify | None = None
     self_state: dict[str, Any] = field(default_factory=dict)
     outcome: str = ""
     elapsed_ms: float = 0.0
@@ -770,6 +775,7 @@ class TurnRecord:
             "self": self.self_state,
             "plan": self.plan.to_dict(),
             "ground": self.ground.to_dict() if self.ground else None,
+            "verify": self.verify.to_dict() if self.verify else None,
             "decision": self.decision.to_dict(),
             "outcome": self.outcome,
             "elapsed_ms": round(self.elapsed_ms, 1),
@@ -817,13 +823,19 @@ def run_turn(
     `clank/` does not have. So the grab gate asks about the container: at
     `glow=yes` in grab range the container is what fills that crop (§10 step 4),
     and the check is still a name check against `target`, never a position. When
-    the adapter exposes the wrist, this is the call that changes.
+    the adapter exposes the wrist, this is the call that changes. A *container*
+    crop always contains the target, so a `match` proves "the tray holds STORE
+    CLERK", not "the hand is on STORE CLERK": spec §11's wrist crop remains
+    unproven and this is the gate's one false-allow path.
 
     VERIFY runs only when the plan is a grab, `glow` says the hand is in range, and
-    a `target` exists to match (§11). A mismatch is handed to `assemble` as a
-    `Ground` with no pixel, so the existing not-visible path refuses the grab: a
-    wrong name must block the hand, never be averaged into a position. The reply
-    the gate saw is kept in that `Ground`'s `raw`, so the refusal is auditable.
+    a `target` exists to match (§11). On a mismatch the ground keeps its quadrant,
+    `raw` and timings; only its pixel is cleared and its `error` is marked, so the
+    existing not-visible path refuses the grab: a wrong name must block the hand,
+    never be averaged into a position. The verdict itself, including the reply the
+    gate saw and any transport error, is recorded on the turn's `Verify` on every
+    path where `verify()` ran, so a dead model server stays distinguishable from a
+    wrong cartridge.
     """
     started = time.monotonic()
     live = live_block(heard, left, right, yaw_rad, glow, last, ghost=ghost)
@@ -850,13 +862,18 @@ def run_turn(
         ground_result = ground(config, ground_frame, target, box=ground_box,
                                container=container, transcript=history)
 
+    verify_result: Verify | None = None
     if plan_result.ok and target and plan_result.skill == "grab" and glow == "yes":
         check = verify(config, ground_frame, target)
+        verify_result = check
         if not check.match:
             # No pixel on purpose: the refusal has to travel the path the brain
-            # already has for "I cannot see it", not a new one invented here.
-            ground_result = Ground(noun=target, box=ground_box, raw=check.heard,
-                                   error="verify mismatch")
+            # already has for "I cannot see it", not a new one invented here. The
+            # ground keeps its quadrant, raw and timings - only the pixel goes.
+            error = (f"verify mismatch: {check.error}" if check.error
+                     else "verify mismatch")
+            kept = ground_result or Ground(noun=target, box=ground_box)
+            ground_result = replace(kept, pixel=None, error=error)
 
     decision = assemble(
         plan_result, ground_result, seq=seq,
@@ -873,6 +890,7 @@ def run_turn(
         plan=plan_result,
         ground=ground_result,
         decision=decision,
+        verify=verify_result,
         self_state={
             "left": left,
             "right": right,
@@ -906,6 +924,3 @@ __all__ = [
     "run_turn",
     "verify",
 ]
-
-# `SKILLS` is imported for the schema assertion in tests, not used here.
-_ = SKILLS
