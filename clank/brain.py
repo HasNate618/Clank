@@ -498,7 +498,14 @@ def ground(
 
 @dataclass(frozen=True)
 class Decision:
-    """What survives validation, plus the reason when nothing does."""
+    """The intent to send, plus why the planner's own action did not survive.
+
+    `intent` is **always** the intent to send, including the `hold` or `look`
+    fallback chosen when the plan is refused: a refusal is still an action, and
+    dropping it would leave the body without a command. `accepted` records only
+    whether the planner's action survived unmodified, and is **never** a gate on
+    whether `intent` goes to the adapter.
+    """
 
     intent: Intent
     reason: str = ""
@@ -525,6 +532,8 @@ def assemble(
     look_step: int = 1,
     left: str = "empty",
     right: str = "empty",
+    glow: str = "unknown",
+    ghost: str = "unknown",
 ) -> Decision:
     """Turn a plan plus its grounding into an `Intent`, or explain the refusal.
 
@@ -535,6 +544,13 @@ def assemble(
     `release right` to "take my card" while the right hand was empty. That is not
     a schema error, so `validate_intent` cannot catch it, and executing it would
     burn a turn to change nothing.
+
+    The cue gates add the same kind of check for Job Simulator's two lights:
+    `glow` is blue proximity at the wrist and gates `grab`, `ghost` is the yellow
+    insert cue at the slot and gates a `release` whose target names a slot. Both
+    are context a planner reads, never a trigger - `glow=yes` alone never emits
+    a grab - and `unknown` never refuses, because the replay writer carries no
+    game cues and an uncalibrated detector must not freeze the hands.
     """
     if not plan_result.ok:
         return Decision(Intent(skill="hold", side="none", source="vlm", seq=seq,
@@ -558,6 +574,15 @@ def assemble(
                                t_mono_ns=t_mono_ns),
                         reason=f"grab {side} refused: that hand is already holding",
                         note=note)
+
+    if skill == "grab" and glow == "no":
+        return Decision(Intent(skill="hold", side="none", source="vlm", seq=seq,
+                               t_mono_ns=t_mono_ns),
+                        reason=f"grab {side} refused: glow is no", note=note)
+    if skill == "release" and "slot" in (target or "").lower() and ghost == "no":
+        return Decision(Intent(skill="hold", side="none", source="vlm", seq=seq,
+                               t_mono_ns=t_mono_ns),
+                        reason=f"release {side} refused: ghost is no", note=note)
 
     needs_where = skill in ("reach", "look") and target is not None
     if needs_where:
@@ -678,7 +703,7 @@ def run_turn(
     decision = assemble(
         plan_result, ground_result, seq=seq,
         t_mono_ns=time.monotonic_ns(), look_step=look_step,
-        left=left, right=right,
+        left=left, right=right, glow=glow, ghost=ghost,
     )
     return TurnRecord(
         turn=turn,

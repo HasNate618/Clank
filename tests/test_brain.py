@@ -121,6 +121,85 @@ class Occupancy(unittest.TestCase):
         )
         self.assertEqual(d.intent.skill, "look")
         self.assertEqual(d.note, "downgraded to scan")
+        # A refused plan still returns the intent to send, and that fallback must
+        # be a legal scan rather than a look with no direction.
+        self.assertEqual(d.intent.side, "none")
+        self.assertIsNotNone(d.intent.yaw_rad)
+        self.assertNotEqual(d.intent.yaw_rad, 0.0)
+
+
+class CueGates(unittest.TestCase):
+    def test_grab_with_glow_no_is_held(self) -> None:
+        d = brain.assemble(
+            Plan(skill="grab", side="right", target="card"),
+            Ground(noun="card", pixel=(0.5, 0.5)),
+            seq=0,
+            t_mono_ns=0,
+            glow="no",
+        )
+        self.assertFalse(d.accepted)
+        self.assertEqual(d.intent.skill, "hold")
+        self.assertIn("glow is no", d.reason)
+
+    def test_unknown_glow_does_not_refuse_grab(self) -> None:
+        d = brain.assemble(
+            Plan(skill="grab", side="right", target="card"),
+            Ground(noun="card", pixel=(0.5, 0.5)),
+            seq=0,
+            t_mono_ns=0,
+            glow="unknown",
+        )
+        self.assertTrue(d.accepted)
+        self.assertEqual(d.intent.skill, "grab")
+
+    def test_glow_yes_does_not_emit_grab_without_a_plan(self) -> None:
+        d = brain.assemble(
+            Plan(skill="hold", side="none"),
+            None,
+            seq=0,
+            t_mono_ns=0,
+            glow="yes",
+        )
+        self.assertEqual(d.intent.skill, "hold")
+
+    def test_release_into_slot_without_ghost_is_held(self) -> None:
+        d = brain.assemble(
+            Plan(skill="release", side="right", target="slot"),
+            None,
+            seq=0,
+            t_mono_ns=0,
+            right="holding",
+            ghost="no",
+        )
+        self.assertFalse(d.accepted)
+        self.assertIn("ghost is no", d.reason)
+
+    def test_release_of_a_card_does_not_need_ghost(self) -> None:
+        d = brain.assemble(
+            Plan(skill="release", side="right", target="card"),
+            None,
+            seq=0,
+            t_mono_ns=0,
+            right="holding",
+            ghost="no",
+        )
+        self.assertTrue(d.accepted)
+        self.assertEqual(d.intent.skill, "release")
+
+
+class CueGatesInTurn(ChatPatchMixin, unittest.TestCase):
+    def test_run_turn_passes_glow_to_assemble(self) -> None:
+        self.reply = '{"skill":"grab","side":"right","target":"card"}'
+        record = brain.run_turn(
+            brain.BrainConfig(),
+            seed="",
+            frame=fake_frame(),
+            heard="take my card",
+            history=[],
+            glow="no",
+        )
+        self.assertEqual(record.decision.intent.skill, "hold")
+        self.assertIn("glow is no", record.decision.reason)
 
 
 if __name__ == "__main__":
