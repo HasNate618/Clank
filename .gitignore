@@ -35,5 +35,10 @@ spike/e2/frames/
 spike/e1/include/
 spike/e1/xr_view_probe
 
+# Walkthrough media: large, local-only fixtures. The clip is re-downloaded, never
+# committed; only the derived text (subtitle timings, traces) is.
+*.mp4
+*.mp3
+
 # Machine-specific config (absolute paths, Steam shortcut id)
 config.toml
