@@ -186,3 +186,68 @@ screenshooter path and a fresh unattended session.
 - The flip is tied to this renderer (`screen capture uses y-flip: yes`). A pixman or
   headless renderer may not flip; `spike/wbc_game/capture_game.py` reports whether
   it flipped, and `--no-flip` keeps the raw orientation.
+
+
+## 10. First real use — and two findings that came with it
+
+Verified by hand on the live session: `clank.capture.capture_frame` returned a
+1,425,351-byte 1920x1080 PNG in **378 ms**, flipped upright it shows the Job
+Simulator museum hub, JobBot holding his card, and the blue glow on the pedestal.
+The pipeline — MuJoCo pose → relay → Monado → OpenComposite → game → capture — is
+closed, with an image to prove it. `[MEASURED 2026-11-01]`
+
+### 10.1 The pose relay has a hard one-hour cap and dies silently
+
+The FOV attempt first produced two near-identical frames for ±30 deg of head yaw.
+The cause was not the game: the relay had exited at exactly its configured limit.
+
+```
+pose_relay: sent 180000 packets in 3600.00 s (50.0 Hz), notes {'live': 179985, 'stale': 15}
+```
+
+`--duration` defaults to **3600 s**. After it elapsed the game kept running with a
+frozen pose for 17 minutes, and the dashboard still reported:
+
+```
+state: running | last_error: None | pose: False | game: True
+```
+
+So a session silently degrades into a frozen view. Consequences: any run longer
+than an hour measures a still image, and the dashboard cannot tell you. This is a
+monitoring/UX defect, not a relay bug — the relay did what it was told and said so
+in its own log, which nothing surfaces.
+
+Restarting just the relay (`--duration 900`) restored live poses immediately;
+`handshake ok` and the camera moved again.
+
+### 10.2 The image-based FOV fit did not converge — no number is quoted
+
+Two methods, two answers, and they cannot both be right.
+
+| method | yaw | shift | implied hfov |
+| --- | ---: | ---: | ---: |
+| column-profile correlation, background band (y 5–42%) | −30 | +986 px | 54.0 deg |
+| same | +30 | −887 px | 59.1 deg |
+| column-profile correlation, central strip (x 760–1160) | −15 | +109 px | 134.1 deg |
+| same | −10 | −126 px | 106.5 deg |
+| same | +10 | +103 px | 117.6 deg |
+| same | +15 | +130 px | 126.3 deg |
+
+The wide-band pair agrees with itself (54.0/59.1), and the central-strip set agrees
+roughly with itself (~121 deg mean, 27.6 deg spread) — but the two sets disagree by
+2×, and one central-strip shift has the **wrong sign**, which means the correlation
+locked onto a different feature, not the same one moved.
+
+Likely causes, in order: the scene is full of repeated structure (signs, tiles,
+console rows) so a 1-D profile correlation can alias to a different period; the head
+*twists* rather than rotating purely in place, so there is parallax and the shift is
+depth-dependent; and JobBot animates between frames, corrupting the correlation.
+
+**Conclusion: this is not a FOV measurement.** The honest options are (a) the
+hand-in-image fit already planned as Task 5, (b) a synthetic calibration scene with
+a known target, or (c) start a session with a declared FOV and compare against the
+undeclared default, which is the experiment `research/fov-declaration.md` sets up but
+never ran. Do not quote 60 deg or 120 deg from this section.
+
+`spike/wbc_game/fov_yaw_probe.py` and `fov_shift_probe.py` are kept because the
+capture, yaw and correlation machinery works; the estimator is what is unproven.
