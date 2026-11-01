@@ -105,9 +105,12 @@ class CommandBus:
 
             cmd = self._latest
             if cmd is None:
-                return hold(now_ns=now)
+                return hold(now_ns=now, state=self._state)
             if cmd.expires_at_ns() < now:
-                return hold(seq=cmd.seq, now_ns=now)
+                # Freeze-hold at what the body actually achieved, not at the
+                # standing clip. This is the path a finished reach takes, and an
+                # empty mask here would snap the wrist back and drop what it held.
+                return hold(seq=cmd.seq, now_ns=now, state=self._state)
             return cmd
 
     def latest_state(self) -> BodyState | None:

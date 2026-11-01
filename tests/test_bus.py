@@ -4,8 +4,37 @@ import time
 import unittest
 from pathlib import Path
 
-from clank.body import AUTH_ROOT_VEL, BodyCommand, hold
+from clank.body import (
+    AUTH_ROOT_VEL,
+    FREEZE_HOLD_AUTH,
+    BodyCommand,
+    BodyState,
+    Pose,
+    hold,
+    rest,
+)
 from clank.bus import CommandBus, UnixCommandServer, send_command
+
+REACHED_RIGHT = Pose((0.18, -0.20, 0.40), (0.0, 0.0, 0.0, 1.0))
+REACHED_LEFT = Pose((0.18, 0.20, 0.40), (0.0, 0.0, 0.0, 1.0))
+LOOKED_HEAD = Pose((0.0, 0.0, 0.40), (0.0, 0.0, 0.1, 0.995))
+
+
+def published_state() -> BodyState:
+    """A body that has reached with its right hand and turned its head."""
+    return BodyState(
+        seq_ack=7,
+        t_mono_ns=123456789,
+        root_p=(0.0, 0.0, 0.793),
+        root_q=(1.0, 0.0, 0.0, 0.0),
+        v_xy=(0.0, 0.0),
+        yaw_rate=0.0,
+        q=tuple(0.0 for _ in range(29)),
+        qd=tuple(0.0 for _ in range(29)),
+        head=LOOKED_HEAD,
+        left_hand=REACHED_LEFT,
+        right_hand=REACHED_RIGHT,
+    )
 
 
 class FakeClock:
@@ -29,8 +58,30 @@ class BusTestCase(unittest.TestCase):
         bus = CommandBus(clock=FakeClock())
         bus.push(BodyCommand(seq=3, t_mono_ns=0, ttl_ms=200, authority=AUTH_ROOT_VEL, v_xy=(0.5, 0.0)))
         out = bus.take(now_ns=10 * 1_000_000_000)
-        self.assertEqual(out.authority, 0)
+        self.assertEqual(out.authority, FREEZE_HOLD_AUTH)
         self.assertEqual(out.seq, 3)
+
+    def test_expired_ttl_copies_published_poses(self) -> None:
+        # The production path: body_view pushes a verb, it expires, and the
+        # executor must be told to stay where it actually is.
+        bus = CommandBus(clock=FakeClock())
+        bus.push(BodyCommand(seq=3, t_mono_ns=0, ttl_ms=200, authority=AUTH_ROOT_VEL, v_xy=(0.5, 0.0)))
+        bus.publish_state(published_state())
+        out = bus.take(now_ns=10 * 1_000_000_000)
+        self.assertEqual(out.authority, FREEZE_HOLD_AUTH)
+        self.assertEqual(out.head, LOOKED_HEAD)
+        self.assertEqual(out.left_hand, REACHED_LEFT)
+        self.assertEqual(out.right_hand, REACHED_RIGHT)
+
+    def test_expired_ttl_without_state_claims_the_channels(self) -> None:
+        # Nothing achieved yet, so the poses are absent - but the claim is still
+        # freeze-hold, not rest. An empty mask here would be the old bug.
+        bus = CommandBus(clock=FakeClock())
+        bus.push(BodyCommand(seq=3, t_mono_ns=0, ttl_ms=200, authority=AUTH_ROOT_VEL, v_xy=(0.5, 0.0)))
+        out = bus.take(now_ns=10 * 1_000_000_000)
+        self.assertEqual(out.authority, FREEZE_HOLD_AUTH)
+        self.assertIsNone(out.head)
+        self.assertIsNone(out.right_hand)
 
     def test_fresh_command_is_returned(self) -> None:
         bus = CommandBus(clock=FakeClock())
@@ -41,7 +92,7 @@ class BusTestCase(unittest.TestCase):
 
     def test_empty_bus_is_hold(self) -> None:
         bus = CommandBus(clock=FakeClock())
-        self.assertEqual(bus.take(now_ns=0).authority, 0)
+        self.assertEqual(bus.take(now_ns=0).authority, FREEZE_HOLD_AUTH)
         self.assertTrue(bus.idle())
 
     def test_ballistic_not_preempted_until_done(self) -> None:
@@ -82,7 +133,7 @@ class BusTestCase(unittest.TestCase):
         result = bus.push_json(json.dumps({"seq": 1, "schema": "wrong"}))
         self.assertFalse(result.ok)
         self.assertEqual(bus.invalid_count, 1)
-        self.assertEqual(bus.take(now_ns=0).authority, 0)
+        self.assertEqual(bus.take(now_ns=0).authority, FREEZE_HOLD_AUTH)
 
 
 class SocketTestCase(unittest.TestCase):
@@ -97,7 +148,7 @@ class SocketTestCase(unittest.TestCase):
                                                t_mono_ns=time.monotonic_ns(),
                                                authority=AUTH_ROOT_VEL, v_xy=(0.25, 0.0)))
                 deadline = time.monotonic() + 3.0
-                while time.monotonic() < deadline and bus.take().authority == 0:
+                while time.monotonic() < deadline and bus.take().authority != AUTH_ROOT_VEL:
                     time.sleep(0.02)
                 out = bus.take()
                 self.assertEqual(out.authority, AUTH_ROOT_VEL)
@@ -125,7 +176,7 @@ class SocketTestCase(unittest.TestCase):
             finally:
                 server.stop()
 
-    def test_hold_sent_over_socket_clears_authority(self) -> None:
+    def test_hold_sent_over_socket_replaces_with_freeze_hold(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "body.sock"
             bus = CommandBus()
@@ -136,9 +187,31 @@ class SocketTestCase(unittest.TestCase):
                                                t_mono_ns=time.monotonic_ns(),
                                                authority=AUTH_ROOT_VEL, v_xy=(0.5, 0.0)))
                 deadline = time.monotonic() + 3.0
-                while time.monotonic() < deadline and bus.take().authority == 0:
+                while time.monotonic() < deadline and bus.take().authority != AUTH_ROOT_VEL:
                     time.sleep(0.02)
                 send_command(path, hold(seq=2, now_ns=time.monotonic_ns()))
+                deadline = time.monotonic() + 3.0
+                while time.monotonic() < deadline and bus.take().authority != FREEZE_HOLD_AUTH:
+                    time.sleep(0.02)
+                # A hold stops the walk without freeing the clip.
+                self.assertEqual(bus.take().authority, FREEZE_HOLD_AUTH)
+            finally:
+                server.stop()
+
+    def test_rest_sent_over_socket_clears_authority(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "body.sock"
+            bus = CommandBus()
+            server = UnixCommandServer(bus, path)
+            server.start()
+            try:
+                send_command(path, BodyCommand(seq=1, ttl_ms=10_000,
+                                               t_mono_ns=time.monotonic_ns(),
+                                               authority=AUTH_ROOT_VEL, v_xy=(0.5, 0.0)))
+                deadline = time.monotonic() + 3.0
+                while time.monotonic() < deadline and bus.take().authority != AUTH_ROOT_VEL:
+                    time.sleep(0.02)
+                send_command(path, rest(seq=2, now_ns=time.monotonic_ns()))
                 deadline = time.monotonic() + 3.0
                 while time.monotonic() < deadline and bus.take().authority != 0:
                     time.sleep(0.02)

@@ -137,7 +137,8 @@ Each skill is a finite behaviour with a recorded outcome. The adapter is the onl
 
 | Skill | BodyCommand | Runs until | Outcome |
 | --- | --- | --- | --- |
-| `hold` | empty authority (executor standing clip) | replaced | `done` |
+| `hold` | `FREEZE_HOLD_AUTH` at the last achieved head and both wrists — head + both hands claimed, grip untouched | replaced | `done` |
+| `rest` | empty authority — the executor's standing clip decides the VR points | replaced | `done` |
 | `look` | `AUTH_HEAD` (+ waist if we start using it) toward `yaw_rad`, or toward centering `pixel` | yaw error small, or `SATURATED` at the ±35° v1 arc | `done` / `saturated` |
 | `reach` | `AUTH_{L,R}_HAND` toward a wrist target the servo updates | see §7 | `done` / `saturated` / `no_glow` / `timeout` / `no_frame` |
 | `grab` / `release` | `AUTH_CLOSURE` 1.0 or 0.0 on that side | one command; grip latches | `done` |
@@ -147,6 +148,8 @@ Each skill is a finite behaviour with a recorded outcome. The adapter is the onl
 | `twitch` | small head or wrist motion, then `hold` | one increment | `done` |
 
 `reach` **does not** close the hand. Glow true means "in range now"; the writer sends `grab`. If the adapter grabbed on glow, a false highlight would steal every disk.
+
+**`hold` is freeze-hold, and `rest` is the clip return.** The split exists because the executor's default for an unmentioned channel used to be the standing clip's own VR points, so an empty mask snapped a reached hand back to rest — on every TTL expiry, and on every command that named only one channel. A `look` issued while holding the card dropped it. Now `channel_pose` in `clank/body.py` decides each channel: empty authority is `rest` (clip); a commanded pose wins; otherwise the channel holds what the body achieved. `rest` is not a planner output — a brain that says `hold` means freeze, never reset. `FREEZE_HOLD_AUTH` excludes `AUTH_CLOSURE` (grip already latches, and freezing a hand must not reopen it), `AUTH_ROOT_VEL` and `AUTH_WAIST` (neither can be honoured in a hold session).
 
 Open-loop verbs stay for the dashboard. They are the same skills with no pixel and a constant offset (`aim` = `reach` at 0.22 m, no glow gate).
 

@@ -8,7 +8,8 @@ pose to *stay* while they look at the game view.
 
 This script re-sends one combined `BodyCommand` (head yaw + one hand) every
 `--interval` seconds, so the pose holds until Ctrl-C or `--seconds` runs out. On a
-clean exit it sends one `hold` to give the body back its standing clip.
+clean exit it sends one `rest` to give the body back its standing clip - `hold`
+is freeze-hold and would leave the arm where the sweep ended.
 
 Two modes:
 
@@ -45,7 +46,7 @@ from clank.body import (  # noqa: E402
     AUTH_L_HAND,
     AUTH_R_HAND,
     BodyCommand,
-    hold,
+    rest,
 )
 
 HAND_BITS = {"left": AUTH_L_HAND, "right": AUTH_R_HAND}
@@ -151,8 +152,8 @@ def run(args) -> int:
         print("hold_pose: interrupted", flush=True)
     finally:
         try:
-            send_command(control, hold(seq=seq + 1, now_ns=time.monotonic_ns()))
-            print("hold_pose: released to standing hold", flush=True)
+            send_command(control, rest(seq=seq + 1, now_ns=time.monotonic_ns()))
+            print("hold_pose: released to standing clip", flush=True)
         except OSError:
             pass
     return 0

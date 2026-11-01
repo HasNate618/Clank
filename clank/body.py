@@ -4,9 +4,14 @@ Design: `docs/2026-10-23-clank-design.md` §6, `research/humanoid-command-space.
 
 Two rules decide everything else in this module:
 
-1. **Authority is a bitmask, and unset fields are ignored, not zeroed.** That is
-   how a "mode" is expressed — there is no verb enum below the adapter. `hold`
-   is therefore the empty mask: nothing requested, executor defaults apply.
+1. **Authority is a bitmask, and unset fields follow the last achieved pose.**
+   That is how a "mode" is expressed — there is no verb enum below the adapter.
+   There are two idle states, and the mask is what tells them apart: `hold`
+   claims head and both hands at their last achieved poses, while `rest` is the
+   empty mask and returns the executor to its standing clip. An empty mask no
+   longer means "executor defaults apply", because those defaults are the clip's
+   own VR points and snapping a reached hand back to them is exactly the drift
+   this contract exists to prevent.
 2. **State reports what the body achieved, never what was asked for.** Callers
    must read `BodyState`, not assume their command landed.
 """
@@ -35,6 +40,20 @@ KNOWN_AUTH = (1 << 10) - 1
 # Bits this executor understands but v1 does not honour. Requesting them is
 # legal — the executor flags UNSUPPORTED rather than silently pretending.
 UNSUPPORTED_IN_V1 = AUTH_GAIT | AUTH_POSTURE
+
+#: The channels a freeze-hold claims: head and both wrists, at their last
+#: achieved poses. Deliberately excludes `AUTH_CLOSURE` (grip already latches in
+#: the executor, and freezing a hand must not reopen it), `AUTH_ROOT_VEL` and
+#: `AUTH_WAIST` (neither can be honoured in a hold session — claiming them would
+#: set `FLAG_UNSUPPORTED` on a command that requested nothing).
+FREEZE_HOLD_AUTH = AUTH_HEAD | AUTH_L_HAND | AUTH_R_HAND
+
+#: Pose channels, in the order the executor iterates them.
+POSE_CHANNELS = (
+    ("head", AUTH_HEAD),
+    ("left_hand", AUTH_L_HAND),
+    ("right_hand", AUTH_R_HAND),
+)
 
 # BodyState flags.
 FLAG_SATURATED = 1 << 0
@@ -302,12 +321,79 @@ class BodyState:
         )
 
 
-def hold(seq: int = 0, now_ns: int = 0, ttl_ms: int = DEFAULT_TTL_MS) -> BodyCommand:
-    """The hold command: no authority requested, so nothing is overridden.
+def hold(
+    seq: int = 0,
+    now_ns: int = 0,
+    ttl_ms: int = DEFAULT_TTL_MS,
+    state: BodyState | None = None,
+) -> BodyCommand:
+    """Freeze-hold: claim head and both hands at their last achieved poses.
 
-    Not "send zero" — the executor keeps its standing clip and active balance.
+    Not "send zero". An empty mask is `rest`, which returns the standing clip —
+    and that is what used to snap a reached hand back on every TTL expiry.
+
+    `state` is optional because the writer often does not have it: the bus and
+    the adapter fill the poses in when they do, and the executor falls back to
+    the last state it achieved. With no state at all, the channels are claimed
+    but carry no pose, and `channel_pose` answers with the clip.
+    """
+    return BodyCommand(
+        seq=seq,
+        t_mono_ns=now_ns,
+        ttl_ms=ttl_ms,
+        authority=FREEZE_HOLD_AUTH,
+        source="script",
+        head=None if state is None else state.head,
+        left_hand=None if state is None else state.left_hand,
+        right_hand=None if state is None else state.right_hand,
+    )
+
+
+def rest(
+    seq: int = 0, now_ns: int = 0, ttl_ms: int = DEFAULT_TTL_MS
+) -> BodyCommand:
+    """Return the body to its standing clip's own VR points.
+
+    The empty mask, and the only command that means "go back to the clip". Not a
+    planner output: a brain that says `hold` means freeze, never reset.
     """
     return BodyCommand(seq=seq, t_mono_ns=now_ns, ttl_ms=ttl_ms, authority=0, source="script")
+
+
+def commanded_pose(cmd: BodyCommand, name: str, bit: int) -> Pose | None:
+    """The pose this command actually asked for, or None if it inherited one.
+
+    The executor needs the distinction: a commanded pose in `frame="head"` still
+    has to be carried by the torso twist, but a pose inherited from `BodyState`
+    is already an achieved root-frame pose and carrying it again would rotate it
+    twice.
+    """
+    if (cmd.authority & bit) and getattr(cmd, name) is not None:
+        return getattr(cmd, name)
+    return None
+
+
+def channel_pose(
+    cmd: BodyCommand, last: BodyState | None, name: str, bit: int
+) -> Pose | None:
+    """The pose one channel should target, or None for the standing clip.
+
+    Four rules, in order:
+
+    1. Empty authority is `rest` — clip, even when a last state exists.
+    2. A commanded pose wins.
+    3. Otherwise hold the last achieved pose. This is the rule that keeps a hand
+       in place while the head turns, and keeps the held card in the hand.
+    4. With nothing achieved yet, the clip is the only honest answer.
+    """
+    if cmd.authority == 0:
+        return None
+    asked = commanded_pose(cmd, name, bit)
+    if asked is not None:
+        return asked
+    if last is not None:
+        return getattr(last, name)
+    return None
 
 
 def commanded_buttons(

@@ -119,6 +119,23 @@ class VerbParsing(unittest.TestCase):
         assert i is not None
         self.assertEqual(intent.validate_intent(i), "")
 
+    def test_rest_needs_no_side(self) -> None:
+        self.assertEqual(intent.validate_intent(intent.Intent(skill="rest")), "")
+
+    def test_rest_rejects_a_side(self) -> None:
+        # A caller that believes `rest` addresses a hand has a bug worth seeing.
+        self.assertTrue(intent.validate_intent(intent.Intent(skill="rest", side="right")))
+
+    def test_rest_verb_maps(self) -> None:
+        i = intent.verb_to_intent("rest", {})
+        assert i is not None
+        self.assertEqual(i.skill, "rest")
+        self.assertEqual(intent.validate_intent(i), "")
+
+    def test_rest_is_not_a_side_skill(self) -> None:
+        self.assertIn("rest", intent.SKILLS)
+        self.assertNotIn("rest", intent.SIDE_SKILLS)
+
 
 if __name__ == "__main__":
     unittest.main()

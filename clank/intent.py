@@ -36,6 +36,7 @@ SCHEMA = "clank.intent/1"
 #: rejected rather than silently held, so a typo cannot look like "the body refused".
 SKILLS = (
     "hold",
+    "rest",
     "look",
     "reach",
     "grab",
@@ -218,6 +219,8 @@ def verb_to_intent(name: str, raw: Mapping[str, Any]) -> Intent | None:
 
     if name == "hold":
         return make("hold")
+    if name == "rest":
+        return make("rest")
     if name == "look":
         return make("look", yaw_rad=math.radians(float(raw.get("yaw_deg", 0.0))))
     if name == "look_left":

@@ -59,6 +59,7 @@ from clank.body import (  # noqa: E402
     AUTH_TRIGGER,
     BodyCommand,
     hold,
+    rest,
 )
 from clank.bus import CommandBus  # noqa: E402
 from clank.camera import PRESETS, FollowCamera, yaw_from_quat  # noqa: E402
@@ -201,7 +202,11 @@ def _command_from_intent(
     is what makes a null result attributable to the reach rather than the button.
     """
     if intent.skill == "hold":
-        return hold()
+        # Freeze-hold at what the body achieved. `executor.last_state` is the same
+        # BodyState the bus publishes, so the adapter and the bus agree.
+        return hold(state=executor.last_state)
+    if intent.skill == "rest":
+        return rest()
     if intent.skill == "look":
         return BodyCommand(
             seq=0,

@@ -20,7 +20,7 @@ import time
 from collections.abc import Iterator
 from pathlib import Path
 
-from .body import SCHEMA, BodyCommand, hold
+from .body import SCHEMA, BodyCommand, rest
 from .bus import send_command
 
 DEFAULT_SLEEP_MS = 1000.0
@@ -92,7 +92,7 @@ def main(argv: list[str] | None = None) -> int:
     except KeyboardInterrupt:
         if not args.dry_run:
             with contextlib.suppress(OSError):
-                send_command(args.socket, hold(now_ns=time.monotonic_ns()))
+                send_command(args.socket, rest(now_ns=time.monotonic_ns()))
         return 130
     return 0
 

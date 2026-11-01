@@ -15,6 +15,10 @@ Measured facts this file is built on (`research/c3m-results.md`,
   `squat_001__A359` frame 0 and freezes the *anchor index* (`freeze=0`), so the
   encoder's 10-frame lookahead never contains walking. Measured hold RMS
   1.3e-4 m/s. Freezing the wrong thing drifted 0.23-2.07 m.
+- That standing clip is the **legs**. The wrists and head are a separate channel:
+  `hold` (freeze-hold) claims them at their last achieved poses, and only `rest`
+  leaves them on the clip's VR points. Before that split, an empty mask meant
+  "clip", so every TTL expiry snapped a reached hand back to rest.
 - Wrist aims straight ahead track to 3.51 cm / 7.22 deg; 30 deg off-axis is
   8.63 cm / 28.33 deg. The body must turn to face a target, not aim sideways.
 - Arm override *during* walking is not supported by this controller. Only a
@@ -55,7 +59,9 @@ from clank.body import (  # noqa: E402
     BodyCommand,
     BodyState,
     Pose,
+    channel_pose,
     commanded_buttons,
+    commanded_pose,
 )
 from clank.projection import carry_with_head, root_offset, yaw_of  # noqa: E402
 
@@ -189,6 +195,9 @@ class SonicExecutor:
         root-relative targets; it recorded 3.51 cm ahead. Steering with additive
         `vr_delta` instead plateaued at 13.8 cm in a 10 s soak - the offset was
         simply not tracked. So: replace, do not nudge.
+
+        Which pose each channel gets is `channel_pose`'s decision, not this
+        method's, so the hold rule has one owner and a stdlib test.
         """
         pts, orns = self._clip_targets()
         pts = np.asarray(pts, dtype=np.float64).copy()
@@ -204,14 +213,22 @@ class SonicExecutor:
             float(pts[3 * HEAD + 2]),
         )
 
-        for bit, index, pose in (
-            (AUTH_HEAD, HEAD, cmd.head),
-            (AUTH_L_HAND, L_WRIST, cmd.left_hand),
-            (AUTH_R_HAND, R_WRIST, cmd.right_hand),
+        for name, bit, index in (
+            ("head", AUTH_HEAD, HEAD),
+            ("left_hand", AUTH_L_HAND, L_WRIST),
+            ("right_hand", AUTH_R_HAND, R_WRIST),
         ):
-            if not (cmd.authority & bit) or pose is None:
+            pose = channel_pose(cmd, self.last_state, name, bit)
+            if pose is None:
                 continue
-            if delta_yaw != 0.0 and bit != AUTH_HEAD:
+            # Carry only what the writer asked for. A pose inherited from
+            # `BodyState` is already an achieved root-frame pose, so carrying it
+            # by the current twist would rotate it a second time.
+            if (
+                delta_yaw != 0.0
+                and bit != AUTH_HEAD
+                and commanded_pose(cmd, name, bit) is not None
+            ):
                 pose = self._carry_with_head(pose, pivot, delta_yaw)
             pts[3 * index:3 * index + 3] = np.asarray(pose.p, dtype=np.float64)
             # Contract is xyzw; the controller wants wxyz.
