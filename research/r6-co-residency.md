@@ -78,7 +78,11 @@ was the thing under test.
 - **No frame capture during the session.** The preview here is VNC-backed
   (5901 + proxy 6080) and `weston-screenshooter` blocks — the recorded
   `renderer_wait_for_present` stall. Pixel-motion measurement was therefore not
-  available, which is why the CPU-time proxy was used.
+  available, which is why the CPU-time proxy was used. *(Superseded 2026-11-01:
+  `weston-screenshooter` works while an authenticated VNC client is attached, and
+  an X11 grab of the game window needs no VNC at all; see `research/capture.md`.
+  The stall above was not reproducible, and the earlier "blocked" verdict was a
+  wrong-place lookup plus a real no-VNC-client dependency.)*
 - One machine, one resolution (640×480 body tiles, 1920×1080 session).
 - Windows are 45 s. A longer run could surface thermal or memory growth that
   this does not see.

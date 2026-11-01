@@ -160,23 +160,30 @@ Two operational notes worth keeping:
 2. A manual `body_view` must be stopped before a launch, or two of them write to
    the same `sessions/body` directory.
 
-## 9. There is no headless way to get a game frame
+## 9. Headless capture exists; the earlier table was wrong
 
-Blocking item for every visual measurement (FOV calibration, the blue-glow and
-yellow-ghost cue pairs). `[MEASURED 2026-11-01]`
+**Corrected 2026-11-01.** The old version of this section said every capture path
+needed the operator's VNC password. That is false: two paths were measured, neither
+uses a password, and both produced real 1920x1080 game frames. Full commands, pixel
+statistics and the failed attempts are in `research/capture.md`.
 
 | path | outcome |
 | --- | --- |
-| `weston-screenshooter` | exits 0, writes nothing — the compositor has no screenshooter module |
-| `spike/vnc_grab.py` on 5901 | server offers RSA-AES256 and **authenticates a local account**: `Invalid username. Weston authenticates a local account` |
-| `ffmpeg -f x11grab` | this build has no `x11grab` |
-| ImageMagick `import` on the Xwayland display `:1` | cannot load `libX11` from a shell, and Xwayland is `-rootless` so root would be empty anyway |
-| `spike/c0/capture_game.sh` | Superhot-era: looks for a Superhot window via `hyprctl`, then `grim` on the desktop. Wrong stack, and the game is not on the desktop — it renders inside Weston's VNC output |
+| `weston-screenshooter` | **works.** It ignores its output argument and writes `wayland-screenshot-<ts>.png` into the **cwd**; the old "exits 0, writes nothing" was a wrong-place lookup. Vertically mirrored under this GL/VNC compositor. `clank.capture.capture_frame` wraps it. |
+| X11 grab of the `Job Simulator` window on Xwayland `:1` | **works, upright, no VNC.** `spike/wbc_game/x11_grab.py` uses `XGetImage`; window `0x4a00001`, 1920x1080. |
+| `spike/vnc_grab.py` on 5901 | still fails: RSA-AES256 against a **local account** (`VNC: wrong user ''`). Not pursued, by constraint. |
+| `ffmpeg -f x11grab` | this build has no `x11grab`. |
+| `weston-debug -l` | no pixel/screenshot scope (log, scene-graph, timeline, proto, vnc-backend, renderer details only). |
+| `spike/c0/capture_game.sh` | Superhot-era dead code, wrong stack. |
+| Weston `--password` | does not exist in Weston 16.0.0; auth is neatvnc + PAM. |
 
-The only working path is the interactive dashboard, where the operator types a VNC
-password into `#vnc-pass`. **That credential is a local-account password, so it is
-the operator's to use, not mine.**
+One real caveat, also measured: on the VNC backend `weston-screenshooter` only
+completes while an authenticated VNC client is attached. The live session has the
+operator's browser connected, which is why capture works there. A fresh unattended
+session with no browser should use the X11 path (`:1` is already recorded by the
+orchestrator as `processes.weston.display`), or an authenticated client must be
+attached first - and that needs the password.
 
-The fix worth making: have the orchestrator pass an explicit `--password` to
-weston's VNC backend from config, so the grab path is non-interactive and a rig can
-capture unattended. Until then, unattended capture does not exist.
+Orientation: the compositor logs `screen capture uses y-flip: yes`; its PNGs are
+mirrored across the horizontal axis. The VNC canvas and the X11 grab are upright.
+Do not compare the two orientations without flipping one.
