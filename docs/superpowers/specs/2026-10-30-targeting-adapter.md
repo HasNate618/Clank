@@ -226,6 +226,20 @@ below the head at yaw −73° / pitch −82°, so its pixel is (1.31, 1.41) — 
 are not in frame. Fix the base pose (or give `look` a pitch axis) before tuning a
 gain; no gain fixes an arm that cannot see what it is reaching for.
 
+**Hands-in-view anchor measured 2026-11-01** (`research/pixel-servo-sim.md` §7).
+Frames 95/332 of the same clip put the wrist at pixel (0.73, 0.72), depth 0.544 m,
+inside the frame — the base-pose problem is solvable without changing clip. From
+there the servo **lands on the target** (min error 0.005) and then oscillates
+(steady-state 0.095–0.146), with 0.10–0.13 m of tracking lag. Damping is strictly
+worse (gain 0.5 → 0.34, gain 0.3 → the wrist leaves the frustum and the loop loses
+its signal), so this is not an overshoot to tune. Consequences for the adapter:
+
+- A pixel deadband tighter than ~0.10 is unreachable. Treat the servo as a **ray
+  aligner** and terminate on the glow cue, as §8 already says.
+- Anchor choice is a trade-off: frame 0 holds at 6.9e-5 m/s but cannot see its
+  hand; frame 332 sees its hand and holds at 7.7e-3 m/s. Standing still during a
+  PLAN call and reaching may want different anchors.
+
 ## 8. In-range signals
 
 Superhot gives three different "you may act now" signals, and conflating them

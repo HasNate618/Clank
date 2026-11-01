@@ -123,3 +123,78 @@ loop simply breaks. A pixel servo needs its wrist in front of its own camera.
 - No measurement of whether entering grab range (blue highlight) happens at these
   errors — that needs the game.
 - The deadband (0.005) was never reached, so its value is untested.
+
+## 7. Hands-in-view anchor: the servo lands, then leaves
+
+Frame 0 hangs the wrist out of the frustum, so every in-frame target was
+unreachable *and* every reachable point was out of frame. Frames 95 and 332 of the
+same clip put the wrist 0.55 m forward with its pixel at (0.73, 0.72) — inside the
+frame. Re-ran both the hold soak and the servo from there.
+
+### 7.1 Hold stability now depends on the anchor
+
+Through `bus.take()` with the latch fix, 20 s:
+
+| anchor | net | RMS last 10 s | fall |
+| --- | ---: | ---: | :---: |
+| frame 0 | 0.0226 m | **0.000069 m/s** | no |
+| frame 332 | 0.0432 m | 0.00768 m/s | no |
+| frame 95 | 0.0478 m | 0.00594 m/s | no |
+
+Frame 0 is a settled standing pose; 95 and 332 are mid-motion with the arm raised,
+so their reference carries velocity the policy keeps acting on. That is a
+**trade-off, not a win**: the steady anchor cannot see its own hand, and the
+anchor that can see its hand is ~100× less steady.
+
+### 7.2 The servo now reaches the pixel and then oscillates
+
+Anchor 332, wrist pixel (0.734, 0.718), depth 0.544 m, 150 ticks, deadband 0.005:
+
+| target | start | min | final | \|cmd − ach\| | converged |
+| --- | ---: | ---: | ---: | ---: | :---: |
+| (0.83, 0.72) | 0.097 | **0.005** | 0.102 | 0.114 | no |
+| (0.63, 0.72) | 0.118 | 0.028 | 0.133 | 0.126 | no |
+| (0.73, 0.87) | 0.143 | **0.005** | 0.109 | 0.119 | no |
+| (0.50, 0.50) | 0.305 | 0.014 | 0.117 | 0.102 | no |
+
+**It lands on the pixel (0.005) and then leaves it.** The aiming is right; the
+loop does not hold. Tracking lag is 0.10–0.13 m, so the achieved wrist is always
+a step behind the commanded point while the head is still settling.
+
+### 7.3 Damping makes it worse
+
+Hypothesis was overshoot from a unity-gain full step, so blend toward the target:
+
+| target | gain 1.0 | 0.5 | 0.3 | 0.15 |
+| --- | ---: | ---: | ---: | ---: |
+| (0.50, 0.50) final | **0.146** | 0.540 | 0.668 | 9.9 |
+| (0.83, 0.72) final | **0.095** | 0.345 | 9.9 | 9.9 |
+
+9.9 is `project_point` returning `None` — the wrist left the frustum and the loop
+lost its error signal. Unity gain is the best of the four, so the oscillation is
+not an overshoot problem and **no gain fixes it**. This needs a control law, not a
+knob, and that is where I stopped rather than keep fishing.
+
+### 7.4 What this means
+
+The pixel servo is a **ray aligner with ~0.10 of frame steady-state error**, not an
+arrival mechanism. That is consistent with the design, not a failure of it: the
+adapter spec already says a zero pixel error means *on the ray*, and the arrival
+gate is the game's blue highlight. So:
+
+- Do not set a pixel deadband tighter than ~0.10; it is unreachable and the loop
+  will spin. The measured best-case steady state is 0.095–0.146.
+- Terminate a reach on the glow cue, not on pixel error.
+- Use frame 332 (or 95) as the *reaching* anchor and frame 0 for standing still
+  during a PLAN call, if the adapter can switch. That is a design decision, not a
+  measurement.
+
+### 7.5 Negative and unmeasured
+
+- One anchor pair, right arm, one seed, no repeats.
+- No pitch on `look`, so the head never turns to help the ray.
+- Not measured: whether the 0.10–0.13 m lag shrinks once the body settles, i.e.
+  whether the oscillation is transient. The probe ran 3 s after a 1.2 s settle;
+  the hold measurement says the body is still moving at 0.006–0.008 m/s at that
+  anchor, so it probably is not settled.
+- No cue-gated termination test, because that needs the game.
