@@ -10,6 +10,10 @@
   forward in the root frame.
 - Status: `[MEASURED]`, 2026-11-01, one run, one seed, no repeat. Not yet a
   soak.
+- **Scope warning (2026-11-01):** these "no fall" results are about this probe
+  harness, not the live loop. Driving `body_view` produced a fall that the probe
+  could not reproduce — see `research/live-body-runtime.md` §4. Do not quote this
+  table as live safety.
 
 ## 1. Where the wrist gets to
 

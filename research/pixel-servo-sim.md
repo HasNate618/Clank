@@ -11,6 +11,9 @@
   unmeasured). Target and projection share one FOV, so the loop is
   self-consistent — this measures convergence, not absolute pixel accuracy.
 - Status: `[MEASURED]`, 2026-11-01, one run per cell, no repeats.
+- **Scope warning (2026-11-01):** these are probe results. The probe did not
+  reproduce a fall the live `body_view` produced (`research/live-body-runtime.md`
+  §4), so nothing here is a statement about live safety.
 
 ## 1. Where the hands actually are
 
