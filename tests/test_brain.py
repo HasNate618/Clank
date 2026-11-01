@@ -316,5 +316,79 @@ class GroundQuad(ChatPatchMixin, unittest.TestCase):
         self.assertEqual(as_dict["error"], "")
 
 
+class VerifyCrop(ChatPatchMixin, unittest.TestCase):
+    def test_store_clerk_matches_a_paraphrase(self) -> None:
+        self.reply = "the store clerk cartridge"
+        v = brain.verify(brain.BrainConfig(), fake_frame(), "STORE CLERK")
+        self.assertTrue(v.match)
+        self.assertEqual(v.heard, self.reply)
+        self.assertEqual(v.raw, self.reply)
+        self.assertEqual(v.error, "")
+
+    def test_a_neighbour_does_not_match(self) -> None:
+        self.reply = "GOURMET CHEF"
+        v = brain.verify(brain.BrainConfig(), fake_frame(), "STORE CLERK")
+        self.assertFalse(v.match)
+        self.assertEqual(v.heard, "GOURMET CHEF")
+
+    def test_one_word_missing_is_a_mismatch(self) -> None:
+        self.reply = "the store cartridge"
+        v = brain.verify(brain.BrainConfig(), fake_frame(), "STORE CLERK")
+        self.assertFalse(v.match)
+
+    def test_punctuation_and_case_do_not_decide_the_match(self) -> None:
+        self.reply = "It's the Store-Clerk cartridge."
+        v = brain.verify(brain.BrainConfig(), fake_frame(), "store clerk")
+        self.assertTrue(v.match)
+
+    def test_none_does_not_match(self) -> None:
+        self.reply = "NONE"
+        v = brain.verify(brain.BrainConfig(), fake_frame(), "card")
+        self.assertFalse(v.match)
+
+    def test_empty_reply_does_not_match(self) -> None:
+        self.reply = "   "
+        v = brain.verify(brain.BrainConfig(), fake_frame(), "card")
+        self.assertFalse(v.match)
+        self.assertEqual(v.heard, "")
+
+    def test_a_noun_with_no_words_cannot_match(self) -> None:
+        self.reply = "a card"
+        v = brain.verify(brain.BrainConfig(), fake_frame(), "")
+        self.assertFalse(v.match)
+
+    def test_transport_error_does_not_match_and_keeps_the_message(self) -> None:
+        self.reply_error = "transport: timed out"
+        v = brain.verify(brain.BrainConfig(), fake_frame(), "card")
+        self.assertFalse(v.match)
+        self.assertEqual(v.error, "transport: timed out")
+
+    def test_one_call_asking_the_bare_question_about_the_crop(self) -> None:
+        self.reply = "card"
+        brain.verify(brain.BrainConfig(), fake_frame(), "card")
+        self.assertEqual(len(self.chat_calls), 1)
+        self.assertEqual(self.chat_calls[0]["max_tokens"], 40)
+        self.assertEqual(
+            self.user_text(),
+            "This is a close-up of one object. What is it? Reply with the name, or NONE.",
+        )
+        content = self.chat_calls[-1]["messages"][-1]["content"]
+        self.assertEqual(content[0]["type"], "image_url")
+
+    def test_to_dict_reports_the_match(self) -> None:
+        self.reply = "the store clerk cartridge"
+        v = brain.verify(brain.BrainConfig(), fake_frame(), "STORE CLERK")
+        self.assertEqual(
+            v.to_dict(),
+            {
+                "noun": "STORE CLERK",
+                "heard": "the store clerk cartridge",
+                "match": True,
+                "raw": "the store clerk cartridge",
+                "error": "",
+            },
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

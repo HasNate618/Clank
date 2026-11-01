@@ -493,6 +493,83 @@ def ground(
 
 
 # --------------------------------------------------------------------------- #
+# VERIFY
+# --------------------------------------------------------------------------- #
+
+
+@dataclass(frozen=True)
+class Verify:
+    """Does the crop the game just highlighted actually show `noun`?
+
+    `match` is a word-subset test, not string equality: the crop question comes
+    back as a sentence ("the store clerk cartridge") and the planner's noun is a
+    label ("STORE CLERK"). Extra words are allowed; a missing one is a mismatch.
+
+    This is the grab gate, not a hint (spec §11): a wrong name must block the
+    grab rather than be averaged away. It is never an exception - `NONE`, an
+    empty reply, chatter and a transport error all arrive as `match=False`, with
+    the transport message kept in `error`.
+    """
+
+    noun: str
+    heard: str = ""
+    match: bool = False
+    raw: str = ""
+    error: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "noun": self.noun,
+            "heard": self.heard,
+            "match": self.match,
+            "raw": self.raw,
+            "error": self.error,
+        }
+
+
+def _names_the_noun(noun: str, heard: str) -> bool:
+    """True when every alphabetic word of `noun` appears somewhere in `heard`.
+
+    Case and punctuation are stripped on both sides, so `"store clerk"` matches
+    `"It's the Store-Clerk cartridge."`. A noun with no alphabetic word cannot be
+    confirmed against anything, so it never matches.
+    """
+    wanted = set(re.findall(r"[a-z]+", noun.lower()))
+    if not wanted:
+        return False
+    return wanted <= set(re.findall(r"[a-z]+", heard.lower()))
+
+
+def verify(config: BrainConfig, frame: Frame, noun: str) -> Verify:
+    """Ask what one crop shows, and say whether it is `noun`.
+
+    Spec §11. GROUND's quadrant says *roughly where*: the tray's four cartridges
+    sit 0.073 apart normalised and the quadrant centres are only ~0.13 apart, so
+    the quadrant cannot separate them. After the game highlights one object
+    (`glow=yes`), this asks the model to name that one object instead of a
+    position, and the caller grabs only on `match`.
+
+    `frame` is the crop, not the full still: the same crop-is-the-difference
+    measurement that made GROUND ask about a box applies here. Cropping is the
+    caller's arithmetic (`crop_jpeg`), not image work in the brain.
+    """
+    prompt = "This is a close-up of one object. What is it? Reply with the name, or NONE."
+    reply = _chat(config, [{"role": "user", "content": [
+        _image_part(frame), {"type": "text", "text": prompt},
+    ]}], max_tokens=40)
+    if reply.error:
+        return Verify(noun=noun, raw=reply.text, error=reply.error)
+
+    heard = reply.text.strip()
+    return Verify(
+        noun=noun,
+        heard=heard,
+        match=_names_the_noun(noun, heard),
+        raw=reply.text,
+    )
+
+
+# --------------------------------------------------------------------------- #
 # ASSEMBLE
 # --------------------------------------------------------------------------- #
 
@@ -737,6 +814,7 @@ __all__ = [
     "Plan",
     "QUADRANTS",
     "TurnRecord",
+    "Verify",
     "assemble",
     "compose_pixel",
     "extract_json_object",
@@ -744,6 +822,7 @@ __all__ = [
     "live_block",
     "plan",
     "run_turn",
+    "verify",
 ]
 
 # `SKILLS` is imported for the schema assertion in tests, not used here.
