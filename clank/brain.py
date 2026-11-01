@@ -39,6 +39,12 @@ import urllib.request
 from dataclasses import dataclass, field, replace
 from typing import Any
 
+from .body import (
+    FLAG_FALL_RISK,
+    FLAG_SATURATED,
+    FLAG_TTL_EXPIRED,
+    FLAG_UNSUPPORTED,
+)
 from .frames import Frame, crop_jpeg
 from .intent import (
     LOOK_ARC_RAD,
@@ -53,6 +59,47 @@ DEFAULT_MODEL = "LFM3-Omni-2B-Q8_0.gguf"
 #: schema is wider (`fire`, `strike`, ...) so the adapter does not fork, but the
 #: constitution never offers them, and a model that names one is rejected here.
 PLANNER_SKILLS = ("hold", "look", "reach", "grab", "release")
+
+#: The words the constitution promises the model will be told after each action.
+#: Kept to exactly these three: a fourth would break the sentence in
+#: `CONSTITUTION`, and the model was measured to answer *around* a promise it was
+#: given, not to honour one it was not.
+OUTCOMES = ("done", "saturated", "timeout")
+
+
+def outcome_from_flags(flags: int) -> str:
+    """The outcome word for a turn, from the flags the executor computed.
+
+    The executor sets `FLAG_SATURATED` on every tick where the achieved pose is
+    further from the target than `tolerance_m`, and writes it into
+    `body_state.json`. Nothing read it, so a saturated reach looked like a clean
+    one to the next PLAN turn and the model would retry the identical action.
+
+    `FLAG_SATURATED` wins over `FLAG_TTL_EXPIRED` on purpose: both can be set on
+    a reach that never arrived, and "saturated" is the fact worth acting on —
+    it says the body could not get there, so the retry has to differ. "timeout"
+    invites the same action again.
+
+    `FLAG_FALL_RISK` and `FLAG_UNSUPPORTED` map to "done" only because the
+    constitution offers three words and no more. They are recorded in the trace,
+    not invented into the model-facing vocabulary.
+    """
+    if flags & FLAG_SATURATED:
+        return "saturated"
+    if flags & FLAG_TTL_EXPIRED:
+        return "timeout"
+    return "done"
+
+
+def last_line(
+    skill: str, side: str, target: str | None, outcome: str
+) -> str:
+    """One `last:` line for `live_block`, in the shape §7.3 specifies.
+
+    `none`/`null` rather than omission: the model is told what it asked for, and
+    a missing field reads as a schema it can leave out next time.
+    """
+    return f"{skill} {side} target={target or 'null'} → {outcome}"
 
 #: Skills that address one hand.
 PLANNER_SIDE_SKILLS = ("reach", "grab", "release")
@@ -799,6 +846,8 @@ def run_turn(
     box: tuple[float, float, float, float] | None = None,
     container: str = "tray",
     last: str = "(none)",
+    last_action: tuple[str, str, str | None] | None = None,
+    state_flags: int = 0,
     wav: bytes | None = None,
     turn: int = 0,
     look_step: int = 1,
@@ -839,6 +888,12 @@ def run_turn(
     wrong cartridge.
     """
     started = time.monotonic()
+    if last_action is not None:
+        # Flags come from the executor (body_state.json); the words are the
+        # brain's. Composing them here is what makes a saturated reach visible
+        # to the next PLAN turn - see `outcome_from_flags`.
+        skill, side, target = last_action
+        last = last_line(skill, side, target, outcome_from_flags(state_flags))
     live = live_block(heard, left, right, yaw_rad, glow, last, ghost=ghost)
     plan_result = plan(config, seed, frame, live, transcript=history, wav=wav,
                        default_side="right" if right == "empty" else "left")
@@ -913,6 +968,7 @@ __all__ = [
     "Ground",
     "PLANNER_SKILLS",
     "Plan",
+    "OUTCOMES",
     "QUADRANTS",
     "TurnRecord",
     "Verify",
@@ -920,7 +976,9 @@ __all__ = [
     "compose_pixel",
     "extract_json_object",
     "ground",
+    "last_line",
     "live_block",
+    "outcome_from_flags",
     "plan",
     "run_turn",
     "verify",

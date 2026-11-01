@@ -687,3 +687,105 @@ class NamesTheNoun(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class OutcomeFeedback(unittest.TestCase):
+    """P2b: a saturated reach has to be visible to the next PLAN turn.
+
+    The executor computes FLAG_SATURATED on every tick and writes it into
+    body_state.json, and until now nothing read it. The constitution promises
+    "after each action you are told done, saturated, or timeout", so the words
+    have to come from the flags rather than from a caller guessing.
+    """
+
+    def test_saturated_flag_is_the_word_saturated(self) -> None:
+        self.assertEqual(
+            brain.outcome_from_flags(brain.FLAG_SATURATED), "saturated"
+        )
+
+    def test_ttl_expired_is_the_word_timeout(self) -> None:
+        self.assertEqual(brain.outcome_from_flags(brain.FLAG_TTL_EXPIRED), "timeout")
+
+    def test_a_clean_tick_is_done(self) -> None:
+        self.assertEqual(brain.outcome_from_flags(0), "done")
+
+    def test_saturated_beats_timeout(self) -> None:
+        # Both set: the body could not get there, which is the fact worth
+        # retrying differently. "timeout" would invite the identical retry.
+        self.assertEqual(
+            brain.outcome_from_flags(brain.FLAG_SATURATED | brain.FLAG_TTL_EXPIRED),
+            "saturated",
+        )
+
+    def test_fall_risk_and_unsupported_are_not_model_words(self) -> None:
+        # The constitution offers exactly three words. Inventing a fourth would
+        # break the promise; these flags belong in the trace, not the prompt.
+        for flag in (brain.FLAG_FALL_RISK, brain.FLAG_UNSUPPORTED):
+            self.assertEqual(brain.outcome_from_flags(flag), "done")
+
+    def test_last_line_names_the_action_and_the_outcome(self) -> None:
+        self.assertEqual(
+            brain.last_line("reach", "right", "card", "saturated"),
+            "reach right target=card → saturated",
+        )
+
+    def test_last_line_renders_a_missing_target_as_null(self) -> None:
+        self.assertEqual(
+            brain.last_line("look", "none", None, "done"),
+            "look none target=null → done",
+        )
+
+
+class OutcomeReachesThePrompt(ChatPatchMixin, unittest.TestCase):
+    def test_a_saturated_reach_appears_in_the_live_block(self) -> None:
+        self.reply = '{"skill":"hold","side":"none","target":null}'
+        record = brain.run_turn(
+            brain.BrainConfig(),
+            seed="",
+            frame=fake_frame(),
+            heard="take my card",
+            history=[],
+            last_action=("reach", "right", "card"),
+            state_flags=brain.FLAG_SATURATED,
+        )
+        self.assertIn("reach right target=card → saturated", record.live)
+
+    def test_the_planner_actually_sees_it(self) -> None:
+        self.reply = '{"skill":"hold","side":"none","target":null}'
+        brain.run_turn(
+            brain.BrainConfig(),
+            seed="",
+            frame=fake_frame(),
+            heard="take my card",
+            history=[],
+            last_action=("reach", "right", "card"),
+            state_flags=brain.FLAG_SATURATED,
+        )
+        self.assertIn("saturated", self.user_text())
+
+    def test_last_action_overrides_the_raw_last_string(self) -> None:
+        self.reply = '{"skill":"hold","side":"none","target":null}'
+        record = brain.run_turn(
+            brain.BrainConfig(),
+            seed="",
+            frame=fake_frame(),
+            heard="take my card",
+            history=[],
+            last="stale hand-written line",
+            last_action=("reach", "right", "card"),
+            state_flags=0,
+        )
+        self.assertNotIn("stale hand-written line", record.live)
+        self.assertIn("→ done", record.live)
+
+    def test_without_last_action_the_string_is_used_unchanged(self) -> None:
+        self.reply = '{"skill":"hold","side":"none","target":null}'
+        record = brain.run_turn(
+            brain.BrainConfig(),
+            seed="",
+            frame=fake_frame(),
+            heard="take my card",
+            history=[],
+            last="grab right target=card → done",
+        )
+        self.assertIn("grab right target=card → done", record.live)
