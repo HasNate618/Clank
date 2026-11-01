@@ -283,6 +283,31 @@ class CueGatesInTurn(ChatPatchMixin, unittest.TestCase):
         self.assertEqual(record.decision.intent.skill, "hold")
         self.assertIn("ghost is no", record.decision.reason)
 
+    def test_run_turn_passes_right_so_a_side_less_plan_defaults_to_the_free_hand(
+            self) -> None:
+        # `right` is the hand cue, not just text: it chooses `default_side` for a
+        # plan that omits its side, and a plan that names the right hand has to
+        # see that hand holding. Both die if `right` stops reaching the turn.
+        with mock.patch.object(brain, "_chat", side_effect=[
+            brain.ModelReply(text='{"skill":"release","target":"card"}'),
+            brain.ModelReply(
+                text='{"skill":"release","side":"right","target":"card"}'),
+        ]):
+            side_less = brain.run_turn(
+                brain.BrainConfig(), seed="", frame=fake_frame(),
+                heard="put the card down", history=[],
+                left="holding", right="holding",
+            )
+            named_right = brain.run_turn(
+                brain.BrainConfig(), seed="", frame=fake_frame(),
+                heard="put the card down", history=[], right="holding",
+            )
+        self.assertEqual(side_less.plan.side, "left")
+        self.assertEqual(side_less.decision.intent.side, "left")
+        self.assertIn("defaulted to left", side_less.plan.note)
+        self.assertTrue(named_right.decision.accepted)
+        self.assertEqual(named_right.decision.intent.side, "right")
+
 
 class RunTurnCrop(ScriptedChat, unittest.TestCase):
     """`run_turn` crops the container box, grounds the crop, then verifies it."""
@@ -364,6 +389,12 @@ class RunTurnCrop(ScriptedChat, unittest.TestCase):
         self.assertEqual(len(self.chat_calls), 3)
         self.assertIn("verify mismatch", record.ground.error)
         self.assertIsNone(record.ground.pixel)
+        # The real ground survives the mismatch - only its pixel goes. Without
+        # these, a fabricated `heard`-based ground passes this test again.
+        self.assertEqual(record.ground.quadrant, "TOP-RIGHT")
+        self.assertEqual(record.ground.raw, "TOP-RIGHT")
+        self.assertEqual(record.ground.box, self.box)
+        self.assertFalse(record.to_dict()["verify"]["match"])
         self.assertIsNotNone(record.verify)
         self.assertFalse(record.verify.match)
         self.assertEqual(record.decision.intent.skill, "hold")
@@ -381,12 +412,16 @@ class RunTurnCrop(ScriptedChat, unittest.TestCase):
         self.assertIn("verify mismatch: ", record.ground.error)
         self.assertIn("transport: timed out", record.ground.error)
         self.assertTrue(record.verify.error)
+        # The quadrant still came from the real ground, not a fabricated one.
+        self.assertEqual(record.ground.quadrant, "TOP-RIGHT")
+        self.assertEqual(record.ground.box, self.box)
 
     def test_a_matching_verify_is_recorded_on_the_turn(self) -> None:
         record = self.run_turn([self.grab, "TOP-RIGHT", "the store clerk cartridge"],
                                glow="yes", box=self.box)
         self.assertIsNotNone(record.verify)
         self.assertTrue(record.verify.match)
+        self.assertTrue(record.to_dict()["verify"]["match"])
 
     def test_a_reach_at_glow_yes_is_never_verified(self) -> None:
         # The gate is grab-only. Widening it would pay a VERIFY call for a

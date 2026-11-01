@@ -384,7 +384,8 @@ class Ground:
 
     @property
     def cell(self) -> str | None:
-        """Kept for older overlay readers: the `cell` key is the quadrant."""
+        """Wire alias for `quadrant`; the `cell` key stays in `to_dict()` and is
+        pinned by tests so older traces still read."""
         return self.quadrant
 
     def to_dict(self) -> dict[str, Any]:
