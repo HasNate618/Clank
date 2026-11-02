@@ -252,6 +252,45 @@ LOG_HEADER = ["t", "hx", "hy", "hz", "hqx", "hqy", "hqz", "hqw",
               "state_age", "note"]
 
 
+#: Seconds before the end of a bounded run at which the relay starts warning.
+EXPIRY_WARN_S = 60.0
+
+#: Printed when a bounded run reaches its duration.
+#:
+#: A relay that exits quietly leaves the game holding the last pose indefinitely,
+#: and nothing else in the stack can tell: the process succeeded at everything it
+#: was asked to do. Measured 2026-11-01 - the game held a frozen pose for 17
+#: minutes while the dashboard reported `state: running, last_error: None`, and the
+#: only visible trace was a cheery "sent 180000 packets in 3600.00 s" line. So the
+#: exit says what it costs.
+EXPIRY_NOTE = (
+    "pose_relay: duration reached - STOPPING. The game will hold the last pose and "
+    "will not respond until a relay is started again."
+)
+
+
+def unlimited(duration: float) -> bool:
+    """`duration <= 0` means "run until killed". NaN counts as unlimited.
+
+    NaN matters: `now - started >= nan` is False, so a NaN duration would loop
+    forever, but `not (nan > 0)` is True, so it is classified rather than hoped
+    about.
+    """
+    return not (duration > 0.0)
+
+
+def deadline_state(elapsed: float, duration: float) -> str:
+    """`unlimited` | `running` | `warning` | `expired`, for a bounded run."""
+    if unlimited(duration):
+        return "unlimited"
+    remaining = duration - elapsed
+    if remaining <= 0.0:
+        return "expired"
+    if remaining <= EXPIRY_WARN_S:
+        return "warning"
+    return "running"
+
+
 def run(host: str, port: int, state_path: Path, log_path: Path | None,
         duration: float, hz: float, force_grab: str = "none",
         force_trigger: str = "none", grab_mode: str = "squeeze",
@@ -301,10 +340,20 @@ def run(host: str, port: int, state_path: Path, log_path: Path | None,
             writer.writerow(LOG_HEADER)
         stream = sock.makefile("wb")
         next_tick = started
+        warned = False
         while True:
             now = time.monotonic()
-            if now - started >= duration:
+            state = deadline_state(now - started, duration)
+            if state == "expired":
+                print(EXPIRY_NOTE, flush=True)
                 break
+            if state == "warning" and not warned:
+                warned = True
+                print(
+                    f"pose_relay: {duration - (now - started):.0f} s left; "
+                    "the game freezes when this relay stops",
+                    flush=True,
+                )
             poses, note, age = source.poses(now)
             # Buttons: a forced mode wins, otherwise the body's own state. Both
             # are per hand, and the two channels stay separate so a gun can be
@@ -362,7 +411,14 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--port", type=int, default=4242)
     ap.add_argument("--state", required=True, help="body_state.json written by the body view")
     ap.add_argument("--log", default=None, help="CSV of every emitted pose")
-    ap.add_argument("--duration", type=float, default=3600.0)
+    ap.add_argument(
+        "--duration",
+        type=float,
+        default=0.0,
+        help="seconds to run; 0 or negative means until killed. The default is "
+        "unlimited because a relay that expires freezes the game silently, while "
+        "a relay that overstays is killed in a second",
+    )
     ap.add_argument("--hz", type=float, default=50.0)
     ap.add_argument("--force-grab", choices=FORCE_MODES, default="none",
                     help="hold one hand closed regardless of the body, for the hub A/B")

@@ -360,10 +360,6 @@ class RelayRunTests(unittest.TestCase):
         self.assertEqual(code, 1)
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class YawOffsetTests(unittest.TestCase):
     """The robot's heading in the virtual room, at the relay's boundary.
 
@@ -545,3 +541,47 @@ class DeclaredFovCli(unittest.TestCase):
             )
         self.assertNotEqual(caught.exception.code, 0)
         self.assertIn("between 0 and 180", sink["stderr"])
+
+
+
+class DurationTests(unittest.TestCase):
+    """A bounded relay must not exit quietly.
+
+    The measured failure this guards against: the relay hit its duration, exited
+    cleanly, and the game held a frozen pose for 17 minutes while the dashboard
+    still reported `state: running, last_error: None`. Nothing in the stack
+    noticed, because the only thing that knew was a process that had already
+    succeeded at everything it had been asked to do.
+    """
+
+    def test_zero_and_negative_mean_run_until_killed(self) -> None:
+        for d in (0.0, -1.0, -3600.0):
+            self.assertTrue(pose_relay.unlimited(d), d)
+            self.assertEqual(pose_relay.deadline_state(1e9, d), "unlimited")
+
+    def test_nan_is_treated_as_unlimited_not_as_expired(self) -> None:
+        """A NaN duration must not compare its way into an instant exit."""
+        self.assertTrue(pose_relay.unlimited(float("nan")))
+
+    def test_a_bounded_run_expires_at_its_duration(self) -> None:
+        self.assertEqual(pose_relay.deadline_state(3599.0, 3600.0), "warning")
+        self.assertEqual(pose_relay.deadline_state(3600.0, 3600.0), "expired")
+        self.assertEqual(pose_relay.deadline_state(3601.0, 3600.0), "expired")
+
+    def test_it_warns_before_it_expires(self) -> None:
+        self.assertEqual(pose_relay.deadline_state(100.0, 3600.0), "running")
+        self.assertEqual(
+            pose_relay.deadline_state(3600.0 - pose_relay.EXPIRY_WARN_S + 1.0, 3600.0),
+            "warning",
+        )
+
+    def test_the_expiry_note_names_the_consequence(self) -> None:
+        """Not "done": the reader has to learn the game is now frozen."""
+        note = pose_relay.EXPIRY_NOTE
+        self.assertIn("hold the last pose", note)
+        self.assertIn("relay", note)
+        self.assertGreater(len(note), 60)
+
+
+if __name__ == "__main__":
+    unittest.main()
