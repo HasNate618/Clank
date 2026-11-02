@@ -260,3 +260,36 @@ At 140 deg it is a different story: 0.13-0.32 m, the same magnitude as the short
 metre from where it was asked to go**, so the fix matters roughly ten times more in
 the game than in the sim fixture the servo was tuned against.
 
+## 8. Live validation: draw the prediction on the frame and look
+
+The sim fixture is 90 deg, so it cannot test the corrected projection or the field of
+view. The game can. Method: raise the hand, capture, project the **known** wrist
+position from `body_state` through `project_point` under two fields of view, and draw
+both crosshairs on the real frame (`spike/wbc_game` machinery, images under
+`research/evidence/`).
+
+**Frame 1, hand near the axis** (`hand-projection-near-axis.jpg`). Head
+(-0.017, 0.183, 0.355), wrist (0.467, 0.231, 0.234), only ~5.7 deg off-axis. The two
+predictions differ by 40 px and **both land on the hand**, so this frame validates
+the projection but cannot discriminate the FOV.
+
+**Frame 2, hand far off-axis** (`hand-projection-140deg.jpg`). Head
+(-0.079, 0.158, 0.358), wrist (0.237, 0.526, 0.304). The predictions now differ by
+**156 px**:
+
+| assumed field | predicted pixel |
+| ---: | ---: |
+| 140 deg | (871, 503) |
+| 90 deg | (715, 483) |
+
+The 140 deg crosshair lands **on the wrist**, where the rendered hand meets the arm.
+The 90 deg crosshair lands about 150 px to the left of the hand, in empty space.
+
+So the live render agrees with a ~140 deg field and excludes 90 deg, independently of
+the homography fit and of the CITED driver geometry. MEASURED.
+
+Caveat, and it is why this validates rather than measures: `project_point` names the
+**wrist joint**, while the game draws a palm-centred cartoon hand, so a residual of
+about one hand-width is expected and is not counted as error. The method cannot pin
+the field to a degree; it can only kill a hypothesis, which is all it was asked to do
+here.
