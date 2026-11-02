@@ -180,4 +180,60 @@ rendered camera is the HMD pose.** The FOV is not measured either, and the two
 independent attempts above disagree by more than 2x.
 
 Probes kept: `spike/wbc_game/fov_rotation_homography.py` (self-test included),
-`fov_yaw_probe.py`, `fov_shift_probe.py`.
+`fov_yaw_probe.py`, `fov_shift_probe.py`, `fov_range_probe.py`.
+
+## 7. RESOLVED: the field is ~140 deg, and the projection model cannot represent it
+
+Multi-angle fit with the corrected range, same reference frame, head settled each
+time, 480x270 space:
+
+| yaw | measured world rotation | best f | hfov | error |
+| ---: | ---: | ---: | ---: | ---: |
+| 10 | 9.46 | 100 | 134.8 | 21.0 |
+| 20 | 21.32 | 78 | 144.0 | 42.0 |
+| 35 | 36.25 | 80 | 143.1 | 43.1 |
+
+The two larger rotations agree at 143-144 deg; the 10 deg case is the weakest
+constraint (least signal) and sits at 134.8. All three bracket the driver's declared
+140.0 deg horizontal, and the measured f (78-80 in 480 px) is within ~10 % of the
+declared 87.35. The earlier 119.5 deg figure came from a 69.55 deg pair, where the
+overlap is smallest and the fit is least constrained.
+
+So: **hfov ~ 140 deg, vfov ~ 114.2 deg**, indicative and three-angle consistent,
+not a precision number (residuals sit near the animation floor of ~21 because props
+and light beams move between frames).
+
+### 7.1 The consequence: `project_point` is a linear map, not a projection
+
+`clank/projection.py::project_point` computes
+
+```
+u = (fov.angle_left - yaw) / fov.horizontal
+```
+
+which is **linear in angle**. An OpenXR frustum is rectilinear: the tangent-space map
+is
+
+```
+u = (tan(yaw) + tan(angle_left)) / (tan(angle_left) + tan(angle_right))
+```
+
+At a 140 deg field the difference is not a rounding error:
+
+| off-axis angle | linear u | rectilinear u | error (fraction of frame) |
+| ---: | ---: | ---: | ---: |
+| 22.5 | 0.750 | 0.707 | 0.043 |
+| 35 | 0.750 | 0.627 | **0.123** |
+| 50 | 0.857 | 0.720 | 0.137 |
+
+At 35 deg that is **~236 px of 1920**. Every pixel consumer inherits it: `unproject`,
+`servo_step`, and the `reach_outcome` glow test. The pixel servo therefore mis-aims by
+a large fraction of the frame anywhere away from the centre - which is consistent with
+its measured failure to converge in `research/pixel-servo-sim.md` (it "lands then
+oscillates", and damping made it strictly worse).
+
+That reframes the servo result: before concluding the arm cannot arrive, check whether
+the error was ever a projection artefact. The fix is small and belongs in
+`projection.py` - replace the linear map with the tangent map and its exact inverse,
+with the existing round-trip test as the mutation check. **Not done here.**
+
