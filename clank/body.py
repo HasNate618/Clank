@@ -252,8 +252,19 @@ class BodyState:
     head: Pose
     left_hand: Pose
     right_hand: Pose
-    #: Commanded, not achieved: the G1 has no fingers, so there is no measured
-    #: closure to report. Read this as "what the writer asked the hand to do".
+    #: Commanded, not achieved - but the reason previously given here was wrong.
+    #: It said "the G1 has no fingers". The deployed model is
+    #: `g1_29dof_with_hand.xml` (`scene_sonic_floor.xml` includes it): 44 joints
+    #: against 30 without the hand, with `hand_index_0/1`, `hand_middle_0/1` and
+    #: `hand_thumb_0/1/2` per side - two fingers and a thumb - and **all 14 of them
+    #: are actuated** (`motor name="right_hand_index_0"` and friends, 14 of the
+    #: model's 43 actuators). Measured 2026-11-01 by reading the vendor model.
+    #:
+    #: The real reason closure is not achieved is that `SonicExecutor` never writes
+    #: those actuators: it latches the commanded value and relays it in this field,
+    #: which is what the XR layer turns into a controller button. So this is a device
+    #: value passed through, not a measured hand state - and it could become a
+    #: measured one, since the joints exist and are driven.
     closure: tuple[float, float] = (0.0, 0.0)
     trigger: tuple[float, float] = (0.0, 0.0)
     residual_head_m: float = 0.0
