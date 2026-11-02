@@ -16,6 +16,12 @@ break later:
    False` and writes no FOV, so the compositor's live field of view is currently
    unknown here. Tests pass a fixture; production code must pass a measured value.
    Inventing a default would make every projection a consistent lie.
+3. **The frustum is rectilinear.** An OpenXR field of view is a tangent-space
+   frustum, so a pixel is proportional to `tan(angle)`, not to the angle itself.
+   The two coincide at the edges and at the centre of a symmetric frustum, which is
+   why the linear version looked right, but they diverge in between: at 35 deg
+   off-axis in a 140 deg field the difference is 0.12 of the frame, about 236 px of
+   1920. Measured 2026-11-01 (`research/camera-equals-hmd-pose.md` section 7).
 
 Frame conventions. Positions are MuJoCo's Z-up frame with +X forward, so in the
 head's own frame the gaze is +X, up is +Z, and the robot's left is +Y. The output
@@ -106,6 +112,37 @@ class Fov:
         return self.angle_up + self.angle_down
 
 
+def _angle_to_pixel(
+    angle: float, positive_half: float, negative_half: float
+) -> float:
+    """Normalised pixel for `angle`, in a rectilinear frustum.
+
+    `positive_half` is the half-angle on the side that maps to pixel 0, so for a
+    horizontal axis that is `angle_left`. The mapping is
+
+        pixel = (tan(positive_half) - tan(angle)) / (tan(positive_half) + tan(negative_half))
+
+    which sends `angle = +positive_half` to 0, `angle = -negative_half` to 1, and
+    the symmetric case to 0.5 by construction.
+    """
+    near = math.tan(positive_half)
+    far = math.tan(negative_half)
+    return (near - math.tan(angle)) / (near + far)
+
+
+def _pixel_to_angle(
+    pixel: float, positive_half: float, negative_half: float
+) -> float:
+    """The exact inverse of `_angle_to_pixel`.
+
+    Clamped in tangent space by construction, not in angle space: `pixel = 0`
+    returns exactly `positive_half` rather than a value near it.
+    """
+    near = math.tan(positive_half)
+    far = math.tan(negative_half)
+    return math.atan(near - pixel * (near + far))
+
+
 def _rotate_inverse(q_xyzw: Sequence[float], v: Sequence[float]) -> tuple[float, float, float]:
     """Rotate `v` by the inverse of unit quaternion `q` (world -> body frame)."""
     x, y, z, w = q_xyzw
@@ -190,8 +227,8 @@ def project_point(
     yaw = math.atan2(fy, fx)      # + toward the robot's left
     pitch = math.atan2(fz, fx)    # + up
 
-    u = (fov.angle_left - yaw) / fov.horizontal
-    v = (fov.angle_up - pitch) / fov.vertical
+    u = _angle_to_pixel(yaw, fov.angle_left, fov.angle_right)
+    v = _angle_to_pixel(pitch, fov.angle_up, fov.angle_down)
     return (u, v)
 
 
@@ -249,9 +286,9 @@ def unproject(
     if depth_m <= _MIN_FORWARD:
         return None
 
-    # Undo the two divisions in `project_point`, in the opposite order.
-    yaw = fov.angle_left - u * fov.horizontal
-    pitch = fov.angle_up - v * fov.vertical
+    # Undo the two tangent maps in `project_point`, in the opposite order.
+    yaw = _pixel_to_angle(u, fov.angle_left, fov.angle_right)
+    pitch = _pixel_to_angle(v, fov.angle_up, fov.angle_down)
     fx = depth_m
     fy = fx * math.tan(yaw)      # + toward the robot's left
     fz = fx * math.tan(pitch)    # + up

@@ -66,6 +66,57 @@ class ProjectPoint(unittest.TestCase):
         self.assertLess(u, 1.0)
 
 
+class RectilinearProjection(unittest.TestCase):
+    """An OpenXR frustum is rectilinear: a pixel tracks `tan(angle)`, not `angle`.
+
+    The tests above cannot tell the two models apart - every *edge* angle lands on
+    the same pixel either way, and the centre of a symmetric frustum is 0.5 either
+    way. These four discriminate. Measured on the live game 2026-11-01: the field is
+    about 140 deg, where the difference at 35 deg off-axis is 0.12 of the frame.
+    """
+
+    def test_halfway_to_the_edge_is_not_halfway_in_pixels(self) -> None:
+        # 22.5 deg in a 45 deg half-frustum: linear says 0.25, tangent says 0.2929.
+        point = (1.0, math.tan(math.radians(22.5)), 0.0)
+        u, _ = projection.project_point(IDENTITY, point, HALF_45)  # type: ignore[misc]
+        self.assertAlmostEqual(u, (1.0 - math.tan(math.radians(22.5))) / 2.0, places=9)
+        self.assertNotAlmostEqual(u, 0.25, places=3)
+
+    def test_a_wide_frustum_compresses_off_axis_points_toward_the_middle(self) -> None:
+        wide = projection.Fov.from_degrees(70.0, 70.0, 70.0, 70.0)
+        point = (1.0, math.tan(math.radians(35.0)), 0.0)
+        u, _ = projection.project_point(IDENTITY, point, wide)  # type: ignore[misc]
+        tan70, tan35 = math.tan(math.radians(70.0)), math.tan(math.radians(35.0))
+        self.assertAlmostEqual(u, (tan70 - tan35) / (2.0 * tan70), places=9)
+        # The linear model would have said (70 - 35) / 140 = 0.25, which is wrong
+        # by 0.12 of the frame, about 236 px of 1920.
+        self.assertNotAlmostEqual(u, 0.25, places=2)
+
+    def test_an_asymmetric_frustum_centres_on_the_tangent(self) -> None:
+        left_right = projection.Fov.from_degrees(60.0, 30.0, 40.0, 40.0)
+        u, _ = projection.project_point(IDENTITY, (1.0, 0.0, 0.0), left_right)  # type: ignore[misc]
+        tan60, tan30 = math.tan(math.radians(60.0)), math.tan(math.radians(30.0))
+        self.assertAlmostEqual(u, tan60 / (tan60 + tan30), places=9)
+
+    def test_unproject_inverts_the_tangent_not_the_angle(self) -> None:
+        # Pixel 0.25 in a 45 deg half-frustum is atan(1 - 0.25 * 2) = 26.565 deg.
+        point = projection.unproject((0.25, 0.5), IDENTITY, HALF_45, 1.0)
+        assert point is not None
+        self.assertAlmostEqual(point[1], 0.5, places=9)
+        self.assertNotAlmostEqual(point[1], math.tan(math.radians(22.5)), places=3)
+
+    def test_round_trip_survives_a_wide_asymmetric_frustum(self) -> None:
+        wide = projection.Fov.from_degrees(70.0, 40.0, 60.0, 30.0)
+        for pixel in ((0.0, 0.0), (1.0, 1.0), (0.13, 0.87), (0.5, 0.5)):
+            for head in (IDENTITY, yawed(35.0), yawed(-70.0)):
+                point = projection.unproject(pixel, head, wide, 2.0)
+                assert point is not None
+                back = projection.project_point(head, point, wide)
+                assert back is not None
+                self.assertAlmostEqual(back[0], pixel[0], places=9)
+                self.assertAlmostEqual(back[1], pixel[1], places=9)
+
+
 class FovConstruction(unittest.TestCase):
     def test_degrees_are_converted(self) -> None:
         self.assertAlmostEqual(HALF_45.angle_left, math.radians(45.0))

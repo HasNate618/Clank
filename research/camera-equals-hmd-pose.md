@@ -232,8 +232,31 @@ a large fraction of the frame anywhere away from the centre - which is consisten
 its measured failure to converge in `research/pixel-servo-sim.md` (it "lands then
 oscillates", and damping made it strictly worse).
 
-That reframes the servo result: before concluding the arm cannot arrive, check whether
-the error was ever a projection artefact. The fix is small and belongs in
-`projection.py` - replace the linear map with the tangent map and its exact inverse,
-with the existing round-trip test as the mutation check. **Not done here.**
+**Fixed 2026-11-01.** `project_point` and `unproject` now use the tangent map and its
+exact inverse (`_angle_to_pixel` / `_pixel_to_angle`), with five discriminating tests
+in `tests/test_projection.py:RectilinearProjection`. The existing projection tests
+could not tell the two models apart - every *edge* angle lands on the same pixel
+either way, and the centre of a symmetric frustum is 0.5 either way - so the new
+tests were mutation-checked three ways: restoring the linear map fails 4 of them,
+flipping the sign fails 3, and dropping the second tangent from the denominator fails
+2.
+
+Whether the servo's failure to converge was arithmetic or mechanical has an answer,
+and it is *not* arithmetic in the sim. Size of the artefact, in metres of hand
+placement at 0.45 m depth:
+
+| field | pixel 0.10 | pixel 0.25 | pixel 0.40 |
+| ---: | ---: | ---: | ---: |
+| 90 deg (the servo sim fixture) | 0.033 m | 0.039 m | 0.019 m |
+| 140 deg (measured on the live game) | **0.322 m** | **0.303 m** | 0.135 m |
+
+At 90 deg the error is a few centimetres, an order of magnitude below the 0.19-0.32 m
+shortfall the sim measures, and re-running `servo_sim_probe.py` after the fix
+reproduces that shortfall essentially unchanged. So the arm's failure to arrive is
+mechanical (`research/pixel-servo-sim.md`).
+
+At 140 deg it is a different story: 0.13-0.32 m, the same magnitude as the shortfall.
+**On the live game the linear model alone would have put the hand about a third of a
+metre from where it was asked to go**, so the fix matters roughly ten times more in
+the game than in the sim fixture the servo was tuned against.
 

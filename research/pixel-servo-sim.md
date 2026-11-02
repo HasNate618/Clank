@@ -201,3 +201,31 @@ gate is the game's blue highlight. So:
   the hold measurement says the body is still moving at 0.006–0.008 m/s at that
   anchor, so it probably is not settled.
 - No cue-gated termination test, because that needs the game.
+
+## Re-run after the rectilinear projection fix (2026-11-01)
+
+`clank/projection.py` now projects through the tangent map rather than a linear
+angle map (`research/camera-equals-hmd-pose.md` section 7.1). Re-running this probe
+under `MUJOCO_GL=disable` reproduces the behaviour above:
+
+| target | depth | start | min | final | \|cmd-ach\| |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| (0.50, 0.60) | 0.25 | 3.395 | 0.178 | 0.506 | 0.320 |
+| (0.50, 0.60) | 0.45 | 0.710 | 0.179 | 0.193 | 0.182 |
+| (0.50, 0.60) | 0.70 | 0.683 | 0.012 | 0.052 | 0.195 |
+| (0.50, 0.35) | 0.25 | 0.658 | 0.034 | 0.428 | 0.241 |
+| (0.50, 0.35) | 0.45 | 0.533 | 0.160 | 0.264 | 0.184 |
+| (0.50, 0.35) | 0.70 | 0.719 | 0.083 | 0.083 | 0.278 |
+
+Never done, never fell, always out of ticks. So the original conclusion survives the
+fix: **the servo improves for a while and then stalls, and the stall is the arm, not
+the arithmetic.** The projection error at a 90 deg field is 2-4 cm, an order of
+magnitude below the 0.18-0.32 m shortfall, which is why correcting it changes almost
+nothing here.
+
+At the live game's 140 deg field that error is 0.13-0.32 m, so the fix matters there -
+but it cannot be tested against this probe, whose fixture is 90 deg. Testing it needs
+the game, not the sim.
+
+Note: MuJoCo will not initialise EGL from a plain shell (`NoneType.eglQueryString`);
+`MUJOCO_GL=disable` works for this probe because it renders nothing.
