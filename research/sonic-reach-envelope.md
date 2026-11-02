@@ -107,3 +107,48 @@ even at a sensible tolerance.
   quotes 17–32° error on uncommanded axes).
 - The 0.02 m default was not changed; changing a contract default based on one
   run would be the same mistake in the other direction.
+
+## 6. Lateral and vertical sweeps (2026-11-01)
+
+This note measured `forward_m` only and said so. The missing directions matter: the
+live pixel servo asked for `lateral 0.59` and wandered
+(`research/live-pixel-servo.md`), and no clamp can be written against an unmeasured
+limit.
+
+`spike/wbc_game/side_envelope_sonic.py`, run `MUJOCO_GL=disable`, 60 settle + 100
+reach steps per target, `tolerance_m=0.02`:
+
+**Lateral sweep**, `forward_m = 0.45`, `up_m = 0.30`:
+
+| `lateral_m` | achieved x | achieved y | achieved z | residual |
+| ---: | ---: | ---: | ---: | ---: |
+| 0.00 | 0.504 | -0.280 | 0.165 | 0.156 |
+| 0.10 | 0.527 | -0.157 | 0.158 | 0.135 |
+| 0.20 | 0.508 | -0.010 | 0.125 | 0.087 |
+| 0.30 | 0.489 | 0.130 | 0.139 | 0.102 |
+| 0.40 | 0.468 | 0.256 | 0.164 | 0.138 |
+| 0.50 | 0.420 | 0.358 | 0.174 | 0.174 |
+| 0.60 | 0.411 | 0.419 | 0.190 | 0.187 |
+
+**Vertical sweep**, `forward_m = 0.45`, `lateral_m = 0.20`:
+
+| `up_m` | achieved x | achieved y | achieved z | residual |
+| ---: | ---: | ---: | ---: | ---: |
+| -0.10 | 0.471 | -0.008 | -0.149 | 0.214 |
+| 0.00 | 0.413 | 0.031 | -0.097 | 0.196 |
+| 0.20 | 0.507 | 0.147 | 0.079 | 0.184 |
+| 0.40 | 0.558 | 0.165 | 0.257 | 0.182 |
+| 0.60 | 0.564 | 0.075 | 0.449 | 0.119 |
+
+**No `FLAG_FALL_RISK` on any target** in either sweep; `FLAG_SATURATED` on all of
+them, as always at the 0.02 m tolerance.
+
+So the wrist travels `y` -0.280 -> +0.419 and `z` -0.149 -> +0.449 monotonically,
+with the residual growing as it goes further out. There is no hard lateral wall at
+0.60, only progressively worse tracking - which is why the clamp is a *stability*
+limit rather than a reachability test, and why `clank/workspace.py` takes its bounds
+from these numbers instead of the generic `validate.HAND_BOX` (+-0.80 m), which does
+not exclude the requests that diverged.
+
+Still unmeasured: the corners (each sweep holds the other two axes fixed), and wrist
+**orientation** at these positions.

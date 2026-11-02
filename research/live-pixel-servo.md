@@ -7,55 +7,92 @@ projection (`research/camera-equals-hmd-pose.md` section 7). `[MEASURED 2026-11-
 The target pixel is a **constant** and the wrist's pixel is **computed** from
 `body_state.json`, so no detector is in the loop: this measures the servo arithmetic
 and the arm together, nothing else. Field of view 140 x 114.2 deg, depth fixed at
-0.45 m, no workspace clamp (the function is stateless by design).
+0.45 m.
 
-## Result: it converges when the target is reachable, and diverges when it is not
+## 0. Correction: the first run was void, and why
+
+Take one (recorded, then withdrawn) closed the loop and reported that it *diverged*
+for a target at pixel (0.35, 0.60). That result was mine, not the arm's. Two errors,
+both in the harness:
+
+1. **Frame error.** `unproject` returns a root-relative **point**. The `reach` verb
+   takes offsets **from the clip wrist**, whose standing rest is
+   `(0.079, -0.308, -0.203)`. Take one passed absolute coordinates into an offset
+   parameter, so every command was displaced by the rest position. The probe
+   confirms the semantics: rest + `(0.45, 0, 0.30)` = `(0.529, -0.308, 0.097)`
+   against an achieved `(0.504, -0.280, 0.165)`, a residual-consistent match.
+2. **Stale rest.** The harness measured its rest reference after sending `hold`, and
+   `hold` latches the pose the arm is *already in*. After a reach it latched the
+   reached pose, not the standing clip. It has to send `rest`.
+
+This is the same lesson as the rotation homography, twice over: a negative result from
+an estimator is worth nothing until the estimator is checked against a case whose
+answer is known. Here the known case was the rest wrist.
+
+## 1. Corrected frames, no clamp
 
 Target (0.50, 0.55):
 
-| iteration | wrist pixel | error | commanded point |
+| iteration | wrist pixel | error | commanded offset (fwd, lat, up) |
 | ---: | --- | ---: | --- |
-| 0 | (0.457, 0.470) | 0.091 | (+0.301, +0.383, +0.257) |
-| 1 | (0.401, 0.565) | 0.100 | (+0.470, +0.168, +0.226) |
-| 2 | (0.425, 0.575) | 0.079 | (+0.503, +0.027, +0.212) |
-| 3 | (0.486, 0.624) | 0.075 | (+0.504, +0.052, +0.199) |
-| 4 | (0.478, 0.620) | **0.074** | (+0.503, +0.056, +0.203) |
+| 0 | (0.775, 2.153) | 1.626 | (+0.316, +0.244, +0.558) |
+| 1 | (0.629, 0.508) | 0.136 | (+0.238, +0.514, +0.493) |
+| 2 | (0.571, 0.508) | 0.083 | (+0.042, +0.667, +0.458) |
+| 3 | (0.490, 0.447) | 0.104 | (+0.045, +0.666, +0.457) |
+| 4 | (0.496, 0.455) | 0.095 | (+0.039, +0.665, +0.465) |
 
-It settles at ~0.074 after three iterations and the forward command saturates at
-0.503 m, which is the arm's own forward limit. So the loop closes; the residual is
-the arm, exactly as the sim reported.
+Converges and then oscillates in a 0.08-0.10 band.
 
-Target (0.35, 0.60) - the same code, a different pixel:
+Target (0.35, 0.60):
 
 | iteration | wrist pixel | error |
 | ---: | --- | ---: |
-| 0 | (0.488, 0.626) | 0.140 |
-| 1 | (0.472, 0.701) | 0.158 |
-| 2 | (0.482, 0.767) | 0.213 |
-| 3 | (0.556, 0.943) | **0.400** |
-| 4 | (0.531, 0.727) | 0.221 |
+| 0 | (0.494, 0.439) | 0.216 |
+| 1 | (0.525, 0.769) | 0.243 |
+| 2 | (0.405, 0.246) | 0.359 |
+| 3 | (0.494, 0.538) | 0.157 |
+| 4 | (0.402, 0.334) | 0.271 |
 
-It **diverges**. The commands ask for `forward 0.023, lateral 0.593` and then
-`forward -0.092, lateral 0.532` - points behind and to the side of the body that the
-arm cannot occupy, so the achieved wrist goes wherever it likes and the error grows.
+Wanders. The commanded offsets say why: `forward -0.50, lateral +0.64` - a point
+half a metre *behind* the torso at the far edge of the lateral sweep.
 
-## What this establishes
+## 2. With the measured clamp in the loop
 
-The servo arithmetic is sound and closes on the real body: `project_point`,
-`unproject` and `servo_step` agree with the live arm to within its own reach limit.
+`clank.workspace.clamp_wrist` against `WRIST_BOX` (provenance in that module;
+`research/sonic-reach-envelope.md` and `spike/wbc_game/side_envelope_sonic.py`).
 
-The thing that is missing is not arithmetic, it is the **workspace clamp**, and this
-demonstrates on the live body why the adapter spec requires one. A servo that is
-"deliberately stateless and knows nothing about joint limits" (by design, so it does
-not become a second copy of those rules) will happily walk the arm out of its
-workspace when the unprojected point lands there, and the error then grows instead of
-shrinking.
+Target (0.50, 0.55) still converges: 1.619 -> 0.190 -> **0.072** -> 0.093 -> 0.097,
+with the lateral command pinned on the box face from iteration 2.
 
-Consequence for the adapter: clamping is not a safety nicety to add later, it is what
-keeps the loop stable. `clank/validate.HAND_BOX` is +-0.80 m laterally, which does
-**not** exclude `lateral 0.59`, so the existing box is not the clamp this needs - the
-limit has to come from the arm's measured envelope (`research/sonic-reach-envelope.md`:
-wrist translates to about 0.70 m forward and stops; 0.45-0.59 m tracks with 0.10-0.18 m
-residual), not from the generic body box.
+Target (0.35, 0.60), which diverged to 0.359 without the clamp:
 
-Probe kept privately; it needs the live session and the body's control socket.
+| iteration | error | clamped? |
+| ---: | ---: | :--- |
+| 0 | 0.203 | yes |
+| 1 | 0.123 | yes |
+| 2 | 0.146 | yes |
+| 3 | 0.194 | yes |
+| 4 | 0.196 | yes |
+
+Bounded oscillation in 0.12-0.20 instead of runaway growth. **Divergence becomes a
+stall.**
+
+## 3. What this establishes
+
+The servo arithmetic is sound and closes on the real body, and the clamp is what
+keeps it stable. Both halves of that matter:
+
+* Where the target is inside the workspace the loop settles in ~3 iterations to about
+  0.07-0.10 of a frame, and the residual is the arm - the same conclusion the sim
+  reached.
+* Where it is outside, the clamp stops the arm from being walked out of its workspace.
+
+The clamp does **not** manufacture reach. A target pixel the arm cannot cover now
+stalls at 0.12-0.20 forever, so `servo_step`'s deadband will never be met for it. The
+adapter therefore needs a third outcome besides "converged" and "still trying":
+**`unreachable`**, once the clamp is active and the error stops falling. Without it
+the brain would keep aiming at a pixel it asymptotically cannot hit.
+
+Residuals inside the box are 0.05-0.19 m, so "in the box" means "the arm goes the
+right way", never "the hand arrived" - which keeps the glow cue
+(`reach_outcome`) as the arrival test rather than pixel convergence.
