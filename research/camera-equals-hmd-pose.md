@@ -6,6 +6,67 @@ the HMD.** It has never been tested. This note tests it and does not confirm it.
 
 `[MEASURED 2026-11-01]` unless marked otherwise.
 
+## 0. CORRECTION, same day — sections 4 and 5 are withdrawn
+
+The searches behind "a pure rotation does not explain the two frames" ran in a
+**480x270 downscaled space with a focal-length floor of 150 px**. At 480 px wide
+that floor *is* hfov 116 deg, so a wide camera sat outside the search space: for a
+140 deg horizontal field, `f_px = 240/tan(70) = 87 px`, unreachable at 150. Every
+search therefore bottomed out at its own boundary. "No interior minimum" was
+reporting a property of the grid, not of the camera.
+
+Re-run with the floor at 40 px, same method, same session, a -35 to +35 deg head
+sweep (69.55 deg of measured world rotation):
+
+| f_px (480 space) | hfov | mean abs diff after warp |
+| ---: | ---: | ---: |
+| 40 | 161.1 | 59.20 |
+| 120 | 126.9 | 49.44 |
+| **140** | **119.5** | **35.67** |
+| 200 | 100.4 | 38.85 |
+| 320 | 73.7 | 59.44 |
+
+There is now an interior minimum, at 480-space f=140 (hfov ~119.5 deg), against an
+**animation floor of 20.91** measured with no command and a 3 s gap, and a raw
+uncorrected A-vs-B difference of 70.14. Poses also demonstrably still drive the
+view, which does not support a concurrent report that the game's XR link had died.
+
+**Withdrawn: "a pure camera rotation does not explain the two frames" and "the
+camera-equals-HMD-pose assumption is in doubt".** That was a wrong search range, not
+a wrong camera. The fit is still not clean (35.7 against a floor of 20.9), so treat
+~119.5 deg as indicative, not measured.
+
+### 0.1 What the driver is configured for
+
+CITED from the patched service binary's display block: `w_pixels` 3840,
+`h_pixels` 1080, `fov = 140 deg`, lens separation 0.065 m, giving per-eye
+**1920x1080** at **140.0 H x 114.22 V** and **f_px = 349.4** in 1920-px space.
+(960/tan70 = 349.4 and 540/tan57.11 = 349.1 agree to 0.1 %, so square pixels.)
+MEASURED alongside it: `monado.log` reports `view count: 2`, and the game's Unity log
+reports `Created eye textures with a "double wide" layout`.
+
+That leaves an **open discrepancy: the fit says ~119.5 deg, the declared geometry
+says 140.0 deg.** The fit's residual is too high to settle which is right.
+
+Also flagged, unverified: `clank/projection.py::project_point` maps angle to pixel
+*linearly* (`u = (fov.angle_left - yaw)/fov.horizontal`) rather than rectilinearly.
+At 33 deg off-axis those differ substantially, and the pixel servo is built on that
+function — so if the field really is 140 deg, edge-of-view error is large.
+
+### 0.2 Why stereo cannot rescue the measurement from this session
+
+Both eyes are rendered and neither is presented: the service runs
+`XRT_COMPOSITOR_NULL=1`, and that compositor allocates both eye swapchains and
+discards them, so nothing downstream can see an eye at all. The window we screenshot
+is the game's own and shows one eye. A presenting compositor was shown to work on
+this GPU earlier (`spike/e3/evidence/hello_look_left.png` is a genuine side-by-side
+pair, left/right NCC 0.970), so a restart path exists but was not taken.
+
+The default IPD is CITED at 63 mm (`OXR_DEBUG_IPD_MM`), split ±31.5 mm. If a live
+stereo pair is ever captured, the hand at Z ~ 0.42 m should show a disparity of
+`349.4 * 0.063 / 0.42 = 52 px` per 1920-wide eye — a pre-registered number to test
+against, not a result.
+
 ## 1. The hand is rendered, and can be brought into frame
 
 Earlier work concluded "the wrist is out of view" from the hold clip. That is a
