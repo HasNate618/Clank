@@ -221,6 +221,32 @@ def _command_from_intent(
             seq=0, authority=AUTH_HEAD, head=executor.dodge_target(lateral)
         )
 
+    if intent.skill in ("grab", "release"):
+        # The brain may emit `grab` and `release` (`clank.brain.PLANNER_SKILLS`), and
+        # until now this adapter had no branch for either, so the two skills it
+        # advertised could not be executed at all.
+        #
+        # Closing must not be a movement. `grab_right` closes *and* commands
+        # `aim_target`, which pulls the wrist 0.22 m forward on the way - measured
+        # 2026-11-01: it yanked the hand off a lever that was in grab range at the
+        # time. So command the pose the body has actually achieved, and add the
+        # closure to it: arrive first, close second, move nothing.
+        achieved = executor.last_state
+        side = intent.side
+        if achieved is None:
+            return None
+        pose = achieved.right_hand if side == "right" else achieved.left_hand
+        hand_auth = AUTH_R_HAND if side == "right" else AUTH_L_HAND
+        pair = (1.0, 0.0) if side == "left" else (0.0, 1.0)
+        command = BodyCommand(
+            seq=0,
+            authority=hand_auth | AUTH_CLOSURE,
+            closure=pair if intent.skill == "grab" else (0.0, 0.0),
+        )
+        if side == "right":
+            return BodyCommand(**{**command.__dict__, "right_hand": pose})
+        return BodyCommand(**{**command.__dict__, "left_hand": pose})
+
     forward, up, lateral = intent.offset or (0.0, 0.0, 0.0)
     if intent.skill == "reach":
         return _hand_command(
@@ -312,6 +338,36 @@ def verb_command(
         trigger = (0.0, 1.0) if side == "right" else (1.0, 0.0)
         return BodyCommand(seq=0, authority=AUTH_TRIGGER, trigger=trigger)
 
+    def close_hand(side: str, closed: bool) -> BodyCommand:
+        """Close or open the hand **where it is**, changing nothing else.
+
+        `grab_right` exists and is the wrong tool for a grab: it commands
+        `aim_target` *with* the closure, deliberately, so that a button press is
+        attributable to a pose. The cost is that it moves the hand 0.22 m forward
+        and 0.12 m up on the way to closing - measured 2026-11-01, pulling the
+        wrist off a lever that was in grab range at the time.
+
+        The obvious repair - drop the pose and send the closure alone - was tried
+        and is worse: with no hand authority the controller falls back and the
+        wrist drifted 0.20 m while closing. So the repair is to command the pose
+        the body has **already achieved** and attach the closure to that. The arm
+        then has somewhere to be (where it is), and the hand still closes.
+        """
+        st = executor.last_state
+        if st is None:
+            return None
+        pair = (1.0, 0.0) if side == "left" else (0.0, 1.0)
+        closure = pair if closed else (0.0, 0.0)
+        if side == "right":
+            return BodyCommand(
+                seq=0, authority=AUTH_R_HAND | AUTH_CLOSURE,
+                right_hand=st.right_hand, closure=closure,
+            )
+        return BodyCommand(
+            seq=0, authority=AUTH_L_HAND | AUTH_CLOSURE,
+            left_hand=st.left_hand, closure=closure,
+        )
+
     verbs = {
         "hold": hold,
         "look_left": head_left,
@@ -326,6 +382,10 @@ def verb_command(
         "release_right": lambda: hand_button("right", False),
         "fire_left": lambda: fire("left"),
         "fire_right": lambda: fire("right"),
+        "close_left": lambda: close_hand("left", True),
+        "close_right": lambda: close_hand("right", True),
+        "open_left": lambda: close_hand("left", False),
+        "open_right": lambda: close_hand("right", False),
     }
     make = verbs.get(name)
     if make is None:
