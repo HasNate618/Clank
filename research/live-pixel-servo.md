@@ -155,3 +155,48 @@ What the evidence does support: the arm's reliable envelope ends around 0.5 m an
 measured reach residual inside it is already 0.05-0.19 m, so the card is at best at the
 outer edge of reach and probably past it. Whether the *blue proximity glow* ever lights
 is still the decisive test, and it has not run.
+
+## 7. The glow test, attempted and still not run
+
+The decisive reachability test is the game's own blue proximity highlight. It has now
+been attempted with both fixes from sections 4 and 5 - a target point computed **once**
+and held, and offsets taken from the clip target measured with a zero-offset `reach`
+rather than from `rest()` - and it still produced nothing quotable.
+
+What the run did:
+
+* clip target at zero offset: `(0.140, -0.295, -0.189)` m
+* card pixel `(1260, 652)` at `look yaw -50`, ray point at 0.45 m: `(0.093, -0.310, 0.265)`
+* that point is outside the workspaces's forward face, so the clamp cut it to
+  `up +0.454` and the reach asked for almost nothing else
+* achieved wrist `(0.161, -0.082, 0.430)`, **residual 0.289 m** to the command
+* wrist pixel `(0.480, 0.427)` against a target of `(0.656, 0.604)` - nowhere near
+
+And the blue-count comparison that looked so promising - 412 blue-ish pixels before,
+2908 after - is **void**. The two crops were of different objects: "after" shows the
+DIRECTORY kiosk with its cyan circuit display, not JobBot. The card had left the frame
+entirely, because the reach moved the view that far.
+
+So the 7x "rise" was a cyan sign, not a glow. Reported here because it is exactly the
+kind of number that would have been quotable and wrong, and the only reason it was
+caught is that the crops were looked at instead of trusted.
+
+## 8. What a valid glow test needs
+
+Two things, neither of which exists yet:
+
+1. **A target detector that works per frame**, not a fixed pixel. The camera moves too
+   much during a reach for any fixed-pixel patch comparison: the measured head shift is
+   up to 11 cm, and here it was enough to swap the entire content of a 280 px box. JobBot
+   needs to be re-found in each frame (his green CRT head is a clean hue gate) and the
+   card patch taken relative to that, or the comparison is measuring the camera.
+2. **An arm placement that can actually put the hand on the card.** The 0.289 m
+   residual is not a tuning problem - it is the same envelope limit already measured
+   from the other direction. Clamping converts an impossible request into a reachable
+   one, but "reachable" here means "inside the box", and the box's own residual is
+   0.05-0.19 m.
+
+The cheapest route to a real answer is therefore still **stereo**: one eye separation
+gives the card's distance in metres by triangulation, with no detector, no template and
+no moving camera to fight. That remains blocked on `clank/orchestrator.py:788`
+(`XRT_COMPOSITOR_NULL`), which is another agent's file.
