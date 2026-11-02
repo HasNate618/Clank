@@ -17,6 +17,7 @@ import unittest
 
 import clank.projection as projection
 from clank.body import Pose
+from clank.projection import servo_step
 
 IDENTITY = Pose((0.0, 0.0, 0.0), (0.0, 0.0, 0.0, 1.0))
 HALF_45 = projection.Fov.from_degrees(45.0, 45.0, 45.0, 45.0)
@@ -305,10 +306,6 @@ class PixelError(unittest.TestCase):
         self.assertEqual(projection.pixel_error((0.4, 0.5), (0.4, 0.5)), 0.0)
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class Unproject(unittest.TestCase):
     """The inverse: a pixel plus a depth becomes a root-relative wrist target.
 
@@ -424,3 +421,34 @@ class ServoStep(unittest.TestCase):
             projection.servo_step(
                 (0.5, 0.5), (0.6, 0.5), IDENTITY, HALF_45, 1.0, deadband=-0.1
             )
+
+
+class ServoFeedback(unittest.TestCase):
+    """`servo_step` names a point on the target ray *as seen from `head`*.
+
+    That dependency is the mechanism behind a live divergence: `reach` moves the
+    head, so re-issuing the step every iteration chases a ray that keeps turning.
+    Pinning the behaviour here means an adapter that loops on it has to be an
+    explicit decision, not an accident.
+    """
+
+    def test_the_point_moves_when_the_head_moves(self):
+        target, wrist = (0.30, 0.50), (0.50, 0.50)
+        a, _ = servo_step(target, wrist, IDENTITY, HALF_45, 0.45)
+        b, _ = servo_step(target, wrist, yawed(10.0), HALF_45, 0.45)
+        self.assertIsNotNone(a)
+        self.assertIsNotNone(b)
+        self.assertNotEqual(tuple(round(v, 6) for v in a),
+                            tuple(round(v, 6) for v in b))
+
+    def test_the_point_does_not_depend_on_the_wrist_pixel(self):
+        """Only the error does. So a wrist that drifts cannot move the target."""
+        target = (0.30, 0.50)
+        a, ea = servo_step(target, (0.50, 0.50), IDENTITY, HALF_45, 0.45)
+        b, eb = servo_step(target, (0.80, 0.30), IDENTITY, HALF_45, 0.45)
+        self.assertEqual(a, b)
+        self.assertNotEqual(ea, eb)
+
+
+if __name__ == "__main__":
+    unittest.main()

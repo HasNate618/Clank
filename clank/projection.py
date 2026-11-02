@@ -314,9 +314,22 @@ def servo_step(
 
     This is deliberately stateless and unlatched: it does not know about joint
     limits, reach, or the game's grab range, so it will happily name a point the arm
-    cannot occupy. The adapter clamps against `clank.validate` and terminates on the
+    cannot occupy. The adapter clamps against `clank.workspace` and terminates on the
     blue highlight; a limit check here would make the pure function a second,
     differently-wrong copy of those rules.
+
+    **The returned point is a function of `head`, and `head` moves when the arm
+    reaches.** `reach` shifts the head by up to 11 cm, so calling this every
+    iteration recomputes the ray from a pose the previous command changed: a closed
+    loop around the camera rather than the object, with enough gain to diverge. It
+    is measured, not theoretical - on the live body one target settled to 0.07 of a
+    frame while another walked the wrist off-screen to u = 7.57
+    (`research/live-pixel-servo.md` section 4).
+
+    So an adapter must call this **once**, at the head pose where the target was
+    observed, and then hold that fixed point for the whole reach. If it must
+    re-measure, it has to re-detect the target in the new frame first: the pixel is
+    only meaningful together with the pose it was measured from.
     """
     if not math.isfinite(deadband) or deadband < 0.0:
         raise ValueError(f"deadband must be finite and >= 0, got {deadband!r}")

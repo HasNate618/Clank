@@ -96,3 +96,62 @@ the brain would keep aiming at a pixel it asymptotically cannot hit.
 Residuals inside the box are 0.05-0.19 m, so "in the box" means "the arm goes the
 right way", never "the hand arrived" - which keeps the glow cue
 (`reach_outcome`) as the arrival test rather than pixel convergence.
+
+## 4. Why it diverged: the ray moves with the head
+
+The clamp bounded the symptom. The mechanism is worse and simpler:
+**`servo_step` names a point on the target pixel's ray as seen from the current
+head pose, and `reach` moves the head.**
+
+`research/live-pixel-servo.md` section 1's own data shows the shape of it - the
+commanded point changed every iteration even while the target pixel was constant.
+Iterating recomputes the ray from a pose that the previous command changed, so the
+loop closes around the camera instead of the object, and the gain is high enough to
+diverge: one target settled to 0.07 of a frame, another walked the wrist to `u = 7.57`,
+far off screen, while `project_point` happily returned a number.
+
+Consequences, both now written where a reader will hit them:
+
+* `clank.projection.servo_step`'s docstring says the adapter must call it **once**, at
+  the head pose where the target was observed, and hold that fixed point.
+* `tests/test_projection.py:ServoFeedback` pins both halves: the point moves when the
+  head moves, and it does *not* depend on the wrist pixel (only the error does).
+
+Re-measuring is legitimate, but only after re-detecting the target in the new frame -
+a pixel means nothing without the pose it was measured from.
+
+## 5. The offset frame is the clip target, not the rest pose
+
+`hand_target` offsets are relative to `SonicExecutor._clip_targets()`, the clip's own
+wrist table. That origin is fixed. It is **not** the achieved rest pose, and `rest()`
+is not a way to find it: `rest()` stops commanding, after which the wrist sits wherever
+the clip currently has it. Three runs produced three different "rests" -
+`(0.131, -0.195, -0.232)`, `(-0.099, -0.513, -0.040)`, and `(0.102, 0.429, 0.428)`
+(the last one from `hold`, which latches the pose the arm was already in, so it is
+explainable - the first two are not, except that they were measured at different wire
+poses).
+
+So establishing the offset origin by sampling the "rest" wrist is wrong, and it is the
+fourth harness error in this line of work, all of them mine. The cheap way to get the
+origin right is to ask the executor for a zero offset - `reach(forward 0, lateral 0,
+up 0)` - and read where it settles, rather than inferring it from an idle pose.
+
+## 6. Reachability is still `[OPEN]`, and three routes failed
+
+JobBot is visible at `look yaw -50` (green CRT head, "JobBot" badge, white card held in
+front of him). Three attempts to get his distance:
+
+| route | outcome |
+| --- | --- |
+| floor plane (`z = 0` along the feet ray) | **unusable** - his feet are behind a kiosk counter, never visible |
+| parallax, 0.172 m baseline, whole-scene NCC | **garbage** - every solution pinned at the 8 m search ceiling with 0.06-0.25 residuals, 4-25x the tolerance |
+| parallax, one large template (his head) | **garbage** - the reach that moves the head enough (`lateral 0.62`) swings the hand across him; the reach that leaves him clear moves the head only 0.024 m, and the match scored NCC 0.59 |
+
+An apparent-size estimate puts him at roughly 0.6-0.9 m, but that assumes a head width
+nobody measured. It is an ASSUMPTION-shaped number and must not be quoted as a
+measurement.
+
+What the evidence does support: the arm's reliable envelope ends around 0.5 m and the
+measured reach residual inside it is already 0.05-0.19 m, so the card is at best at the
+outer edge of reach and probably past it. Whether the *blue proximity glow* ever lights
+is still the decisive test, and it has not run.
