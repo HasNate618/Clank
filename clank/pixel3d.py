@@ -87,6 +87,7 @@ def point_from_pixel(
     fov: Fov,
     patch: int = DEFAULT_PATCH,
     tol_m: float = DEFAULT_TOL_M,
+    scale: float = 1.0,
 ) -> tuple[float, float, float] | None:
     """The root-relative point under normalised `(u, v)`, or None.
 
@@ -95,9 +96,25 @@ def point_from_pixel(
     passing a straight-line range instead would bend every off-axis point outward, most
     at the frame edge where a reach is most likely to be aimed.
 
+    `scale` is the emulated-player scale that `clank.wire.body_state_to_xr` applies to the
+    poses it sends the game, and it has to be undone here or every distance comes back
+    `scale` times too large. The stream measures **game space**; the game's camera sits at
+    `scale` times the robot's head, so if `d` is the depth along the gaze then
+
+    .. code-block:: text
+
+        d_game = scale * d_robot        ->        d_robot = d_game / scale
+
+    and the ray direction is unchanged, because a uniform scale does not rotate anything.
+    At the default of 1.0 the two frames are the same and this is a no-op; with the scale
+    enabled it is the difference between a 0.34 m reach and a 0.49 m one - and 0.49 m is
+    outside the arm, which is what made the body step.
+
     Returns None when the depth has no answer there, so a caller cannot silently place a
     hand on a guess.
     """
+    if not math.isfinite(scale) or scale <= 0.0:
+        raise ValueError(f"scale must be finite and positive, got {scale!r}")
     width = int(frame["width"])
     height = int(frame["height"])
     depth = sample_depth(
@@ -105,4 +122,4 @@ def point_from_pixel(
     )
     if depth is None:
         return None
-    return unproject((float(u), float(v)), head, fov, depth)
+    return unproject((float(u), float(v)), head, fov, depth / scale)

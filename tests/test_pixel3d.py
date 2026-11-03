@@ -88,3 +88,51 @@ class PointFromPixel(unittest.TestCase):
 
     def test_no_depth_gives_no_point(self) -> None:
         self.assertIsNone(point_from_pixel(frame(0.0), 0.5, 0.5, HEAD, FOV))
+
+
+class PlayerScale(unittest.TestCase):
+    """The stream measures game space; the robot frame is game space divided by `scale`.
+
+    `clank.wire.body_state_to_xr` sizes the emulated player against the room, so the game's
+    camera sits `scale` times the robot's head away. A depth read from that camera is
+    therefore `scale` times the robot-frame distance along the same gaze, and forgetting to
+    divide brings every reach back `scale` times too large - straight past the arm and into
+    the body-step regime that invalidated the camera in the first place.
+    """
+
+    def test_a_marked_pixel_comes_back_scale_times_closer(self) -> None:
+        f = frame(0.49)
+        plain = point_from_pixel(f, 0.5, 0.5, HEAD, FOV)
+        scaled = point_from_pixel(f, 0.5, 0.5, HEAD, FOV, scale=1.43)
+        assert plain is not None and scaled is not None
+        self.assertAlmostEqual(plain[0] / scaled[0], 1.43, places=6)
+
+    def test_off_axis_pixels_scale_too(self) -> None:
+        # Not just the forward axis: the lateral component is what decides whether a reach
+        # lands on the object, and it is the component the body leans to supply.
+        f = frame(0.60)
+        plain = point_from_pixel(f, 0.72, 0.38, HEAD, FOV)
+        scaled = point_from_pixel(f, 0.72, 0.38, HEAD, FOV, scale=1.6)
+        assert plain is not None and scaled is not None
+        for a, b in zip(plain, scaled):
+            self.assertAlmostEqual(a / b, 1.6, places=6)
+
+    def test_the_default_is_the_robot_frame_unchanged(self) -> None:
+        f = frame(0.42)
+        self.assertEqual(
+            point_from_pixel(f, 0.5, 0.5, HEAD, FOV),
+            point_from_pixel(f, 0.5, 0.5, HEAD, FOV, scale=1.0),
+        )
+
+    def test_a_scale_that_would_mirror_the_world_is_rejected(self) -> None:
+        for bad in (0.0, -1.0, float("nan"), float("inf")):
+            with self.assertRaises(ValueError):
+                point_from_pixel(frame(0.4), 0.5, 0.5, HEAD, FOV, scale=bad)
+
+    def test_the_card_is_inside_the_arm_once_the_player_is_adult_sized(self) -> None:
+        # The measurement this change exists for: 0.486 m of game distance is 0.34 m of
+        # real arm travel at 1.43, against a 0.40 m standing clamp.
+        f = frame(0.486)
+        p = point_from_pixel(f, 0.5, 0.5, HEAD, FOV, scale=1.43)
+        assert p is not None
+        self.assertLess(math.dist((0.0, 0.0, 0.0), p), 0.40)

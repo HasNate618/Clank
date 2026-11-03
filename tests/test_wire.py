@@ -340,3 +340,154 @@ class DeclaredViewPoses(unittest.TestCase):
         for view in d.head.views:
             self.assertEqual(view.pose.position.x, 0.0)
             self.assertEqual(view.pose.orientation.w, 0.0)
+
+
+class PlayerScaleTests(unittest.TestCase):
+    """`scale` sizes the emulated player against a room laid out for an adult.
+
+    The G1 is 1.32 m with ~0.45 m of arm travel and Job Simulator's counter is an adult's
+    counter, so the card sat 0.486 m from the wrist - past the arm, which made the body step
+    to balance and drag the camera with it. Scaling the head and both hands together makes
+    the game-space arm `scale` times longer, so the reach a given object demands falls by the
+    same factor. The robot's own dimensions are untouched.
+    """
+
+    def setUp(self) -> None:
+        self.state = {
+            "root_p": [0.0, 0.0, 0.787],
+            "root_q": [1.0, 0.0, 0.0, 0.0],
+            "head": {"p": [0.0, 0.0, 0.403], "q_xyzw": [0.0, 0.0, 0.0, 1.0]},
+            "left_hand": {"p": [0.3, 0.2, 0.1], "q_xyzw": [0.0, 0.0, 0.0, 1.0]},
+            "right_hand": {"p": [0.3, -0.2, 0.1], "q_xyzw": [0.0, 0.0, 0.0, 1.0]},
+        }
+
+    def test_the_eye_height_grows_with_the_scale(self) -> None:
+        plain = wire.body_state_to_xr(self.state)
+        tall = wire.body_state_to_xr(self.state, scale=1.43)
+        # mj_to_xr_vec puts MuJoCo z on the driver's y, so the height is the middle one.
+        self.assertAlmostEqual(tall["head"][0][1] / plain["head"][0][1], 1.43, places=6)
+
+    def test_the_hand_to_head_offset_grows_too_which_is_the_point(self) -> None:
+        # If only the head were scaled the hands would detach from the view; if neither were,
+        # nothing would change. Both hands and the head move together, so the arm *in game
+        # space* gets longer by exactly the scale.
+        plain = wire.body_state_to_xr(self.state)
+        tall = wire.body_state_to_xr(self.state, scale=1.43)
+        for hand in ("left", "right"):
+            for axis in range(3):
+                offset_plain = plain[hand][0][axis] - plain["head"][0][axis]
+                offset_tall = tall[hand][0][axis] - tall["head"][0][axis]
+                self.assertAlmostEqual(offset_tall / offset_plain, 1.43, places=6)
+
+    def test_orientation_is_untouched_by_scaling(self) -> None:
+        self.state["head"]["q_xyzw"] = [0.0, 0.0, 0.3826834, 0.9238795]
+        plain = wire.body_state_to_xr(self.state)
+        tall = wire.body_state_to_xr(self.state, scale=1.43)
+        self.assertEqual(plain["head"][1], tall["head"][1])
+
+    def test_the_default_leaves_the_poses_bit_identical(self) -> None:
+        self.assertEqual(
+            wire.body_state_to_xr(self.state), wire.body_state_to_xr(self.state, scale=1.0)
+        )
+
+    def test_a_scale_that_would_mirror_or_collapse_is_rejected(self) -> None:
+        for bad in (0.0, -1.0, float("nan"), float("inf")):
+            with self.assertRaises(ValueError):
+                wire.body_state_to_xr(self.state, scale=bad)
+
+
+class PlayerScalePivotTests(unittest.TestCase):
+    """Where the scale is measured from decides whether it helps at all.
+
+    Measured 2026-11-03 with the same body pose: scaling about the floor lifted the camera
+    (card depth 0.342 -> 0.527 m) and left the card needing 0.566 m of reach, i.e. *worse*
+    than the 0.486 m unscaled, because a hand raised 0.25 m gains only 0.19 m of arm. About
+    the resting wrist the same scale asks for |O-H|/scale = 0.34 m.
+    """
+
+    STATE = {
+        "root_p": [0.0, 0.0, 0.787],
+        "root_q": [1.0, 0.0, 0.0, 0.0],
+        "head": {"p": [0.0, 0.0, 0.403], "q_xyzw": [0.0, 0.0, 0.0, 1.0]},
+        "left_hand": {"p": [0.16, 0.257, -0.204], "q_xyzw": [0.0, 0.0, 0.0, 1.0]},
+        "right_hand": {"p": [0.16, -0.257, -0.204], "q_xyzw": [0.0, 0.0, 0.0, 1.0]},
+    }
+    WRIST = (0.16, -0.257, 0.583)
+
+    def test_the_pivot_itself_does_not_move(self) -> None:
+        # the whole reason for a pivot: the hand must stay where the body put it
+        tall = wire.body_state_to_xr(self.STATE, scale=1.43, pivot=self.WRIST)
+        # mj_to_xr_vec: x -> -y, y -> z, z -> -x
+        self.assertAlmostEqual(tall["right"][0][2], -self.WRIST[0], places=6)
+        self.assertAlmostEqual(tall["right"][0][1], self.WRIST[2], places=6)
+        self.assertAlmostEqual(tall["right"][0][0], -self.WRIST[1], places=6)
+
+    def test_a_point_far_from_the_wrist_scales_about_it_not_the_floor(self) -> None:
+        plain = wire.body_state_to_xr(self.STATE)
+        tall = wire.body_state_to_xr(self.STATE, scale=1.43, pivot=self.WRIST)
+        # the head must move away from the wrist by exactly the scale
+        for axis in range(3):
+            d_plain = plain["head"][0][axis] - plain["right"][0][axis]
+            d_tall = tall["head"][0][axis] - tall["right"][0][axis]
+            self.assertAlmostEqual(d_tall / d_plain, 1.43, places=6)
+
+    def test_the_floor_pivot_lifts_the_hand_and_the_wrist_pivot_does_not(self) -> None:
+        floor = wire.body_state_to_xr(self.STATE, scale=1.43)
+        wrist = wire.body_state_to_xr(self.STATE, scale=1.43, pivot=self.WRIST)
+        self.assertGreater(floor["right"][0][1], wrist["right"][0][1] + 0.20)
+
+    def test_a_bad_pivot_is_rejected(self) -> None:
+        for bad in ((0.0, 0.0), (0.0, float("nan"), 0.0), (1, 2, 3, 4)):
+            with self.assertRaises(ValueError):
+                wire.body_state_to_xr(self.STATE, scale=1.43, pivot=bad)
+
+
+class HandsOnlyScaleTests(unittest.TestCase):
+    """Scale the hands and leave the head where it is.
+
+    Measured 2026-11-03: with the head scaled too, the camera rises 0.29 m, the depth the
+    camera reports changes, the object's apparent position in the robot frame moves with
+    it, and 1.43 bought only 0.500 -> 0.472 m. The card is 0.45 m above the resting hand
+    and 0.12 m away, so almost the whole reach is vertical and the camera's own motion
+    cancels the longer arm. Hands only: camera unchanged, depth still valid, and the hand
+    still travels `scale` metres per real metre.
+    """
+
+    STATE = {
+        "root_p": [0.0, 0.0, 0.787],
+        "root_q": [1.0, 0.0, 0.0, 0.0],
+        "head": {"p": [0.0, 0.0, 0.403], "q_xyzw": [0.0, 0.0, 0.0, 1.0]},
+        "left_hand": {"p": [0.16, 0.257, -0.204], "q_xyzw": [0.0, 0.0, 0.0, 1.0]},
+        "right_hand": {"p": [0.30, -0.257, -0.204], "q_xyzw": [0.0, 0.0, 0.0, 1.0]},
+    }
+    WRIST = (0.16, -0.257, 0.583)
+
+    def test_the_head_does_not_move(self) -> None:
+        plain = wire.body_state_to_xr(self.STATE)
+        hands = wire.body_state_to_xr(
+            self.STATE, scale=1.43, pivot=self.WRIST, scale_head=False
+        )
+        self.assertEqual(plain["head"][0], hands["head"][0])
+
+    def test_a_metre_of_hand_motion_becomes_one_scale_of_room(self) -> None:
+        # the entire point: the reach a given object demands divides by the scale
+        plain = wire.body_state_to_xr(self.STATE)
+        hands = wire.body_state_to_xr(
+            self.STATE, scale=1.43, pivot=self.WRIST, scale_head=False
+        )
+        right = self.STATE["right_hand"]["p"]
+        moved = dict(self.STATE)
+        moved["right_hand"] = {"p": [right[0], right[1], right[2] + 0.10],
+                              "q_xyzw": [0.0, 0.0, 0.0, 1.0]}
+        plain2 = wire.body_state_to_xr(moved)
+        hands2 = wire.body_state_to_xr(
+            moved, scale=1.43, pivot=self.WRIST, scale_head=False
+        )
+        d_plain = abs(plain2["right"][0][1] - plain["right"][0][1])
+        d_hands = abs(hands2["right"][0][1] - hands["right"][0][1])
+        self.assertAlmostEqual(d_hands / d_plain, 1.43, places=6)
+
+    def test_the_default_still_scales_the_head(self) -> None:
+        both = wire.body_state_to_xr(self.STATE, scale=1.43, pivot=self.WRIST)
+        plain = wire.body_state_to_xr(self.STATE)
+        self.assertNotEqual(both["head"][0], plain["head"][0])

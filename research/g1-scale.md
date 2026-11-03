@@ -63,3 +63,50 @@ this project has handled every negative result.
 **pitch** (`look_target` yaws only — `spike/wbc/sonic_executor.py:341`) is likely a concrete
 cause of the 0.627 m miss: we were asking the arm to reach up to where the camera pointed,
 because the camera could not point down.
+
+## Player scaling, measured: the pivot and the head both decide whether it helps
+
+**Result: scaling the hands (not the head) about the resting wrist cuts the reach the card
+demands from 0.485 m to 0.339 m, and the height error goes to zero. Lateral survives as the
+binding constraint.**
+
+2026-11-03. The G1's eye is 1.221 m and Job Simulator is laid out for an adult, so the card
+on JobBot's counter sits 0.485 m from the resting wrist - outside the 0.41-0.51 m of arm
+travel once the hand has to start from the clip rest, which is why the body was stepping to
+balance and dragging the camera (`research/wrist-response.md`).
+
+`clank.wire.body_state_to_xr` now takes `scale` and a `pivot`, and both were measured rather
+than chosen:
+
+- **Scaling about the floor makes it worse.** Same body pose, card depth on the stream:
+  `0.527 m` with the scale on against `0.342 m` with it off, so the game really does lift
+  the camera to a taller player. Raising the pivot by 0.43 x 0.58 m moves the hand up 0.25 m
+  while lengthening the arm only 0.43 x 0.45 = 0.19 m, and the card is *below* the shoulder,
+  so the rise costs more than the longer arm earns. The demanded reach went 0.486 -> 0.566.
+- **Scaling about the resting wrist is the useful pivot.** `travel = |O - H| / scale`, so
+  the card needs `0.485 / 1.43 = 0.339 m`, inside the 0.40 m clamp.
+- **But only if the head is left alone.** With the head scaled too, the camera rises 0.29 m,
+  the depth it reports changes, and the object's apparent position moves with it: 1.43
+  bought `0.500 -> 0.472 m`, four per cent. With `scale_head=False` the camera stays exactly
+  where every measurement in `research/` was taken, the depth stays valid, and the hand still
+  travels `scale` metres per real metre.
+
+First live attempt with hands-only scaling about the wrist pivot, commanding the computed
+0.339 m offset: the wrist moved 0.304 m, most of it up (+0.261) and forward (+0.147). The
+emulated hand - `pivot + scale * (hand - pivot)` - came out at height 0.170 m against the
+card's 0.177 m. **Height error: 7 mm.** The reach was 96 % vertical, and the scaling closed
+it.
+
+What is left is entirely lateral, about 0.20 m. The arm's up-command carries almost no
+sideways motion (lateral gain ~0.2 at this posture), so the lateral **command** needed is
+around 0.75 m, far beyond the 0.18 m clamp - the clamp that exists because a large lateral
+offset is what leans and then walks the body. So the next blocker is not reach length and not
+height; it is how this arm moves sideways, and whether the body may be allowed to help
+(`touch_card.py` survived 0.34 m lateral with a fall-risk check at every step).
+
+### Declared caveat, unchanged
+
+The robot's own dimensions are untouched: MuJoCo still shows a 1.32 m humanoid whose arm
+moved 0.30 m while the game drew its hand on the counter. The honest sentence stays "the
+emulated player is 1.43x, so its arm reaches 1.43x further in the room", never "the G1
+reaches the counter". `--player-scale-head on` gets the old whole-body behaviour back.

@@ -227,6 +227,9 @@ def body_state_to_xr(
     state: Mapping[str, Any],
     *,
     yaw_offset_rad: float = 0.0,
+    scale: float = 1.0,
+    pivot: Sequence[float] = (0.0, 0.0, 0.0),
+    scale_head: bool = True,
 ) -> dict[str, tuple[tuple[float, float, float], tuple[float, float, float, float]]]:
     """BodyState dict -> absolute OpenXR poses for head and both hands.
 
@@ -246,14 +249,62 @@ def body_state_to_xr(
     view looks, while the desk's bearing relative to the robot changes. Rotating the
     head alone would have left the hands 90 deg off the view and no reach would have
     been possible. Declared caveat: the facing is chosen, not walked.
+
+    `scale` sizes the emulated **player** against the room, about the play-space origin
+    (the floor beneath the robot, since the root spawns at x=y=0). It exists because Job
+    Simulator is laid out for an adult and the G1 is 1.32 m with ~0.45 m of arm travel:
+    `research/g1-scale.md` measured the apparent-size error as roughly half, and the card
+    on JobBot's counter sits 0.486 m from the wrist where the arm alone cannot go, so the
+    body was stepping to balance and dragging the camera with it - which then invalidated
+    every pixel marked before the move (`research/wrist-response.md`).
+
+    Scaling the head and both hands together is again the whole point: the game-space arm
+    length becomes `scale` times the real one, so the reach required for a given object
+    falls by the same factor - 0.486 m of game distance is 0.34 m of real arm travel at
+    1.43 - and the reach stays inside the arm-only envelope. The robot's own dimensions are
+    untouched and the sim view still shows a 1.32 m humanoid; only the pose handed to the
+    game is scaled, so the honest sentence is "the emulated player is adult-sized", not
+    "the G1 reaches the counter". Orientation is unaffected, so the hands still point where
+    the view looks.
+
+    `pivot` is what the scale is measured from, and it decides whether any of that is true.
+    Measured 2026-11-03, same body pose, card depth on the stream:
+
+    .. code-block:: text
+
+        pivot at the floor   card 0.527 m, floor 0.549 m   (scale on)
+        pivot at the floor   card 0.342 m, floor 0.311 m   (scale off)
+
+    so the game really does lift the camera, and scaling about the floor made the reach
+    *longer*, not shorter: raising the pivot by 0.43 x 0.58 m moves the hand 0.25 m up
+    while lengthening the arm only 0.43 x 0.45 = 0.19 m. For an object that sits half a
+    metre away and below the shoulder, the rise costs more than the longer arm earns.
+
+    With the pivot at the resting wrist the two effects stop fighting:
+
+    .. code-block:: text
+
+        pivot at the floor  travel = |O/k - H|  = 0.566 m   (outside the arm)
+        pivot at the wrist  travel = |O - H|/k  = 0.340 m   (inside the clamp)
+
+    So the caller should pass the wrist rest point, not the origin. The feet then sit below
+    the floor by `(scale - 1)` times the wrist height, which is invisible: the game is
+    first person and does not simulate the player's body.
     """
+    if not math.isfinite(scale) or scale <= 0.0:
+        # A negative or zero scale mirrors the world or collapses it to the origin, and
+        # both would look like a tracking fault rather than the argument error they are.
+        raise ValueError(f"scale must be finite and positive, got {scale!r}")
+    pivot_v = tuple(float(c) for c in pivot)
+    if len(pivot_v) != 3 or not all(math.isfinite(c) for c in pivot_v):
+        raise ValueError(f"pivot must be three finite numbers, got {pivot!r}")
     root_p = tuple(float(c) for c in state["root_p"])
     # BodyState.root_q is (w, x, y, z). It is NOT the same order as Pose.q_xyzw,
     # and converting it as if it were turns an identity root into a 180 deg spin
     # about X: the heading comes out wrong while the positions still look sane.
     root_q = quat_normalize(tuple(float(c) for c in state["root_q"]))
 
-    def compose(pose: dict[str, Any]):
+    def compose(pose: dict[str, Any], scale_this: float = 1.0):
         p_rel = tuple(float(c) for c in pose["p"])
         q_rel = quat_normalize(_xyzw_to_wxyz(pose["q_xyzw"]))
         rotated = quat_rotate(root_q, p_rel)
@@ -269,12 +320,27 @@ def body_state_to_xr(
             q_world = quat_mul(
                 (math.cos(half), 0.0, 0.0, math.sin(half)), q_world
             )
+        if scale_this != 1.0:
+            # About `pivot`, not the origin: the origin is the floor, and scaling there
+            # lifts the hand faster than it lengthens the arm. Uniform scaling commutes
+            # with the yaw rotation below, so the order does not matter.
+            p_world = tuple(
+                pivot_v[k] + (p_world[k] - pivot_v[k]) * scale_this for k in range(3)
+            )
         return mj_to_xr_vec(p_world), mj_to_xr_quat(q_world)
 
+    # `scale_head=False` is the configuration that actually shortens a reach, and the
+    # reason is measured: the card on JobBot's counter sits 0.45 m ABOVE the resting hand
+    # and only 0.12 m away from it horizontally. Scaling the head lifts the camera 0.29 m,
+    # which changes the depth the camera reports, which moves the object's apparent
+    # position in the robot frame and cancels most of the longer arm - 1.43 bought 0.500 ->
+    # 0.472 m, four per cent. Leaving the head alone keeps the camera where the delivery
+    # was measured and the depth valid, while the hands still travel 1.43x per metre.
+    head_scale = scale if scale_head else 1.0
     return {
-        "head": compose(state["head"]),
-        "left": compose(state["left_hand"]),
-        "right": compose(state["right_hand"]),
+        "head": compose(state["head"], head_scale),
+        "left": compose(state["left_hand"], scale),
+        "right": compose(state["right_hand"], scale),
     }
 
 

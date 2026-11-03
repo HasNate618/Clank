@@ -585,3 +585,39 @@ class DurationTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PlayerScaleTests(unittest.TestCase):
+    """The relay must carry the scale through to the packets, not just accept it.
+
+    A scale that is validated at the door and then dropped would look exactly like a
+    working system: every pose would still be plausible, just adult-sized or not, and the
+    only symptom would be distances that do not match the reach measurements.
+    """
+
+    def _source(self, scale: float):
+        tmp = tempfile.mkdtemp()
+        path = Path(tmp) / "body_state.json"
+        path.write_text(
+            json.dumps(
+                {
+                    "root_p": [0.0, 0.0, 0.787],
+                    "root_q": [1.0, 0.0, 0.0, 0.0],
+                    "head": {"p": [0.0, 0.0, 0.403], "q_xyzw": [0.0, 0.0, 0.0, 1.0]},
+                    "left_hand": {"p": [0.0, 0.2, 0.0], "q_xyzw": [0.0, 0.0, 0.0, 1.0]},
+                    "right_hand": {"p": [0.3, -0.2, 0.1], "q_xyzw": [0.0, 0.0, 0.0, 1.0]},
+                }
+            ),
+            encoding="utf-8",
+        )
+        return pose_relay.PacketSource(pose_relay.StateSource(path), player_scale=scale)
+
+    def test_the_eye_comes_out_at_the_scaled_height(self) -> None:
+        plain, _, _ = self._source(1.0).poses(time.monotonic())
+        tall, _, _ = self._source(1.43).poses(time.monotonic())
+        self.assertAlmostEqual(tall["head"][0][1] / plain["head"][0][1], 1.43, places=6)
+
+    def test_a_bad_scale_is_refused_at_construction(self) -> None:
+        for bad in (0.0, -1.43, float("nan"), float("inf")):
+            with self.assertRaises(ValueError):
+                self._source(bad)

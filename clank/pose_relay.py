@@ -26,6 +26,7 @@ import argparse
 import csv
 import json
 import math
+import os
 import socket
 import struct
 import time
@@ -154,6 +155,9 @@ class PacketSource:
         source: StateSource,
         stale_after: float = STALE_AFTER_SEC,
         yaw_offset_rad: float = 0.0,
+        player_scale: float = 1.0,
+        player_pivot: tuple[float, float, float] = (0.0, 0.0, 0.0),
+        player_scale_head: bool = True,
     ) -> None:
         self.source = source
         self.stale_after = stale_after
@@ -163,6 +167,15 @@ class PacketSource:
         if not math.isfinite(yaw_offset_rad):
             raise ValueError("yaw_offset_rad must be finite")
         self.yaw_offset_rad = yaw_offset_rad
+        # How big the emulated player is against the room. Rejected here for the
+        # same reason as the yaw: a zero or negative scale collapses or mirrors
+        # every pose, and the symptom downstream would look like lost tracking
+        # rather than the argument error it is.
+        if not math.isfinite(player_scale) or player_scale <= 0.0:
+            raise ValueError("player_scale must be finite and positive")
+        self.player_scale = player_scale
+        self.player_pivot = tuple(float(c) for c in player_pivot)
+        self.player_scale_head = bool(player_scale_head)
         self._last = wire.REST_POSES
         self._last_note = "rest"
         #: The most recent state that parsed, so buttons can be forwarded even
@@ -176,7 +189,13 @@ class PacketSource:
         if state is None:
             return self._last, self._last_note if self._last_note != "live" else "stale", age
         try:
-            poses = wire.body_state_to_xr(state, yaw_offset_rad=self.yaw_offset_rad)
+            poses = wire.body_state_to_xr(
+                state,
+                yaw_offset_rad=self.yaw_offset_rad,
+                scale=self.player_scale,
+                pivot=self.player_pivot,
+                scale_head=self.player_scale_head,
+            )
         except (KeyError, TypeError, ValueError):
             # A half-written or shape-changed file must not kill the pipe.
             return self._last, "malformed", age
@@ -295,9 +314,16 @@ def run(host: str, port: int, state_path: Path, log_path: Path | None,
         duration: float, hz: float, force_grab: str = "none",
         force_trigger: str = "none", grab_mode: str = "squeeze",
         yaw_offset_rad: float = 0.0,
-        fov_rad: tuple[float, float] | None = None) -> int:
+        fov_rad: tuple[float, float] | None = None,
+        player_scale: float = 1.0,
+        player_pivot: tuple[float, float, float] = (0.0, 0.0, 0.0),
+        player_scale_head: bool = True) -> int:
     wire.assert_layout()
-    source = PacketSource(StateSource(state_path), yaw_offset_rad=yaw_offset_rad)
+    source = PacketSource(
+        StateSource(state_path), yaw_offset_rad=yaw_offset_rad,
+        player_scale=player_scale, player_pivot=player_pivot,
+        player_scale_head=player_scale_head,
+    )
     sock = connect(host, port)
     print(f"pose_relay: connected {host}:{port}", flush=True)
     print("pose_relay: handshake ok", flush=True)
@@ -310,6 +336,17 @@ def run(host: str, port: int, state_path: Path, log_path: Path | None,
                 "(declared, not walked)",
                 flush=True,
             )
+    if player_scale != 1.0:
+        # Printed for the same reason as the heading: a capture is only interpretable if
+        # you know how big the emulated player was when it was taken. This one changes
+        # every distance in the room, so an unlabelled capture is actively misleading.
+        print(
+            f"pose_relay: emulated player scaled {player_scale:.3f}x about "
+            f"({player_pivot[0]:+.3f},{player_pivot[1]:+.3f},{player_pivot[2]:+.3f}) "
+            f"(declared: the robot's own reach is unchanged, the room is measured "
+            f"{player_scale:.3f}x smaller for it)",
+            flush=True,
+        )
     if fov_rad is not None:
         # Printed because the field of view is the thing under test: a capture is only
         # interpretable if you know which one was declared when it was taken.
@@ -434,12 +471,58 @@ def main(argv: list[str] | None = None) -> int:
                     help="full horizontal field of view to declare, degrees")
     ap.add_argument("--fov-v-deg", type=float, default=None, dest="fov_v_deg",
                     help="full vertical field of view to declare, degrees")
+    ap.add_argument(
+        "--player-scale",
+        type=float,
+        default=float(os.environ.get("RELAY_PLAYER_SCALE", "1.0")),
+        dest="player_scale",
+        help="how big the emulated player is against the room; the G1 is 1.32 m with "
+             "~0.45 m of arm travel and Job Simulator is laid out for an adult, so 1.43 "
+             "puts the emulated eye at 1.75 m and shrinks the reach a given object "
+             "demands by the same factor. Defaults to $RELAY_PLAYER_SCALE, else 1.0. NOT "
+             "$CLANK_*: clank/config.py treats any CLANK_<section>_<key> as a config "
+             "override and refuses to start the stack on an unknown one - measured, the "
+             "orchestrator exited with 'unknown environment override CLANK_PLAYER_SCALE'. "
+             "The robot's own dimensions are unchanged",
+    )
+    ap.add_argument(
+        "--player-pivot",
+        default=os.environ.get("RELAY_PLAYER_PIVOT", "0,0,0"),
+        dest="player_pivot",
+        help="x,y,z the player scale is measured from, in the body's world frame "
+             "(the root sits at z=0.787). The floor origin raises the hand faster than it "
+             "lengthens the arm, so it makes a low, near object harder; the resting wrist "
+             "is the pivot that delivers the promised reach",
+    )
+    ap.add_argument(
+        "--player-scale-head",
+        choices=("on", "off"),
+        default=os.environ.get("RELAY_PLAYER_SCALE_HEAD", "on"),
+        dest="player_scale_head",
+        help="whether the head is scaled with the hands. OFF is the setting that "
+             "actually shortens a reach: scaling the head lifts the camera, which changes "
+             "the depth it reports and cancels most of the longer arm (measured: 1.43 "
+             "bought 0.500 -> 0.472 m with the head scaled, against 0.35 m without). The "
+             "camera then stays where every measurement in research/ was taken",
+    )
     args = ap.parse_args(argv)
     log_path = Path(args.log) if args.log else None
     if not math.isfinite(args.yaw_offset_deg):
         # Refused here so the operator gets a named flag rather than a traceback out
         # of the packet builder.
         ap.error("--yaw-offset-deg must be a finite number")
+    if not math.isfinite(args.player_scale) or args.player_scale <= 0.0:
+        # Same reasoning as the yaw: name the flag rather than let a traceback out of
+        # the packet builder.
+        ap.error(
+            f"--player-scale must be finite and positive, got {args.player_scale}"
+        )
+    try:
+        pivot = tuple(float(c) for c in str(args.player_pivot).split(","))
+    except ValueError:
+        ap.error(f"--player-pivot must be x,y,z, got {args.player_pivot!r}")
+    if len(pivot) != 3:
+        ap.error(f"--player-pivot must be x,y,z, got {args.player_pivot!r}")
     fov_rad = None
     if args.fov_h_deg is not None or args.fov_v_deg is not None:
         if args.fov_h_deg is None or args.fov_v_deg is None:
@@ -458,7 +541,9 @@ def main(argv: list[str] | None = None) -> int:
                force_grab=args.force_grab, force_trigger=args.force_trigger,
                grab_mode=args.grab_mode,
                yaw_offset_rad=math.radians(args.yaw_offset_deg),
-               fov_rad=fov_rad)
+               fov_rad=fov_rad, player_scale=args.player_scale,
+               player_pivot=pivot,
+               player_scale_head=(args.player_scale_head == "on"))
 
 
 if __name__ == "__main__":
