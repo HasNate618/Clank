@@ -228,6 +228,13 @@ def verb_to_intent(name: str, raw: Mapping[str, Any]) -> Intent | None:
     if name == "look_right":
         return make("look", yaw_rad=-LOOK_ARC_RAD)
     if name == "reach":
+        # `look_yaw_deg` is optional and defaults to None, not 0.0. A reach that
+        # says nothing about the head keeps the old hold behaviour; a reach that
+        # names a yaw is asking for *that camera*, which is what a pixel marked in
+        # a captured frame needs. `look` rebuilds the head from the clip, so the
+        # same yaw always gives the same view - measured 2026-11-01, a hand-only
+        # reach let the body drag the head 0.101 m and about 23 deg per step.
+        yaw = raw.get("look_yaw_deg")
         return make(
             "reach",
             _side(raw),
@@ -236,6 +243,7 @@ def verb_to_intent(name: str, raw: Mapping[str, Any]) -> Intent | None:
                 float(raw.get("up_m", DEFAULT_REACH[1])),
                 float(raw.get("lateral_m", DEFAULT_REACH[2])),
             ),
+            yaw_rad=None if yaw is None else math.radians(float(yaw)),
         )
     if name == "aim":
         return make("reach", _side(raw), offset=AIM_REACH)

@@ -94,6 +94,22 @@ class VerbParsing(unittest.TestCase):
         self.assertEqual((i.skill, i.side), ("reach", "left"))
         self.assertEqual(i.offset, (0.18, 0.1, -0.02))
 
+    def test_reach_can_carry_the_yaw_it_was_marked_at(self) -> None:
+        # A pixel is only valid from the orientation it was marked in. `look` is
+        # derived from the clip, so naming the yaw on the reach itself lets the
+        # adapter rebuild *that same camera* while the arm moves, instead of
+        # letting the body drag the head somewhere else.
+        i = intent.verb_to_intent("reach", {"forward_m": 0.2, "look_yaw_deg": -20})
+        assert i is not None
+        self.assertAlmostEqual(i.yaw_rad, math.radians(-20))
+
+    def test_reach_without_a_yaw_says_nothing_about_the_head(self) -> None:
+        # None means "not my business": the caller keeps the existing hold
+        # behaviour. A default of 0.0 would silently recentre the camera.
+        i = intent.verb_to_intent("reach", {"forward_m": 0.2})
+        assert i is not None
+        self.assertIsNone(i.yaw_rad)
+
     def test_reach_defaults_to_the_measured_envelope(self) -> None:
         i = intent.verb_to_intent("reach", {})
         assert i is not None

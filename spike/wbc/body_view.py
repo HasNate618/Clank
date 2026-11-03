@@ -59,6 +59,7 @@ from clank.body import (  # noqa: E402
     AUTH_TRIGGER,
     BodyCommand,
     hold,
+    reach_with_head,
     rest,
 )
 from clank.bus import CommandBus  # noqa: E402
@@ -249,13 +250,20 @@ def _command_from_intent(
 
     forward, up, lateral = intent.offset or (0.0, 0.0, 0.0)
     if intent.skill == "reach":
-        return _hand_command(
-            executor.hand_target(
-                intent.side, forward_m=forward, up_m=up, lateral_m=lateral
-            ),
-            intent.side,
-            frame=intent.frame,
+        hand = executor.hand_target(
+            intent.side, forward_m=forward, up_m=up, lateral_m=lateral
         )
+        if intent.yaw_rad is not None:
+            # The caller named the camera it marked the target in. Claim the head so
+            # the body cannot drag it (measured: 0.101 m and ~23 deg per reach), and
+            # rebuild that camera from the clip so it is the same one every step.
+            head = executor.look_target(intent.yaw_rad)
+            if intent.side == "right":
+                return reach_with_head(
+                    head=head, right_hand=hand, frame=intent.frame
+                )
+            return reach_with_head(head=head, left_hand=hand, frame=intent.frame)
+        return _hand_command(hand, intent.side, frame=intent.frame)
     if intent.skill == "strike":
         return _hand_command(
             executor.hand_target(intent.side, forward_m=forward, up_m=up),

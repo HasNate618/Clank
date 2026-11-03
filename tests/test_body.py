@@ -19,6 +19,7 @@ from clank.body import (
     commanded_buttons,
     describe_auth,
     hold,
+    reach_with_head,
     rest,
 )
 
@@ -258,3 +259,43 @@ class FreezeHold(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ReachKeepsTheCameraStill(unittest.TestCase):
+    """A reach must not move the camera.
+
+    `_hand_command` claims only a hand bit, so the head resolves through
+    `channel_pose` rule 3 to the *last achieved* head - and the body drags the head
+    whenever the arm moves. Measured 2026-11-01: one `reach forward 0.15` moved the
+    head 0.101 m and 0.2023 of quaternion (about 23 deg), and the next reach
+    ratcheted from wherever that left it. Eight reaches walked the camera out of the
+    room, which is why a pixel marked before a reach no longer referred to its
+    object afterwards.
+
+    The fix is the same shape as `close_hand`: give the command a stable reference
+    instead of reading the achieved pose back.
+    """
+
+    def test_reach_with_a_head_pose_claims_the_head(self) -> None:
+        cmd = reach_with_head(head=LOOKED_HEAD, right_hand=REACHED_RIGHT)
+        self.assertEqual(cmd.head, LOOKED_HEAD)
+        self.assertEqual(cmd.right_hand, REACHED_RIGHT)
+        self.assertEqual(cmd.authority, AUTH_HEAD | AUTH_R_HAND)
+
+    def test_left_side_claims_the_left_hand(self) -> None:
+        cmd = reach_with_head(head=LOOKED_HEAD, left_hand=REACHED_LEFT)
+        self.assertEqual(cmd.left_hand, REACHED_LEFT)
+        self.assertEqual(cmd.authority, AUTH_HEAD | AUTH_L_HAND)
+
+    def test_a_reach_never_touches_the_grip(self) -> None:
+        # Same rule as `hold`: freezing a hand must not reopen or close it.
+        self.assertEqual(reach_with_head(head=LOOKED_HEAD, right_hand=REACHED_RIGHT).authority & AUTH_CLOSURE, 0)
+
+    def test_exactly_one_hand(self) -> None:
+        for kwargs in ({}, {"left_hand": REACHED_LEFT, "right_hand": REACHED_RIGHT}):
+            with self.assertRaises(ValueError):
+                reach_with_head(head=LOOKED_HEAD, **kwargs)
+
+    def test_the_frame_is_carried(self) -> None:
+        cmd = reach_with_head(head=LOOKED_HEAD, right_hand=REACHED_RIGHT, frame="head")
+        self.assertEqual(cmd.frame, "head")

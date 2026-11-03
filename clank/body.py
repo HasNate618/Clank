@@ -365,6 +365,52 @@ def hold(
     )
 
 
+def reach_with_head(
+    head: Pose,
+    right_hand: Pose | None = None,
+    left_hand: Pose | None = None,
+    frame: str = "root",
+    seq: int = 0,
+    now_ns: int = 0,
+    ttl_ms: int = DEFAULT_TTL_MS,
+) -> BodyCommand:
+    """One hand to a pose, with the head held where the caller says it is.
+
+    A hand-only command leaves the head unclaimed, and `channel_pose` rule 3 then
+    answers with the **last achieved** head. That sounds harmless and is not: the
+    body drags the head whenever the arm moves, so "last achieved" is already
+    moving. Measured 2026-11-01, one `reach forward 0.15` moved the head **0.101 m
+    and 0.2023 of quaternion (about 23 deg)**, and every later reach ratcheted from
+    wherever the previous one left it. Eight reaches carried the camera out of the
+    room and away from the object a pixel had been marked on.
+
+    This is the `close_hand` lesson again: an achieved pose is not a reference. The
+    caller supplies a head pose it can name again - for the adapter, the head the
+    frame was captured at, rebuilt from `look_target`, which is derived from the
+    clip and is therefore the same every time.
+
+    Raises `ValueError` unless exactly one hand is given: a reach addresses one
+    hand, and a silent default would put the wrong arm somewhere.
+    """
+    if (right_hand is None) == (left_hand is None):
+        raise ValueError("reach_with_head needs exactly one hand")
+    common = {
+        "seq": seq,
+        "t_mono_ns": now_ns,
+        "ttl_ms": ttl_ms,
+        "head": head,
+        "frame": frame,
+        "source": "script",
+    }
+    if right_hand is not None:
+        return BodyCommand(
+            **common, authority=AUTH_HEAD | AUTH_R_HAND, right_hand=right_hand
+        )
+    return BodyCommand(
+        **common, authority=AUTH_HEAD | AUTH_L_HAND, left_hand=left_hand
+    )
+
+
 def rest(
     seq: int = 0, now_ns: int = 0, ttl_ms: int = DEFAULT_TTL_MS
 ) -> BodyCommand:
