@@ -7,9 +7,18 @@ changes a bound, a test citing the measurement fails and they have to go and mea
 again.
 """
 
+import math
 import unittest
 
-from clank.workspace import WRIST_BOX, box_bounds, clamp_wrist, in_workspace
+from clank.workspace import (
+    MAX_LATERAL_OFFSET_M,
+    MAX_OFFSET_M,
+    WRIST_BOX,
+    box_bounds,
+    clamp_offset,
+    clamp_wrist,
+    in_workspace,
+)
 
 #: Settled right wrist at the standing clip, root-relative metres.
 STANDING_REST = (0.079, -0.308, -0.203)
@@ -90,3 +99,48 @@ class Overloads(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ClampOffset(unittest.TestCase):
+    """Limits on a *commanded* offset, which is a different thing from a wrist point.
+
+    Measured 2026-11-03: a raw Jacobian inverse asked for (-0.761, +0.798, +0.124) m of
+    offset, the body leaned, and the executor stopped with `FALL detected`. Lateral is
+    the axis that does it - it is coupled ~45 deg into forward (Jacobian column
+    [+0.50, +0.71, +0.10]), so a lateral request becomes a lean rather than a move.
+    """
+
+    def test_a_small_offset_passes_through(self) -> None:
+        self.assertEqual(clamp_offset(0.10, 0.05, 0.05), (0.10, 0.05, 0.05))
+
+    def test_lateral_is_clamped_on_its_own_axis_first(self) -> None:
+        got = clamp_offset(0.0, -0.761, 0.0)
+        self.assertEqual(got, (0.0, -MAX_LATERAL_OFFSET_M, 0.0))
+
+    def test_the_remainder_is_scaled_without_changing_direction(self) -> None:
+        # Lateral is capped first, *then* the whole vector is scaled. So the direction
+        # that survives is the lateral-capped one, not the original - and it must be
+        # preserved exactly, because clamping the axes independently would aim the reach
+        # somewhere it was never asked to go.
+        fwd, lat, up = 0.798, -0.761, 0.124
+        got = clamp_offset(fwd, lat, up)
+        pre = (fwd, -MAX_LATERAL_OFFSET_M, up)
+        self.assertAlmostEqual(math.dist((0.0, 0.0, 0.0), got), MAX_OFFSET_M, places=9)
+        scale = MAX_OFFSET_M / math.dist((0.0, 0.0, 0.0), pre)
+        for k in range(3):
+            self.assertAlmostEqual(got[k], pre[k] * scale, places=9)
+
+    def test_the_dangerous_request_is_now_survivable(self) -> None:
+        # This exact vector knocked the robot over when it was sent unclamped.
+        got = clamp_offset(0.798, -0.761, 0.124)
+        self.assertLessEqual(abs(got[1]), MAX_LATERAL_OFFSET_M)
+        self.assertLessEqual(math.dist((0.0, 0.0, 0.0), got), MAX_OFFSET_M + 1e-9)
+
+    def test_non_finite_is_a_caller_bug(self) -> None:
+        for bad in ((float("nan"), 0.0, 0.0), (0.0, float("inf"), 0.0)):
+            with self.assertRaises(ValueError):
+                clamp_offset(*bad)
+
+    def test_a_non_positive_limit_is_a_caller_bug(self) -> None:
+        with self.assertRaises(ValueError):
+            clamp_offset(0.1, 0.0, 0.0, max_m=0.0)

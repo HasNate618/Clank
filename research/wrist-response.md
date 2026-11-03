@@ -93,3 +93,38 @@ command produced +0.399 of motion). Hence: measure in situ, cap at 1.6, damp at 
 2–3 commands at ~1 s each is a *deliberate* motion, not a stutter, if each one is a visible
 progress step rather than a hidden correction. The remaining work for smoothness is to
 stream a path at a rate below the 0.4 s oscillation, not to shorten the loop further.
+
+## The fall (2026-11-03)
+
+The body fell during these measurements and the executor stopped itself:
+`body_view: FALL detected, stopping`, exit code 3. The socket then refused connections,
+which is how it was noticed - the dashboard still reported `running`, so a dead body and a
+live one are indistinguishable from the state endpoint alone.
+
+Cause, from the same session's numbers: a raw Jacobian inverse, asked for a modest
+(0.20, 0.10, 0.12) move, produced the command
+
+```
+(+0.798, -0.761, +0.124) m of offset
+```
+
+That is nearly a metre, of which 0.76 m is **lateral** - the axis measured to be coupled
+~45° into forward (Jacobian column `[+0.50, +0.71, +0.10]`) and the one the earlier
+observations already blamed for the 0.46 m sideways swing and the body lean. The linear
+model was fitted at a 0.15 m probe and extrapolated 5× beyond it; on this model the
+off-diagonal terms are large enough that `J⁻¹` amplifies a small request into an
+unreachable one.
+
+The guard that should have caught it did not, because it lived in one tool and not the
+other. It now lives in `clank.workspace.clamp_offset`: lateral capped at **0.18 m** on its
+own axis first, then the whole vector scaled to **0.40 m** of magnitude, preserving
+direction. `spike/wbc_game/jacobian.py` now *refuses* to send an offset the clamp would
+change rather than silently sending a different command than it printed.
+
+Two lessons worth keeping:
+
+1. **`J⁻¹` is not a placement method here.** With off-diagonal terms this large, invert
+   nothing: iterate a damped correction against measurement (`place_wrist.py`: 3 commands,
+   0.031 m) and let the clamp bound each step.
+2. **A "fine" lateral number is not a fine lateral command.** The per-axis table looks
+   harmless because the numbers are small; the failure mode is the body, not the wrist.

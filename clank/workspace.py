@@ -96,3 +96,47 @@ def in_workspace(point: tuple[float, ...]) -> bool:
     """Is `point` inside the measured trackable box? Agreement with `clamp_wrist` is
     guaranteed and tested."""
     return clamp_wrist(point) == _validated(point)
+
+
+#: Hard cap on the *magnitude* of a commanded wrist offset. The measured arm travel is
+#: 0.41-0.51 m (`research/sonic-reach-envelope.md`), so 0.40 keeps a margin inside it.
+MAX_OFFSET_M = 0.40
+
+#: Cap on the lateral component alone. Lateral is the axis that leans the body: it is
+#: coupled ~45 deg into the forward axis (measured Jacobian column [+0.50, +0.71, +0.10])
+#: and it has already put the robot on the floor. Measured 2026-11-03: a raw Jacobian
+#: inverse asked for -0.761 m of lateral offset and the body fell (`FALL detected`).
+MAX_LATERAL_OFFSET_M = 0.18
+
+
+def clamp_offset(
+    forward_m: float,
+    lateral_m: float,
+    up_m: float,
+    max_m: float = MAX_OFFSET_M,
+    max_lateral_m: float = MAX_LATERAL_OFFSET_M,
+) -> tuple[float, float, float]:
+    """Limit a commanded wrist offset to what the arm has been measured to survive.
+
+    Two limits, because they fail differently. Lateral is clamped on its own axis first,
+    because a large lateral request is what provokes the body lean rather than an arm
+    move. The remainder is then scaled as a vector if it still exceeds `max_m`, preserving
+    direction - clamping axes separately would turn a diagonal request into a different
+    direction, which is how a reach quietly stops aiming where it was asked to.
+
+    Returns the clamped offset. Callers that need to know whether the limit bit can
+    compare the result with the input.
+    """
+    values = (forward_m, lateral_m, up_m)
+    if not all(math.isfinite(v) for v in values):
+        raise ValueError(f"offset must be finite, got {values!r}")
+    if max_m <= 0.0 or max_lateral_m <= 0.0:
+        raise ValueError("limits must be positive")
+    fwd = float(forward_m)
+    lat = max(-max_lateral_m, min(max_lateral_m, float(lateral_m)))
+    up = float(up_m)
+    length = math.sqrt(fwd * fwd + lat * lat + up * up)
+    if length > max_m:
+        scale = max_m / length
+        fwd, lat, up = fwd * scale, lat * scale, up * scale
+    return (fwd, lat, up)

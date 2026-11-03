@@ -25,6 +25,9 @@ import sys
 import time
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from clank.workspace import clamp_offset  # noqa: E402
+
 SOCK = Path.home() / ".local/state/Clank/sessions/body/control.sock"
 STATE = Path.home() / ".local/state/Clank/sessions/body/body_state.json"
 
@@ -36,8 +39,9 @@ GAIN = (1.10, 1.00, 1.00)
 #: Share of the remaining error to correct per step once the gain is known. Below 1 it
 #: stays stable for any positive gain, which matters because the gain is not constant.
 LAMBDA = 0.7
-#: A lateral request beyond this is asking the arm to lean, not to move.
-MAX_LATERAL = 0.30
+#: Envelope guard lives in clank.workspace: `clamp_offset` caps lateral hardest, because
+#: a large lateral request leans the body instead of moving the arm. Measured 2026-11-03:
+#: an unclamped Jacobian inverse asked for -0.761 m of lateral and the body fell.
 
 
 def send(**kw: object) -> dict:
@@ -86,8 +90,7 @@ def main() -> int:
     offset = list(delta)
     t0 = time.monotonic()
     for i in range(args.tries):
-        want = [min(v, MAX_LATERAL) if k == 1 else v for k, v in enumerate(offset)]
-        want = [max(v, -MAX_LATERAL) if k == 1 else v for k, v in enumerate(want)]
+        want = clamp_offset(*offset)
         send(verb="reach", side="right", forward_m=round(want[0], 3),
              lateral_m=round(want[1], 3), up_m=round(want[2], 3),
              look_yaw_deg=args.yaw)
