@@ -155,3 +155,33 @@ stale while a frame is captured and thought about: the arm is not where the last
 put it, and nothing says so. Any loop that pauses between measurement and command should
 keepalive - and the first command of a session must be sent before anything is measured,
 because the arm is still relaxing toward the clip.
+
+## Straight lines are not achievable inside the safe envelope
+
+Three attempts at the same 0.300 m forward path, same start posture:
+
+| method | worst cross-track | endpoint error |
+|---|---|---|
+| open-loop streaming | 0.162 m | 0.162 m |
+| diagonal feedback (`move_path.py --feedback`) | 0.167 m | 0.162 m |
+| damped `J⁻¹` feedback (+ clamp) | **0.286 m** | 0.140 m |
+
+The mechanism is arithmetic, not tuning. Commanding 0.30 m forward requires a forward
+offset near 0.39 m, and the measured Jacobian says that also produces ~0.67 of lateral
+motion per unit. Cancelling it needs a lateral offset of
+
+```
+-0.67 * 0.388 / 0.71 ≈ -0.366 m
+```
+
+against a safety cap of **0.18 m** — the cap being 0.18 precisely because a 0.76 m lateral
+request knocked the body over. So a straight forward line and a survivable command set are
+incompatible on this arm. `J⁻¹` did worst of the three because it spent its authority trying.
+
+This is not a bug to be fixed by more cleverness; it is a property of the arm's coupling.
+The forward diagonal *is* the arm's natural direction.
+
+**Consequence:** stop asking for straight lines. Ask for the endpoint (which works:
+3 commands, 0.031 m) and let the path be whatever the arm's diagonal preference makes it.
+A demo that reaches the object by the natural route looks better than one fighting its own
+kinematics, and it is the same motion a person would make.
