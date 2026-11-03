@@ -146,3 +146,47 @@ the stdlib relay. `OpenRAL/rskill-moveit-look-at` implements the same roll-free 
 needs ROS 2/MoveIt/TF2, so it is out of scope. `mink` and `placo` are full IK/QP solvers; our
 learned policy already accepts Cartesian head/wrist targets, so borrow the look-at math, not a
 second control path, unless you deliberately want to bypass the policy.
+
+## Chinese-language sources checked (follow-up)
+
+The first pass relied on Exa, which returned mostly English/global pages. A second pass with
+the local trawl engine (ddg) and GitHub Chinese queries (`视觉伺服`, `视觉伺服 机械臂`,
+`头部 云台`, `注视 抓取`) returned genuinely Chinese pages and repos. The Chinese ecosystem
+is rich in visual servoing and gimbal tracking, but still has no off-the-shelf "head-camera
+look-at plus hand reach" controller. The relevant code:
+
+- `dreamybroomxj-coder/ForceSight` (MIT) — Chinese; `src/gaze/gaze_tracker.py`
+  `get_gaze_on_table`, `src/gaze/_geometry.py` `ray_intersect_plane`,
+  `src/Yolo/table_lookup.py`, `main.py` `_execute_grasp`. Gaze -> table 3D point -> Piper
+  arm grasp. Fixed external camera and user gaze, not head-camera centring, but the closest
+  Chinese MIT code for "target a 3D point from gaze and reach".
+- `GalaxyGeneralRobotics/OpenWBT` (Apache-2.0) — Chinese README; G1/H1 whole-body VR teleop,
+  `deploy/teleop/robot_control/robot_arm_ik.py`, `deploy/helpers/ik_server.py`,
+  `deploy/teleop/open_television/tv_wrapper.py`. G1-specific and MuJoCo-runnable, but it
+  follows VR head/arm poses; it has no autonomous look-at. Closest Chinese G1 reference.
+- `QiongMing-Intelligent/VISTA-Grasp` (Apache-2.0, Gitee) — WebXR head-pose + dual-arm IK
+  (Pinocchio/CasADi) over ROS 1. Same limitation: operator-driven head, no gaze controller.
+- `zc-xzc/robot_platform` (MIT) — PICO 4 head tracking -> 2-axis gimbal -> D415, PD yaw/pitch.
+  A direct example of keeping a head camera on the operator's view, but it moves a gimbal,
+  not an arm.
+- `whx-prog/teleoperate-end_pose` (no license declared) — Quest -> Limx Oli, head pitch
+  follow + arms. Do not copy; no license.
+- `XuHaohui/RoboGrasp-Vision` (no license) and `2993845045zhy/ur3-visual-servoing`
+  (NOASSERTION) — Chinese ROS 2/MuJoCo visual grasping and wrist-camera PBVS/IBVS. Do not
+  copy.
+- `kaka12331/2023-dian-sai-visual-gimbal` (no license) — two-axis gimbal visual servoing
+  with STM32/K230; directly relevant to "keep the target centred", but no license.
+- `haoyu-x/vision-in-action` (MIT) — active-perception neck and data pipeline; a training
+  stack, not a drop-in controller.
+- `HEAD` (hand-eye autonomous delivery, arXiv 2508.03068) — conceptually exact: a high-level
+  planner commands eye + left/right hand targets, and a whole-body policy tracks them. I did
+  not find a linked public code repo, so prior art only.
+
+Most other Chinese results (`HuaYuXiao/Vision-Servo-PID-Control`,
+`only-one-over/Dobot-VGS-RS400`, `XieMingyou/VisualServo`,
+`polyethylene16/visual-motion-control-of-robotic-arms`) are eye-to-hand or wrist-camera
+visual servoing. Local trawl also surfaced Chinese tutorials and forums (CSDN, Zhihu, BAAI,
+Wanfang, 51CTO, fishros) on visual grasping and gimbal servoing: they confirm the pattern but
+are not licensed code. No Chinese repo found combines head-camera look-at with hand reach in
+the way we need. This does not change the recommendation above: `mink` (or `placo`) for the
+look-at math, `grabette` for the direct quaternion.
