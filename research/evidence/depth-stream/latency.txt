@@ -1,6 +1,6 @@
-seq=36472 frame=18570 layer= 17.09ms transport=  2.45ms age= 19.54ms
-seq=36474 frame=18571 layer= 16.95ms transport=  1.26ms age= 18.21ms
-frames=497 fps=59.3
-layer     min=10.20ms median=15.62ms p95=20.00ms
-transport min=0.93ms median=1.55ms p95=2.85ms
-age       min=11.32ms median=17.25ms p95=21.97ms
+seq=2640 frame=1318 layer= 11.41ms transport=  1.14ms age= 12.55ms
+seq=2642 frame=1319 layer= 19.70ms transport=  1.76ms age= 21.46ms
+frames=360 fps=29.8
+layer     min=9.22ms median=13.88ms p95=24.79ms
+transport min=0.70ms median=1.41ms p95=2.71ms
+age       min=10.39ms median=15.84ms p95=26.39ms

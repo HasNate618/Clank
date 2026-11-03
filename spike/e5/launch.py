@@ -104,6 +104,7 @@ def launch(args: argparse.Namespace) -> int:
     env["DEPTH_STREAM_NEAR"] = f"{args.near if args.near is not None else _default_near():.9f}"
     env["DEPTH_STREAM_COLOR"] = "0" if args.no_color else "1"
     env["DEPTH_STREAM_COLOR_SCALE"] = str(args.color_scale)
+    env["DEPTH_STREAM_FPS"] = str(args.fps)
 
     argv = [sys.executable, "-m", "clank"]
     if args.replace:
@@ -117,6 +118,7 @@ def launch(args: argparse.Namespace) -> int:
         print(f"DEPTH_STREAM_PATH={env['DEPTH_STREAM_PATH']}")
         print(f"DEPTH_STREAM_NEAR={env['DEPTH_STREAM_NEAR']}")
         print(f"DEPTH_STREAM_COLOR_SCALE={env['DEPTH_STREAM_COLOR_SCALE']}")
+        print(f"DEPTH_STREAM_FPS={env['DEPTH_STREAM_FPS']}")
         print(f"command: {' '.join(argv)}")
         return 0
 
@@ -133,6 +135,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--eye", type=int, default=0, choices=(0, 1))
     parser.add_argument("--near", type=float, default=None)
     parser.add_argument("--color-scale", type=int, default=2, choices=(1, 2, 3, 4))
+    parser.add_argument("--fps", type=int, default=30)
     parser.add_argument("--no-color", action="store_true")
     parser.add_argument("clank_args", nargs=argparse.REMAINDER)
     args = parser.parse_args(argv)

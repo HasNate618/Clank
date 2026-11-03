@@ -241,6 +241,9 @@ typedef struct DeviceData {
     uint32_t color_scale, out_w, out_h;
     int want_color;
     float near_m, far_m;
+    uint32_t max_fps;
+    uint64_t min_interval_ns;
+    uint64_t last_inject_ns;
     uint32_t seq_counter;
     uint64_t frame_counter;
 
@@ -481,6 +484,12 @@ static int configure(DeviceData *dd)
     if (dd->color_scale > 4) dd->color_scale = 4;
     dd->out_w = dd->dst_w * dd->color_scale;
     dd->out_h = dd->dst_h * dd->color_scale;
+    dd->max_fps = 30;
+    if ((v = getenv("DEPTH_STREAM_FPS")))
+        dd->max_fps = (uint32_t)strtoul(v, NULL, 10);
+    if (dd->max_fps < 1) dd->max_fps = 1;
+    if (dd->max_fps > 240) dd->max_fps = 240;
+    dd->min_interval_ns = 1000000000ull / dd->max_fps;
     return dd->dst_w != 0 && dd->dst_h != 0;
 }
 
@@ -537,10 +546,10 @@ static int start_shared(DeviceData *dd)
         return 0;
     }
     dd->thread_started = 1;
-    logmsg("depth-stream: shared %s (%ux%u eye=%u near=%.6f color=%dx%u scale=%u)",
+    logmsg("depth-stream: shared %s (%ux%u eye=%u near=%.6f color=%dx%u scale=%u fps=%u)",
            path, dd->dst_w, dd->dst_h, dd->eye, dd->near_m,
            dd->want_color ? dd->out_w : 0, dd->want_color ? dd->out_h : 0,
-           dd->color_scale);
+           dd->color_scale, dd->max_fps);
     return 1;
 }
 
@@ -871,6 +880,15 @@ static void end_pass_common(VkCommandBuffer cb)
     // colour, so injecting both makes the preview alternate between dim and
     // bright. Stream the LOAD pass only.
     if (ps->color_load != VK_ATTACHMENT_LOAD_OP_LOAD) return;
+    if (dd->min_interval_ns) {
+        uint64_t now = now_ns();
+        // A strict deadline skips two passes when the game's frame lands a
+        // hair early; allow a little slack so 60 fps becomes a steady 30 fps.
+        if (dd->last_inject_ns &&
+            now - dd->last_inject_ns < dd->min_interval_ns * 3 / 4)
+            return;
+        dd->last_inject_ns = now;
+    }
     CbInfo *cbi = NULL;
     for (CbInfo *it = g_cbs; it; it = it->next)
         if (it->cb == cb) { cbi = it; break; }

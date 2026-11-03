@@ -109,9 +109,10 @@ renderdoc-layer/vulkan/implicit_layer.d/  # e4 manifest
   `X-Frame-Width/Height`) and draws it on a canvas; `.bmp` remains for
   compatibility.
 - Layer env vars (all `DEPTH_STREAM_*`, set by `spike/e5/launch.py`): `PATH`,
-  `LOG`, `WIDTH`, `HEIGHT`, `EYE`, `NEAR`, `COLOR`, `COLOR_SCALE`, `LAYER`. Do
-  **not** name them `CLANK_*`: the config loader rejects unknown `CLANK_*`
-  overrides.
+  `LOG`, `WIDTH`, `HEIGHT`, `EYE`, `NEAR`, `COLOR`, `COLOR_SCALE`, `FPS`,
+  `LAYER`. `FPS` defaults to 30; the layer skips eye passes to hit it, and the
+  dashboard canvas polls at the same 30 fps. Do **not** name them `CLANK_*`: the
+  config loader rejects unknown `CLANK_*` overrides.
 - The manifest is gated on `STEAM_COMPAT_DATA_PATH` +
   `GNUTLS_SYSTEM_PRIORITY_FILE=/dev/null` (present only in the game container)
   and disabled by `DISABLE_DEPTH_STREAM_PATH=1`.
@@ -187,7 +188,8 @@ After a change:
    Check `color.png` reads upright (text not mirrored), corners are non-black,
    and `frame.json` has `valid_frac=1.0`, `min_m` near 0.0094, median a few
    metres. Corner depth must not be the near plane.
-3. `layer`/`age` medians should be ~13-16 ms, not hundreds.
+3. `layer`/`age` medians should be ~13-17 ms, not hundreds, and `--watch`
+   should report ~30 fps.
 4. For the dashboard, a headless screenshot is enough:
 
 ```bash
