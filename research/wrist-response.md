@@ -128,3 +128,30 @@ Two lessons worth keeping:
    0.031 m) and let the clamp bound each step.
 2. **A "fine" lateral number is not a fine lateral command.** The per-axis table looks
    harmless because the numbers are small; the failure mode is the body, not the wrist.
+
+## `look` moves the head, not the body - and the arm drifts when uncommanded
+
+Two things that were assumed and are not true (measured 2026-11-03):
+
+**1. Body yaw is not available through `look`.** A `look yaw +35` changed the root yaw by
+**−0.1°** while the head clearly turned. So "aim laterally by turning the body" - which was
+the natural next move given the ~45° coupling between forward and lateral - is not
+reachable with the current verbs. `AUTH_WAIST` is in `UNSUPPORTED_IN_V1`, and
+`AUTH_ROOT_VEL` is not honoured in a hold session, so the torso cannot be aimed either.
+Lateral placement has to come from wrist offsets, iterated, at a gain of ~0.25.
+
+**2. A body with no active command drifts.** After a fresh restart and no hand command at
+all, the wrist relaxed 0.325 m over a few seconds toward the clip pose. Once a `reach` has
+been issued the steady rate is much smaller, but it is not zero:
+
+| keepalive | drift over 8 s | worst excursion |
+|---|---|---|
+| none | 0.039 m (4.9 mm/s) | 0.040 m |
+| every 1.5 s | 0.029 m | 0.043 m |
+| every 0.5 s | **0.009 m (1.1 mm/s)** | 0.026 m |
+
+So re-sending the current target at ~2 Hz cuts drift about 4×. This is why a mark goes
+stale while a frame is captured and thought about: the arm is not where the last command
+put it, and nothing says so. Any loop that pauses between measurement and command should
+keepalive - and the first command of a session must be sent before anything is measured,
+because the arm is still relaxing toward the clip.
