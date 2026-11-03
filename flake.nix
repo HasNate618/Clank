@@ -78,7 +78,16 @@
               --replace-fail 'info.fov[0] = 85.0f * (M_PI / 180.0f);' 'info.fov[0] = 140.0f * (M_PI / 180.0f);' \
               --replace-fail 'info.fov[1] = 85.0f * (M_PI / 180.0f);' 'info.fov[1] = 140.0f * (M_PI / 180.0f);'
           '';
-          cmakeFlags = nixpkgs.lib.remove "-DXRT_HAVE_STEAM:BOOL=TRUE" (old.cmakeFlags or [ ]);
+          # RenderDoc integration makes the OpenXR client call
+          # RENDERDOC_GetAPI()/StartFrameCapture()/EndFrameCapture() around every
+          # xrBeginFrame/xrEndFrame when librenderdoc.so is loaded, i.e. whenever
+          # our capture layer is active. That writes a full capture per frame to
+          # the container's RAM-backed /tmp until the game runs out of memory.
+          # We trigger captures explicitly through RenderDoc's target control
+          # instead, which does not need this integration.
+          cmakeFlags =
+            nixpkgs.lib.remove "-DXRT_HAVE_STEAM:BOOL=TRUE" (old.cmakeFlags or [ ])
+            ++ [ "-DXRT_FEATURE_RENDERDOC:BOOL=OFF" ];
         });
 
     in
@@ -108,6 +117,13 @@
               pkgs.mpv
               pkgs.novnc
               pkgs.python3Packages.websockify
+              # Frame capture for the depth spike: qrenderdoc runs the replay-side
+              # Python that reads the game's D32S8 attachment. The Vulkan layer is
+              # injected only into the Proton container by spike/e4/depth_capture.py.
+              # Take it from the compat pin: the current renderdoc needs glibc 2.43,
+              # but Steam Linux Runtime 4 has 2.42 and the in-game layer would fail
+              # to load. The compat pin's renderdoc 1.45 needs only glibc 2.38.
+              pkgsCompat.renderdoc
               # Sends the fullscreen client message weston's xwm needs; the game's
               # own _NET_WM_STATE_FULLSCREEN is ignored, so it would stay windowed.
               pkgs.xdotool
