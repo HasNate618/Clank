@@ -11,6 +11,13 @@ let previewConfig = null;
 let previewConfigPromise = null;
 let previewGeneration = 0;
 let previewError = "";
+let liveTimer = null;
+let liveActive = false;
+let liveFailures = 0;
+let liveAvailable = false;
+let liveBackoffUntil = 0;
+const LIVE_PREVIEW_MS = 100;
+const LIVE_BACKOFF_MS = 10000;
 let pollInFlight = false;
 let actionInFlight = false;
 let clientError = "";
@@ -150,7 +157,61 @@ async function loadPreviewConfig() {
   return config;
 }
 
+function stopLivePreview(failed = false) {
+  liveActive = false;
+  if (failed) liveBackoffUntil = Date.now() + LIVE_BACKOFF_MS;
+  if (liveTimer) {
+    clearTimeout(liveTimer);
+    liveTimer = null;
+  }
+  liveAvailable = false;
+  liveFailures = 0;
+  const img = $("preview-live");
+  if (img) {
+    img.hidden = true;
+    img.removeAttribute("src");
+  }
+}
+
+function liveTick() {
+  if (!liveActive) return;
+  const probe = new Image();
+  probe.onload = () => {
+    if (!liveActive) return;
+    liveAvailable = true;
+    liveFailures = 0;
+    const img = $("preview-live");
+    img.src = probe.src;
+    img.hidden = false;
+    hidePreviewAuth();
+    $("preview-wait").style.display = "none";
+    liveTimer = setTimeout(liveTick, LIVE_PREVIEW_MS);
+  };
+  probe.onerror = () => {
+    if (!liveActive) return;
+    liveFailures += 1;
+    if (liveFailures < 10) {
+      liveTimer = setTimeout(liveTick, 300);
+    } else {
+      // The layer is not publishing: fall back to the VNC transport.
+      stopLivePreview(true);
+    }
+  };
+  probe.src = `/api/preview/live.bmp?t=${Date.now()}`;
+}
+
+function startLivePreview() {
+  if (liveActive || Date.now() < liveBackoffUntil) return;
+  liveActive = true;
+  liveAvailable = false;
+  liveFailures = 0;
+  const img = $("preview-live");
+  if (img) img.hidden = false;
+  liveTick();
+}
+
 function closePreview() {
+  stopLivePreview();
   previewGeneration += 1;
   const rfb = previewRfb;
   previewRfb = null;
@@ -269,6 +330,11 @@ function syncPreview(state) {
     closePreview();
     return;
   }
+  startLivePreview();
+  if (liveActive) {
+    if (liveAvailable) hidePreviewAuth();
+    return;
+  }
   const preview = state.preview || {};
   const transportAlive = Boolean(preview.vnc_alive && preview.proxy_alive);
   if (transportAlive) {
@@ -299,6 +365,15 @@ function updatePreviewWait(state) {
   if (stateText) {
     wait.textContent = stateText;
     wait.style.display = "block";
+    return;
+  }
+  if (liveActive) {
+    if (liveAvailable) {
+      wait.style.display = "none";
+    } else {
+      wait.textContent = "waiting for live capture…";
+      wait.style.display = "block";
+    }
     return;
   }
   const preview = state.preview || {};

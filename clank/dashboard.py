@@ -14,6 +14,7 @@ from urllib.parse import unquote, urlparse
 
 from .body_preview import BODY_VERBS, BODY_VIEWS, BodyPreview, send_control
 from .config import Config
+from .depth_stream import bmp, latest
 from .manual_input import ManualInputError, ManualInputUnavailable
 from .orchestrator import ConflictError, PreflightError, SessionManager
 from .processes import tail_stream
@@ -73,6 +74,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return self._json(state)
         if path == "/api/preview/config":
             return self._preview_config()
+        if path == "/api/preview/live.bmp":
+            return self._preview_live()
         if path.startswith("/novnc/"):
             return self._novnc(path[len("/novnc/"):])
         if path == "/api/body.jpg":
@@ -298,6 +301,20 @@ class DashboardHandler(BaseHTTPRequestHandler):
         except OSError:
             return self._error(404, "log not found")
         self._bytes(200, data, "text/plain; charset=utf-8")
+
+    def _preview_live(self) -> None:
+        """The newest colour frame from the depth-stream layer, as a BMP.
+
+        The game presents its desktop window once and then renders only to the
+        OpenXR views, so Weston's VNC preview is a frozen frame. The layer is
+        the only live source, and a BMP needs no encoder on either side.
+        """
+        frame = latest(max_age=2.0)
+        if frame is None or frame.get("color") is None:
+            return self._error(404, "no live frame")
+        width = int(frame["color_width"])
+        height = int(frame["color_height"])
+        self._bytes(200, bmp(frame["color"], width, height), "image/bmp")
 
     def _preview_config(self) -> None:
         preview = self.server.manager.snapshot().get("preview") or {}

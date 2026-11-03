@@ -413,6 +413,15 @@ button.active:hover:not(:disabled) {
 }
 /* the raw Weston frame is upside down; the browser flips it */
 #preview-box .preview-clip img { transform: scaleY(-1); }
+/* the depth-stream colour is already in presentation order */
+#preview-box .preview-clip #preview-live {
+  transform: none;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  background: #000;
+}
 
 #preview-wait {
   position: absolute;

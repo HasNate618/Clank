@@ -45,7 +45,14 @@
             libjpeg
           ]);
           # Upstream nixpkgs patches do not apply to this fork.
-          patches = [ ];
+          #
+          # The remote HMD falls back to Monado's default XR_KHR_visibility_mask,
+          # whose hidden mesh clips the lens corners at 25%. Job Simulator stencils
+          # those corners to black, so the eye render (and any depth read from it)
+          # has a rounded rectangle instead of the full view the flat window shows.
+          # Return no hidden area and a full visible quad so the game renders the
+          # whole rectangle.
+          patches = [ ./spike/e5/monado-no-visibility-mask.patch ];
           postPatch = (old.postPatch or "") + ''
             # The dashboard previews at 30 fps while the game runs at 60 Hz, but
             # Monado's null compositor hardcodes 20 Hz.
@@ -173,6 +180,8 @@
                 # The manual-mode tests load the real pose client from here.
                 mkdir -p spike
                 cp -r ${./spike/c0} spike/c0
+                # test_vnc_auth imports the grabber to exercise its RSA-AES code.
+                cp ${./spike/vnc_grab.py} spike/vnc_grab.py
                 chmod -R u+w clank tests spike
                 # The orchestrator puts its Unix sockets under XDG_RUNTIME_DIR and
                 # the sandbox has none, so give it one that exists.

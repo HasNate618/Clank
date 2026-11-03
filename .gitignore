@@ -48,3 +48,10 @@ wayland-screenshot-*.png
 
 # Locally built depth-stream layer
 spike/e5/build/
+
+# nix build .#monado leaves this behind
+/result
+
+# Intermediate PPM/PGM frames; the PNGs beside them are the evidence
+research/evidence/depth-stream/*.ppm
+research/evidence/depth-stream/*.pgm
