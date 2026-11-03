@@ -185,3 +185,34 @@ The forward diagonal *is* the arm's natural direction.
 3 commands, 0.031 m) and let the path be whatever the arm's diagonal preference makes it.
 A demo that reaches the object by the natural route looks better than one fighting its own
 kinematics, and it is the same motion a person would make.
+
+## Head yaw is not a lateral actuator (tested properly)
+
+The earlier observation that `look 35` swung the wrist 0.325 m was the arm relaxing toward
+the clip, not a coupling. Re-tested with a keepalive at every yaw so the arm is actively
+commanded throughout, from one posture, same wrist target each time:
+
+| head yaw | wrist displacement |
+|---|---|
+| +10° | 0.011 m |
+| +20° | 0.024 m |
+| +35° | 0.024 m |
+| −20° | 0.035 m |
+
+At most 3.5 cm for 35° of head turn. So the head is a camera control only, and there is no
+path to lateral placement except wrist offsets — which are weak (~0.25 gain) and capped at
+0.18 m for safety.
+
+## The complete picture of what can be commanded
+
+| verb | effect | usable as |
+|---|---|---|
+| `reach` (wrist offsets) | 3 axes, coupled ~45°, lateral ~0.25 gain | **the only arm actuator** |
+| `look` | head yaw only, no pitch | camera aiming; ≤0.035 m of wrist coupling |
+| `hold` / `rest` | freeze at achieved / return to clip | state control |
+| `close_*` / `open_*` | commanded grip, not measured | button, not motion |
+| `AUTH_ROOT_VEL`, `AUTH_WAIST`, `AUTH_GAIT` | unsupported in this session | unavailable |
+
+So the manipulation envelope is one lever: wrist offsets of ≤0.40 m magnitude and ≤0.18 m
+lateral, placed to **~3 cm in 3 commands (~3 s)**. That is small, and it is enough for Job
+Simulator, where a grab is a click on a hovered object rather than a grasp.
