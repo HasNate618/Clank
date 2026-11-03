@@ -50,6 +50,18 @@ def stream_path() -> Path:
     return Path.home() / ".local/state/Clank/depth-stream.bin"
 
 
+def _flip_depth(depth: array.array, width: int, height: int) -> array.array:
+    out = array.array("f")
+    for y in range(height - 1, -1, -1):
+        out.extend(depth[y * width : (y + 1) * width])
+    return out
+
+
+def _flip_color(color: bytes, width: int, height: int) -> bytes:
+    stride = width * 4
+    return b"".join(color[y * stride : (y + 1) * stride] for y in range(height - 1, -1, -1))
+
+
 class Stream:
     """A read-only view of the stream file. Reusable between reads."""
 
@@ -71,8 +83,13 @@ class Stream:
     def _header(self) -> dict:
         return dict(zip(_KEYS, HEADER.unpack_from(self._mm, 0)))
 
-    def read(self, timeout: float = 5.0, after_seq: int = 0) -> dict | None:
-        """Wait for a stable frame newer than ``after_seq``."""
+    def read(self, timeout: float = 5.0, after_seq: int = 0, flip: bool = True) -> dict | None:
+        """Wait for a stable frame newer than ``after_seq``.
+
+        The layer samples in Vulkan's bottom-up order, so the default flips the
+        rows to the top-down order every consumer (PNG, dashboard, depth maps)
+        presents.
+        """
         deadline = time.monotonic() + timeout
         while True:
             h = self._header()
@@ -92,6 +109,10 @@ class Stream:
                     start = off + pix * 4
                     color = bytes(self._mm[start : start + cw * ch * 4])
                 if int(self._header()["seq"]) == seq:
+                    if flip:
+                        depth = _flip_depth(depth, w, hgt)
+                        if color is not None:
+                            color = _flip_color(color, cw, ch)
                     h["depth"] = depth
                     h["color"] = color
                     h["read_ns"] = time.monotonic_ns()
@@ -101,14 +122,20 @@ class Stream:
             time.sleep(0.0005)
 
 
-def latest(max_age: float = 2.0, path: Path | str | None = None) -> dict | None:
-    """Return the newest frame only if it was published within ``max_age`` seconds."""
+def latest(
+    max_age: float = 2.0, path: Path | str | None = None, flip: bool = True
+) -> dict | None:
+    """Return the newest frame only if it was published within ``max_age`` seconds.
+
+    Rows are flipped to top-down by default, like `Stream.read`; pass
+    ``flip=False`` only for a consumer that presents the layer order itself.
+    """
     try:
         stream = Stream(path)
     except OSError:
         return None
     try:
-        frame = stream.read(timeout=0.05)
+        frame = stream.read(timeout=0.05, flip=flip)
     except (OSError, ValueError):
         frame = None
     finally:
@@ -295,10 +322,24 @@ def verify_frame(frame: dict, outdir: Path | str) -> float:
     if color is None:
         raise SystemExit("no colour channel in the stream")
 
-    gray = [
-        (color[i * 4] + color[i * 4 + 1] + color[i * 4 + 2]) / 765.0
-        for i in range(width * height)
-    ]
+    cw, ch = int(frame["color_width"]), int(frame["color_height"])
+    gray = [0.0] * (width * height)
+    rgb = bytearray(width * height * 3)
+    if cw == width and ch == height:
+        for i in range(width * height):
+            src = i * 4
+            gray[i] = (color[src] + color[src + 1] + color[src + 2]) / 765.0
+            rgb[i * 3 : i * 3 + 3] = color[src : src + 3]
+    else:
+        # The colour is a larger render; sample it on the depth grid.
+        for y in range(height):
+            cy = min(ch - 1, int((y + 0.5) * ch / height))
+            for x in range(width):
+                cx = min(cw - 1, int((x + 0.5) * cw / width))
+                src = (cy * cw + cx) * 4
+                dst = (y * width + x) * 3
+                gray[y * width + x] = (color[src] + color[src + 1] + color[src + 2]) / 765.0
+                rgb[dst : dst + 3] = color[src : src + 3]
     depth_f = [0.0 if (v != v or v in (float("inf"), float("-inf"))) else v for v in depth]
 
     e_col = _edges(gray, width, height)
@@ -315,15 +356,14 @@ def verify_frame(frame: dict, outdir: Path | str) -> float:
     thr = nz[int(len(nz) * 0.98)] if nz else 0.0
     overlay = bytearray(width * height * 3)
     for i in range(width * height):
-        src = i * 4
         dst = i * 3
         if thr > 0.0 and e_dep[i] >= thr:
             overlay[dst], overlay[dst + 1], overlay[dst + 2] = 255, 0, 0
         else:
-            overlay[dst], overlay[dst + 1], overlay[dst + 2] = color[src], color[src + 1], color[src + 2]
+            overlay[dst], overlay[dst + 1], overlay[dst + 2] = rgb[dst], rgb[dst + 1], rgb[dst + 2]
 
     stride = width * 3
-    rgb = bytes(overlay)
-    rows = [rgb[y * stride : (y + 1) * stride] for y in range(height)]
+    overlay_bytes = bytes(overlay)
+    rows = [overlay_bytes[y * stride : (y + 1) * stride] for y in range(height)]
     (outdir / "alignment.png").write_bytes(_png(width, height, 8, 2, rows))
     return corr

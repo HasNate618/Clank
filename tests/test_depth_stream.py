@@ -16,11 +16,13 @@ def write_stream(
     height: int = 2,
     depth=(0.5, 1.0, 1.5, 2.0, 2.5, 3.0),
     color: bytes = b"",
+    color_width: int | None = None,
+    color_height: int | None = None,
     seq: int = 2,
     publish_ns: int | None = None,
 ) -> None:
-    color_w = width if color else 0
-    color_h = height if color else 0
+    color_w = (width if color_width is None else color_width) if color else 0
+    color_h = (height if color_height is None else color_height) if color else 0
     publish_ns = time.monotonic_ns() if publish_ns is None else publish_ns
     header = depth_stream.HEADER.pack(
         depth_stream.MAGIC,
@@ -58,6 +60,40 @@ class ReadStream(unittest.TestCase):
             self.assertIsNotNone(frame)
             assert frame is not None
             self.assertEqual(frame["frame_id"], 7)
+            # The layer writes bottom-up; the reader presents top-down.
+            self.assertEqual(list(frame["depth"]), [2.0, 2.5, 3.0, 0.5, 1.0, 1.5])
+            self.assertEqual(frame["color"], color[12:24] + color[0:12])
+
+    def test_reads_a_larger_colour_plane(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "stream.bin"
+            color = bytes(range(6 * 4 * 4))
+            write_stream(
+                path,
+                width=3,
+                height=2,
+                color=color,
+                color_width=6,
+                color_height=4,
+            )
+            with depth_stream.Stream(path) as stream:
+                frame = stream.read(timeout=0.5)
+            assert frame is not None
+            self.assertEqual(frame["color_width"], 6)
+            self.assertEqual(frame["color_height"], 4)
+            self.assertEqual(
+                frame["color"],
+                color[72:96] + color[48:72] + color[24:48] + color[0:24],
+            )
+
+    def test_read_can_skip_the_flip(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "stream.bin"
+            color = bytes(range(3 * 2 * 4))
+            write_stream(path, color=color)
+            with depth_stream.Stream(path) as stream:
+                frame = stream.read(timeout=0.5, flip=False)
+            assert frame is not None
             self.assertEqual(list(frame["depth"]), [0.5, 1.0, 1.5, 2.0, 2.5, 3.0])
             self.assertEqual(frame["color"], color)
 

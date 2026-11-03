@@ -26,50 +26,57 @@ layout(push_constant) uniform Params {
     uint has_color;  // 0 = skip colour sampling
     uint color_w;    // colour target width (may be the 1920 window)
     uint color_h;
+    uint out_color_w;  // colour output width (depth size x scale)
+    uint out_color_h;
     float near_m;    // reversed-Z near plane in metres
     float pad;
 } pc;
 
 void main()
 {
-    ivec2 dst = ivec2(gl_GlobalInvocationID.xy);
-    if (dst.x >= int(pc.dst_w) || dst.y >= int(pc.dst_h)) {
-        return;
+    ivec2 id = ivec2(gl_GlobalInvocationID.xy);
+    uint eye_w = pc.src_w / 2u;
+
+    // Depth stays at the requested 480x270; the colour can be larger.
+    if (id.x < int(pc.dst_w) && id.y < int(pc.dst_h)) {
+        // Mono output uses one eye. Sample the centre of the matching source
+        // block so the depth pixel lines up with the same pixel in colour.
+        float sx = float(eye_w) * (float(id.x) + 0.5) / float(pc.dst_w) +
+                   float(pc.eye) * float(eye_w);
+        float sy = float(pc.src_h) * (float(id.y) + 0.5) / float(pc.dst_h);
+        int ix = min(int(sx), int(pc.src_w) - 1);
+        int iy = min(int(sy), int(pc.src_h) - 1);
+
+        // The depth attachment is multisampled; sample 0 is the one the
+        // resolve would use for a point downsample.
+        float d = texelFetch(src_depth, ivec2(ix, iy), 0).r;
+        float z = d > 0.0 ? pc.near_m / d : 0.0;
+        depth_out.depth[id.y * int(pc.dst_w) + id.x] = z;
     }
 
-    // Mono output uses one eye. Sample the centre of the matching source block
-    // so the depth pixel lines up with the same pixel in the colour view.
-    uint eye_w = pc.src_w / 2u;
-    float sx = float(eye_w) * (float(dst.x) + 0.5) / float(pc.dst_w) +
-               float(pc.eye) * float(eye_w);
-    float sy = float(pc.src_h) * (float(dst.y) + 0.5) / float(pc.dst_h);
-    int ix = min(int(sx), int(pc.src_w) - 1);
-    int iy = min(int(sy), int(pc.src_h) - 1);
-
-    // The depth attachment is multisampled; sample 0 is the one the resolve
-    // would use for a point downsample.
-    float d = texelFetch(src_depth, ivec2(ix, iy), 0).r;
-    float z = d > 0.0 ? pc.near_m / d : 0.0;
-    depth_out.depth[dst.y * int(pc.dst_w) + dst.x] = z;
-
-    if (pc.has_color != 0u) {
+    if (pc.has_color != 0u && id.x < int(pc.out_color_w) && id.y < int(pc.out_color_h)) {
         uint cw = pc.color_w > 0u ? pc.color_w : pc.src_w;
         uint ch = pc.color_h > 0u ? pc.color_h : pc.src_h;
         float cx, cy;
         if (cw == pc.src_w) {
             // Stereo colour: take the same eye half as the depth.
-            cx = float(cw / 2u) * (float(dst.x) + 0.5) / float(pc.dst_w) +
+            cx = float(cw / 2u) * (float(id.x) + 0.5) / float(pc.out_color_w) +
                  float(pc.eye) * float(cw / 2u);
         } else {
             // Window-sized colour: the whole image is the normal view.
-            cx = float(cw) * (float(dst.x) + 0.5) / float(pc.dst_w);
+            cx = float(cw) * (float(id.x) + 0.5) / float(pc.out_color_w);
         }
-        cy = float(ch) * (float(dst.y) + 0.5) / float(pc.dst_h);
+        cy = float(ch) * (float(id.y) + 0.5) / float(pc.out_color_h);
         int cix = min(int(cx), int(cw) - 1);
         int ciy = min(int(cy), int(ch) - 1);
-        vec4 c = texelFetch(src_color, ivec2(cix, ciy), 0);
+        // Resolve all four MSAA samples. Sample 0 alone makes thin edges
+        // shimmer when the preview is scaled down.
+        vec4 c = vec4(0.0);
+        for (int s = 0; s < 4; ++s)
+            c += texelFetch(src_color, ivec2(cix, ciy), s);
+        c *= 0.25;
         uvec4 q = uvec4(clamp(c * 255.0 + 0.5, 0.0, 255.0));
-        color_out.color[dst.y * int(pc.dst_w) + dst.x] =
+        color_out.color[id.y * int(pc.out_color_w) + id.x] =
             uint(q.r) | (uint(q.g) << 8) | (uint(q.b) << 16) | (uint(q.a) << 24);
     }
 }

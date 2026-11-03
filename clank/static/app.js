@@ -16,7 +16,7 @@ let liveActive = false;
 let liveFailures = 0;
 let liveAvailable = false;
 let liveBackoffUntil = 0;
-const LIVE_PREVIEW_MS = 100;
+const LIVE_PREVIEW_MS = 50;
 const LIVE_BACKOFF_MS = 10000;
 let pollInFlight = false;
 let actionInFlight = false;
@@ -166,28 +166,35 @@ function stopLivePreview(failed = false) {
   }
   liveAvailable = false;
   liveFailures = 0;
-  const img = $("preview-live");
-  if (img) {
-    img.hidden = true;
-    img.removeAttribute("src");
-  }
+  const canvas = $("preview-live");
+  if (canvas) canvas.hidden = true;
 }
 
-function liveTick() {
+async function liveTick() {
   if (!liveActive) return;
-  const probe = new Image();
-  probe.onload = () => {
+  try {
+    const response = await fetch(`/api/preview/live.rgba?t=${Date.now()}`, {
+      cache: "no-store",
+    });
+    if (!response.ok) throw new Error("no live frame");
+    const width = Number(response.headers.get("X-Frame-Width") || 0);
+    const height = Number(response.headers.get("X-Frame-Height") || 0);
+    const data = new Uint8ClampedArray(await response.arrayBuffer());
     if (!liveActive) return;
+    if (!width || !height || data.length !== width * height * 4) {
+      throw new Error("bad live frame");
+    }
+    const canvas = $("preview-live");
+    if (canvas.width !== width) canvas.width = width;
+    if (canvas.height !== height) canvas.height = height;
+    canvas.getContext("2d").putImageData(new ImageData(data, width, height), 0, 0);
+    canvas.hidden = false;
     liveAvailable = true;
     liveFailures = 0;
-    const img = $("preview-live");
-    img.src = probe.src;
-    img.hidden = false;
     hidePreviewAuth();
     $("preview-wait").style.display = "none";
     liveTimer = setTimeout(liveTick, LIVE_PREVIEW_MS);
-  };
-  probe.onerror = () => {
+  } catch (error) {
     if (!liveActive) return;
     liveFailures += 1;
     if (liveFailures < 10) {
@@ -196,8 +203,7 @@ function liveTick() {
       // The layer is not publishing: fall back to the VNC transport.
       stopLivePreview(true);
     }
-  };
-  probe.src = `/api/preview/live.bmp?t=${Date.now()}`;
+  }
 }
 
 function startLivePreview() {
@@ -205,8 +211,8 @@ function startLivePreview() {
   liveActive = true;
   liveAvailable = false;
   liveFailures = 0;
-  const img = $("preview-live");
-  if (img) img.hidden = false;
+  const canvas = $("preview-live");
+  if (canvas) canvas.hidden = false;
   liveTick();
 }
 

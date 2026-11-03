@@ -29,7 +29,6 @@
 
 #define LAYER_NAME "VK_LAYER_CLANK_depth_stream"
 #define MAX_SLOTS 3
-#define INJECT_RING 32
 #define HEADER_MAGIC 0x434c4b44u /* "CLKD" */
 
 typedef struct {
@@ -55,6 +54,7 @@ typedef struct {
 
 typedef struct {
     uint32_t src_w, src_h, dst_w, dst_h, eye, has_color, color_w, color_h;
+    uint32_t out_color_w, out_color_h;
     float near_m, pad;
 } PushParams;
 
@@ -132,15 +132,10 @@ typedef struct PassState {
     VkImage color;
     VkImageLayout depth_layout;
     VkImageLayout color_layout;
+    int color_load;
+    int depth_load;
     struct PassState *next;
 } PassState;
-
-typedef struct InjectPool {
-    uint32_t family;
-    VkCommandPool pool;
-    VkCommandBuffer cmds[INJECT_RING];
-    uint32_t next;
-} InjectPool;
 
 typedef struct DeviceData {
     VkDevice device;
@@ -198,9 +193,6 @@ typedef struct DeviceData {
     PFN_vkGetSwapchainImagesKHR GetSwapchainImagesKHR;
     PFN_vkDestroySwapchainKHR DestroySwapchainKHR;
 
-    PFN_vkBeginCommandBuffer BeginCommandBuffer;
-    PFN_vkEndCommandBuffer EndCommandBuffer;
-    PFN_vkResetCommandBuffer ResetCommandBuffer;
     PFN_vkCmdPipelineBarrier CmdPipelineBarrier;
     PFN_vkCmdBindPipeline CmdBindPipeline;
     PFN_vkCmdBindDescriptorSets CmdBindDescriptorSets;
@@ -233,9 +225,6 @@ typedef struct DeviceData {
     VkFormat color_format;
     uint32_t color_w, color_h;
 
-    InjectPool pools[4];
-    uint32_t npools;
-
     int shm_fd;
     void *shm;
     size_t shm_size;
@@ -249,6 +238,7 @@ typedef struct DeviceData {
     uint64_t slot_inject_ns[MAX_SLOTS];
 
     uint32_t dst_w, dst_h, eye;
+    uint32_t color_scale, out_w, out_h;
     int want_color;
     float near_m, far_m;
     uint32_t seq_counter;
@@ -438,50 +428,32 @@ static VkImageView make_view(DeviceData *dd, VkImage image, VkFormat fmt,
     return v;
 }
 
-static VkCommandBuffer get_secondary(DeviceData *dd, uint32_t family)
-{
-    InjectPool *ip = NULL;
-    for (uint32_t i = 0; i < dd->npools; i++)
-        if (dd->pools[i].family == family) { ip = &dd->pools[i]; break; }
-    if (!ip) {
-        if (dd->npools >= 4) return VK_NULL_HANDLE;
-        ip = &dd->pools[dd->npools++];
-        ip->family = family;
-        VkCommandPoolCreateInfo ci;
-        memset(&ci, 0, sizeof(ci));
-        ci.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
-        ci.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
-        ci.queueFamilyIndex = family;
-        if (dd->CreateCommandPool(dd->device, &ci, NULL, &ip->pool) != VK_SUCCESS)
-            return VK_NULL_HANDLE;
-        VkCommandBufferAllocateInfo ai;
-        memset(&ai, 0, sizeof(ai));
-        ai.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
-        ai.commandPool = ip->pool;
-        ai.level = VK_COMMAND_BUFFER_LEVEL_SECONDARY;
-        ai.commandBufferCount = INJECT_RING;
-        if (dd->AllocateCommandBuffers(dd->device, &ai, ip->cmds) != VK_SUCCESS)
-            return VK_NULL_HANDLE;
-        ip->next = 0;
-    }
-    VkCommandBuffer cb = ip->cmds[ip->next];
-    ip->next = (ip->next + 1) % INJECT_RING;
-    dd->ResetCommandBuffer(cb, 0);
-    return cb;
-}
 
 static void publish_slot(DeviceData *dd, int slot, uint32_t seq);
 
 static void *publisher_main(void *arg)
 {
     DeviceData *dd = arg;
+    // The header seq must be one monotonic counter, and only the newest slot
+    // may be published. Publishing each changed slot in slot order lets the
+    // header step backwards (and go even only briefly), so a reader alternates
+    // between older and newer frames: visible as flashing objects. seq is a
+    // global counter in inject(), so the maximum is the newest frame.
+    uint32_t publish_seq = 0;
+    uint32_t last_gpu_seq = 0;
     while (!dd->stop) {
+        uint32_t best = 0;
+        int best_slot = -1;
         for (int s = 0; s < MAX_SLOTS; s++) {
             uint32_t seq = __atomic_load_n((uint32_t *)dd->smap[s], __ATOMIC_ACQUIRE);
-            if (seq != dd->last_seq[s]) {
-                dd->last_seq[s] = seq;
-                publish_slot(dd, s, seq);
+            if (seq > best) {
+                best = seq;
+                best_slot = s;
             }
+        }
+        if (best_slot >= 0 && best != last_gpu_seq) {
+            last_gpu_seq = best;
+            publish_slot(dd, best_slot, ++publish_seq);
         }
         struct timespec ts = {0, 500000}; /* 0.5 ms */
         nanosleep(&ts, NULL);
@@ -502,6 +474,13 @@ static int configure(DeviceData *dd)
     dd->far_m = 0.0f;
     dd->want_color = 1;
     if ((v = getenv("DEPTH_STREAM_COLOR"))) dd->want_color = atoi(v) != 0;
+    dd->color_scale = 2;
+    if ((v = getenv("DEPTH_STREAM_COLOR_SCALE")))
+        dd->color_scale = (uint32_t)strtoul(v, NULL, 10);
+    if (dd->color_scale < 1) dd->color_scale = 1;
+    if (dd->color_scale > 4) dd->color_scale = 4;
+    dd->out_w = dd->dst_w * dd->color_scale;
+    dd->out_h = dd->dst_h * dd->color_scale;
     return dd->dst_w != 0 && dd->dst_h != 0;
 }
 
@@ -517,7 +496,8 @@ static int start_shared(DeviceData *dd)
         path = def;
     }
     size_t pix = (size_t)dd->dst_w * dd->dst_h;
-    dd->slot_bytes = pix * 4 + (dd->want_color ? pix * 4 : 0);
+    size_t col_pix = (size_t)dd->out_w * dd->out_h;
+    dd->slot_bytes = pix * 4 + (dd->want_color ? col_pix * 4 : 0);
     dd->shm_size = sizeof(Header) + (size_t)MAX_SLOTS * dd->slot_bytes;
     dd->shm_size = (dd->shm_size + 4095) & ~(size_t)4095;
 
@@ -544,8 +524,8 @@ static int start_shared(DeviceData *dd)
     dd->hdr->height = dd->dst_h;
     dd->hdr->dtype = 0;
     dd->hdr->eye = dd->eye;
-    dd->hdr->color_width = dd->want_color ? dd->dst_w : 0;
-    dd->hdr->color_height = dd->want_color ? dd->dst_h : 0;
+    dd->hdr->color_width = dd->want_color ? dd->out_w : 0;
+    dd->hdr->color_height = dd->want_color ? dd->out_h : 0;
     dd->hdr->color_dtype = 0;
     dd->hdr->near_m = dd->near_m;
     dd->hdr->far_m = dd->far_m;
@@ -557,22 +537,26 @@ static int start_shared(DeviceData *dd)
         return 0;
     }
     dd->thread_started = 1;
-    logmsg("depth-stream: shared %s (%ux%u eye=%u near=%.6f color=%d)",
-           path, dd->dst_w, dd->dst_h, dd->eye, dd->near_m, dd->want_color);
+    logmsg("depth-stream: shared %s (%ux%u eye=%u near=%.6f color=%dx%u scale=%u)",
+           path, dd->dst_w, dd->dst_h, dd->eye, dd->near_m,
+           dd->want_color ? dd->out_w : 0, dd->want_color ? dd->out_h : 0,
+           dd->color_scale);
     return 1;
 }
 
-static void publish_slot(DeviceData *dd, int slot, uint32_t seq)
+static void publish_slot(DeviceData *dd, int slot, uint32_t publish_seq)
 {
-    if (!dd->hdr || seq == 0) return;
+    if (!dd->hdr || publish_seq == 0) return;
+    uint32_t seq = publish_seq;
     uint8_t *base = (uint8_t *)dd->shm + sizeof(Header) + (size_t)slot * dd->slot_bytes;
     /* Seqlock: odd means a write is in progress. */
     __atomic_store_n(&dd->hdr->slot, (uint32_t)slot, __ATOMIC_RELEASE);
     __atomic_store_n(&dd->hdr->seq, seq * 2u + 1u, __ATOMIC_RELEASE);
     size_t pix = (size_t)dd->dst_w * dd->dst_h;
+    size_t col_pix = (size_t)dd->out_w * dd->out_h;
     memcpy(base, dd->dmap[slot], pix * 4);
     if (dd->want_color && dd->cmap[slot])
-        memcpy(base + pix * 4, dd->cmap[slot], pix * 4);
+        memcpy(base + pix * 4, dd->cmap[slot], col_pix * 4);
     dd->hdr->frame_id = dd->slot_frame[slot];
     dd->hdr->inject_ns = dd->slot_inject_ns[slot];
     dd->hdr->publish_ns = now_ns();
@@ -653,11 +637,12 @@ static int ensure_pipeline(DeviceData *dd)
     if (dd->AllocateDescriptorSets(dd->device, &da, dd->dsets) != VK_SUCCESS) { logmsg("pipeline: AllocateDescriptorSets failed"); return 0; }
 
     size_t pix = (size_t)dd->dst_w * dd->dst_h;
+    size_t col_pix = (size_t)dd->out_w * dd->out_h;
     for (int s = 0; s < MAX_SLOTS; s++) {
         if (!create_host_buffer(dd, pix * 4, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
                                 VK_BUFFER_USAGE_TRANSFER_DST_BIT,
                                 &dd->dbuf[s], &dd->dmem[s], &dd->dmap[s])) { logmsg("pipeline: depth buffer %d failed", s); return 0; }
-        if (dd->want_color && !create_host_buffer(dd, pix * 4,
+        if (dd->want_color && !create_host_buffer(dd, col_pix * 4,
                                 VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
                                 VK_BUFFER_USAGE_TRANSFER_DST_BIT,
                                 &dd->cbuf[s], &dd->cmem[s], &dd->cmap[s])) { logmsg("pipeline: colour buffer %d failed", s); return 0; }
@@ -749,17 +734,7 @@ static void inject(DeviceData *dd, VkCommandBuffer primary, uint32_t family,
     dd->slot_frame[slot] = (uint32_t)__atomic_fetch_add(&dd->frame_counter, 1, __ATOMIC_RELAXED);
     dd->slot_inject_ns[slot] = now_ns();
 
-    VkCommandBuffer sec = get_secondary(dd, family);
-    if (sec == VK_NULL_HANDLE) return;
-    VkCommandBufferInheritanceInfo inh;
-    memset(&inh, 0, sizeof(inh));
-    inh.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_INHERITANCE_INFO;
-    VkCommandBufferBeginInfo bi;
-    memset(&bi, 0, sizeof(bi));
-    bi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-    bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-    bi.pInheritanceInfo = &inh;
-    if (dd->BeginCommandBuffer(sec, &bi) != VK_SUCCESS) return;
+    (void)family;
 
     VkImageMemoryBarrier bars[2];
     memset(bars, 0, sizeof(bars));
@@ -785,7 +760,7 @@ static void inject(DeviceData *dd, VkCommandBuffer primary, uint32_t family,
     bars[1].subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
     bars[1].subresourceRange.levelCount = 1;
     bars[1].subresourceRange.layerCount = 1;
-    dd->CmdPipelineBarrier(sec, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+    dd->CmdPipelineBarrier(primary, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
                            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0,
                            0, NULL, 0, NULL, 2, bars);
 
@@ -795,13 +770,16 @@ static void inject(DeviceData *dd, VkCommandBuffer primary, uint32_t family,
     pc.dst_w = dd->dst_w; pc.dst_h = dd->dst_h;
     pc.eye = dd->eye; pc.has_color = dd->want_color ? 1u : 0u;
     pc.color_w = dd->color_w; pc.color_h = dd->color_h;
+    pc.out_color_w = dd->out_w; pc.out_color_h = dd->out_h;
     pc.near_m = dd->near_m;
-    dd->CmdBindPipeline(sec, VK_PIPELINE_BIND_POINT_COMPUTE, dd->pipe);
-    dd->CmdBindDescriptorSets(sec, VK_PIPELINE_BIND_POINT_COMPUTE, dd->pl, 0, 1,
+    dd->CmdBindPipeline(primary, VK_PIPELINE_BIND_POINT_COMPUTE, dd->pipe);
+    dd->CmdBindDescriptorSets(primary, VK_PIPELINE_BIND_POINT_COMPUTE, dd->pl, 0, 1,
                               &dd->dsets[slot], 0, NULL);
-    dd->CmdPushConstants(sec, dd->pl, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pc), &pc);
-    uint32_t gx = (dd->dst_w + 7) / 8, gy = (dd->dst_h + 7) / 8;
-    dd->CmdDispatch(sec, gx, gy, 1);
+    dd->CmdPushConstants(primary, dd->pl, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pc), &pc);
+    uint32_t max_w = dd->dst_w > dd->out_w ? dd->dst_w : dd->out_w;
+    uint32_t max_h = dd->dst_h > dd->out_h ? dd->dst_h : dd->out_h;
+    uint32_t gx = (max_w + 7) / 8, gy = (max_h + 7) / 8;
+    dd->CmdDispatch(primary, gx, gy, 1);
 
     /* Restore the game's layouts, making the compute writes available to the
        transfer stage (for the sequence update) and to the host. */
@@ -813,7 +791,7 @@ static void inject(DeviceData *dd, VkCommandBuffer primary, uint32_t family,
     bars[1].dstAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT;
     bars[1].oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
     bars[1].newLayout = color_layout;
-    dd->CmdPipelineBarrier(sec, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+    dd->CmdPipelineBarrier(primary, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
                            VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0,
                            0, NULL, 0, NULL, 2, bars);
 
@@ -827,17 +805,17 @@ static void inject(DeviceData *dd, VkCommandBuffer primary, uint32_t family,
     bb.buffer = dd->dbuf[slot];
     bb.offset = 0;
     bb.size = VK_WHOLE_SIZE;
-    dd->CmdPipelineBarrier(sec, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+    dd->CmdPipelineBarrier(primary, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
                            VK_PIPELINE_STAGE_HOST_BIT, 0,
                            0, NULL, 1, &bb, 0, NULL);
     if (dd->want_color) {
         VkBufferMemoryBarrier cb2 = bb;
         cb2.buffer = dd->cbuf[slot];
-        dd->CmdPipelineBarrier(sec, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+        dd->CmdPipelineBarrier(primary, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
                                VK_PIPELINE_STAGE_HOST_BIT, 0,
                                0, NULL, 1, &cb2, 0, NULL);
     }
-    dd->CmdUpdateBuffer(sec, dd->sbuf[slot], 0, sizeof(seq), &seq);
+    dd->CmdUpdateBuffer(primary, dd->sbuf[slot], 0, sizeof(seq), &seq);
     VkBufferMemoryBarrier sb;
     memset(&sb, 0, sizeof(sb));
     sb.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
@@ -848,16 +826,15 @@ static void inject(DeviceData *dd, VkCommandBuffer primary, uint32_t family,
     sb.buffer = dd->sbuf[slot];
     sb.offset = 0;
     sb.size = VK_WHOLE_SIZE;
-    dd->CmdPipelineBarrier(sec, VK_PIPELINE_STAGE_TRANSFER_BIT,
+    dd->CmdPipelineBarrier(primary, VK_PIPELINE_STAGE_TRANSFER_BIT,
                            VK_PIPELINE_STAGE_HOST_BIT, 0,
                            0, NULL, 1, &sb, 0, NULL);
 
-    dd->EndCommandBuffer(sec);
-    dd->CmdExecuteCommands(primary, 1, &sec);
 }
 
 static void begin_pass_common(DeviceData *dd, VkCommandBuffer cb, VkImage depth, VkImage color,
-                              VkImageLayout depth_layout, VkImageLayout color_layout)
+                              VkImageLayout depth_layout, VkImageLayout color_layout,
+                              VkAttachmentLoadOp color_load, VkAttachmentLoadOp depth_load)
 {
     (void)dd;
     PassState *ps = pass_ensure(cb);
@@ -866,6 +843,8 @@ static void begin_pass_common(DeviceData *dd, VkCommandBuffer cb, VkImage depth,
     ps->color = color;
     ps->depth_layout = depth_layout;
     ps->color_layout = color_layout;
+    ps->color_load = (int)color_load;
+    ps->depth_load = (int)depth_load;
 }
 
 static void end_pass_common(VkCommandBuffer cb)
@@ -874,8 +853,6 @@ static void end_pass_common(VkCommandBuffer cb)
     if (!ps) return;
     VkImage depth = ps->depth, color = ps->color;
     VkImageLayout dl = ps->depth_layout, cl = ps->color_layout;
-    ps->depth = VK_NULL_HANDLE;
-    ps->color = VK_NULL_HANDLE;
     if (depth == VK_NULL_HANDLE || color == VK_NULL_HANDLE) return;
     DeviceData *dd = cb_device(cb);
     if (!dd) return;
@@ -889,15 +866,20 @@ static void end_pass_common(VkCommandBuffer cb)
         }
         return;
     }
+    // The eye target is written twice: a CLEAR pass for one eye and a LOAD
+    // pass that adds the other eye / glow. The LOAD pass holds the final
+    // colour, so injecting both makes the preview alternate between dim and
+    // bright. Stream the LOAD pass only.
+    if (ps->color_load != VK_ATTACHMENT_LOAD_OP_LOAD) return;
+    CbInfo *cbi = NULL;
+    for (CbInfo *it = g_cbs; it; it = it->next)
+        if (it->cb == cb) { cbi = it; break; }
+    uint32_t family = cbi ? cbi->family : 0;
     if (!dd->logged_inject) {
         dd->logged_inject = 1;
         logmsg("injecting depth=%p color=%p dl=%d cl=%d", (void *)depth, (void *)color,
                (int)dl, (int)cl);
     }
-    CbInfo *cbi = NULL;
-    for (CbInfo *it = g_cbs; it; it = it->next)
-        if (it->cb == cb) { cbi = it; break; }
-    uint32_t family = cbi ? cbi->family : 0;
     inject(dd, cb, family, depth, color, dl, cl);
 }
 
@@ -980,7 +962,6 @@ static void resolve_device_funcs(DeviceData *dd)
     R(CreateBuffer); R(DestroyBuffer); R(GetBufferMemoryRequirements);
     R(AllocateMemory); R(FreeMemory); R(BindBufferMemory);
     R(MapMemory); R(UnmapMemory);
-    R(BeginCommandBuffer); R(EndCommandBuffer); R(ResetCommandBuffer);
     R(CmdPipelineBarrier); R(CmdBindPipeline); R(CmdBindDescriptorSets);
     R(CmdPushConstants); R(CmdDispatch); R(CmdUpdateBuffer); R(CmdExecuteCommands);
     R(CreateSwapchainKHR); R(GetSwapchainImagesKHR); R(DestroySwapchainKHR);
@@ -1320,7 +1301,9 @@ static VKAPI_ATTR void VKAPI_CALL clank_depth_CmdBeginRendering(
     if (ri->colorAttachmentCount > 0 && ri->pColorAttachments[0].imageView)
         color = view_to_image(ri->pColorAttachments[0].imageView);
     if (ri->colorAttachmentCount > 0) cl = ri->pColorAttachments[0].imageLayout;
-    begin_pass_common(dd, cb, depth, color, dl, cl);
+    VkAttachmentLoadOp cload = ri->colorAttachmentCount > 0 ? ri->pColorAttachments[0].loadOp : 0;
+    VkAttachmentLoadOp dload = ri->pDepthAttachment ? ri->pDepthAttachment->loadOp : 0;
+    begin_pass_common(dd, cb, depth, color, dl, cl, cload, dload);
 }
 
 static VKAPI_ATTR void VKAPI_CALL clank_depth_CmdEndRendering(VkCommandBuffer cb)
@@ -1348,7 +1331,9 @@ static VKAPI_ATTR void VKAPI_CALL clank_depth_CmdBeginRenderingKHR(
     if (ri->colorAttachmentCount > 0 && ri->pColorAttachments[0].imageView)
         color = view_to_image(ri->pColorAttachments[0].imageView);
     if (ri->colorAttachmentCount > 0) cl = ri->pColorAttachments[0].imageLayout;
-    begin_pass_common(dd, cb, depth, color, dl, cl);
+    VkAttachmentLoadOp cload = ri->colorAttachmentCount > 0 ? ri->pColorAttachments[0].loadOp : 0;
+    VkAttachmentLoadOp dload = ri->pDepthAttachment ? ri->pDepthAttachment->loadOp : 0;
+    begin_pass_common(dd, cb, depth, color, dl, cl, cload, dload);
 }
 
 static VKAPI_ATTR void VKAPI_CALL clank_depth_CmdEndRenderingKHR(VkCommandBuffer cb)
@@ -1384,7 +1369,7 @@ static void classic_begin(DeviceData *dd, VkCommandBuffer cb, const VkRenderPass
             if (ri->color_att != UINT32_MAX) cl = ri->final_layouts[ri->color_att];
         }
     }
-    begin_pass_common(dd, cb, depth, color, dl, cl);
+    begin_pass_common(dd, cb, depth, color, dl, cl, 0, 0);
 }
 
 static VKAPI_ATTR void VKAPI_CALL clank_depth_CmdBeginRenderPass(
@@ -1430,7 +1415,7 @@ static VKAPI_ATTR void VKAPI_CALL clank_depth_CmdBeginRenderPass2(
                 if (ri->color_att != UINT32_MAX) cl = ri->final_layouts[ri->color_att];
             }
         }
-        begin_pass_common(dd, cb, depth, color, dl, cl);
+        begin_pass_common(dd, cb, depth, color, dl, cl, 0, 0);
     }
 }
 

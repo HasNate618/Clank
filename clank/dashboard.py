@@ -76,6 +76,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return self._preview_config()
         if path == "/api/preview/live.bmp":
             return self._preview_live()
+        if path == "/api/preview/live.rgba":
+            return self._preview_live_rgba()
         if path.startswith("/novnc/"):
             return self._novnc(path[len("/novnc/"):])
         if path == "/api/body.jpg":
@@ -315,6 +317,28 @@ class DashboardHandler(BaseHTTPRequestHandler):
         width = int(frame["color_width"])
         height = int(frame["color_height"])
         self._bytes(200, bmp(frame["color"], width, height), "image/bmp")
+
+    def _preview_live_rgba(self) -> None:
+        """The newest colour frame as raw RGBA, for the dashboard canvas.
+
+        Sending the bytes untransformed avoids a per-pixel BMP encode in Python
+        and lets the browser draw at 20 fps without reload flicker. The frame is
+        already top-down, so the dimensions travel in headers.
+        """
+        frame = latest(max_age=2.0)
+        if frame is None or frame.get("color") is None:
+            return self._error(404, "no live frame")
+        width = int(frame["color_width"])
+        height = int(frame["color_height"])
+        data = frame["color"]
+        self.send_response(200)
+        self.send_header("Content-Type", "application/octet-stream")
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Frame-Width", str(width))
+        self.send_header("X-Frame-Height", str(height))
+        self.end_headers()
+        self.wfile.write(data)
 
     def _preview_config(self) -> None:
         preview = self.server.manager.snapshot().get("preview") or {}
