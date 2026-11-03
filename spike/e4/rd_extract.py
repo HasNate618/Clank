@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 import traceback
 
 import renderdoc as rd
@@ -93,18 +94,26 @@ def main() -> int:
     workdir = os.environ["RD_WORKDIR"]
     stereo_width = int(os.environ.get("RD_STEREO_WIDTH", "3840"))
     error_path = os.path.join(workdir, "error.txt")
+    timings: dict[str, object] = {}
+    started = time.perf_counter()
+
+    def stamp(name: str) -> None:
+        timings[name] = round(time.perf_counter() - started, 3)
 
     try:
         capture = rd.OpenCaptureFile()
         result = capture.OpenFile(capture_path, "", None)
         if not result.OK():
             raise RuntimeError(f"OpenFile: {result}")
+        stamp("open_file")
         result, control = capture.OpenCapture(rd.ReplayOptions(), None)
         if control is None:
             raise RuntimeError(f"OpenCapture: {result}")
+        stamp("open_capture")
 
         frame = control.GetFrameInfo()
         depth_texture, event, color_id, last = _find_scene_depth(control, stereo_width)
+        stamp("find_depth")
         control.SetFrameEvent(event, True)
         state = control.GetPipelineState()
 
@@ -114,6 +123,7 @@ def main() -> int:
         subresource.sample = 0
 
         depth_bytes = control.GetTextureData(depth_texture.resourceId, subresource)
+        stamp("read_depth")
         with open(os.path.join(workdir, "depth.raw"), "wb") as handle:
             handle.write(depth_bytes)
 
@@ -123,6 +133,7 @@ def main() -> int:
         save.mip = 0
         save.destType = rd.FileType.PNG
         control.SaveTexture(save, depth_png)
+        stamp("save_depth_png")
 
         color_meta = None
         if color_id:
@@ -132,6 +143,7 @@ def main() -> int:
             )
             if color_texture is not None:
                 color_bytes = control.GetTextureData(color_texture.resourceId, subresource)
+                stamp("read_color")
                 with open(os.path.join(workdir, "color.raw"), "wb") as handle:
                     handle.write(color_bytes)
                 color_save = rd.TextureSave()
@@ -139,6 +151,7 @@ def main() -> int:
                 color_save.mip = 0
                 color_save.destType = rd.FileType.PNG
                 control.SaveTexture(color_save, os.path.join(workdir, "color.png"))
+                stamp("save_color_png")
                 color_meta = {
                     "resourceId": color_id,
                     "width": color_texture.width,
@@ -167,11 +180,18 @@ def main() -> int:
         with open(os.path.join(workdir, "meta.json"), "w", encoding="utf-8") as handle:
             json.dump(meta, handle, indent=2)
             handle.write("\n")
+        stamp("write_meta")
+        with open(os.path.join(workdir, "timings.json"), "w", encoding="utf-8") as handle:
+            json.dump(timings, handle, indent=2)
+            handle.write("\n")
         control.Shutdown()
         os._exit(0)
     except BaseException as exc:  # noqa: BLE001 - qrenderdoc hides stderr
         with open(error_path, "w", encoding="utf-8") as handle:
             handle.write(f"{type(exc).__name__}: {exc}\n\n{traceback.format_exc()}\n")
+        with open(os.path.join(workdir, "timings.json"), "w", encoding="utf-8") as handle:
+            json.dump(timings, handle, indent=2)
+            handle.write("\n")
         os._exit(1)
 
 

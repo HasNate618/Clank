@@ -45,3 +45,6 @@ config.toml
 
 # weston-screenshooter ignores its output argument and writes here
 wayland-screenshot-*.png
+
+# Locally built depth-stream layer
+spike/e5/build/

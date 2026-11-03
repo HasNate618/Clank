@@ -1,0 +1,6 @@
+seq=4146 frame=2071 layer= 10.86ms transport=  0.79ms age= 11.64ms
+seq=4148 frame=2072 layer=  8.09ms transport=  0.13ms age=  8.21ms
+frames=380 fps=64.2
+layer     min=6.98ms median=13.10ms p95=19.15ms
+transport min=0.12ms median=0.56ms p95=0.96ms
+age       min=7.42ms median=13.75ms p95=19.63ms

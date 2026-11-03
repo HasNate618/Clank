@@ -1,0 +1,75 @@
+#version 450
+#extension GL_EXT_samplerless_texture_functions : require
+
+// One compute workgroup covers an 8x8 block of the 480x270 output.
+layout(local_size_x = 8, local_size_y = 8) in;
+
+// The game's scene depth: 3840x1080 D32S8, 4x multisampled (reversed-Z).
+layout(set = 0, binding = 0) uniform texture2DMS src_depth;
+// The game's colour target for the same pass; same stereo layout, RGBA8.
+layout(set = 0, binding = 2) uniform texture2DMS src_color;
+
+layout(set = 0, binding = 1, std430) writeonly buffer DepthOut {
+    float depth[];
+} depth_out;
+
+layout(set = 0, binding = 3, std430) writeonly buffer ColorOut {
+    uint color[];  // packed RGBA8: r | g<<8 | b<<16 | a<<24
+} color_out;
+
+layout(push_constant) uniform Params {
+    uint src_w;
+    uint src_h;
+    uint dst_w;
+    uint dst_h;
+    uint eye;        // 0 = left half, 1 = right half
+    uint has_color;  // 0 = skip colour sampling
+    uint color_w;    // colour target width (may be the 1920 window)
+    uint color_h;
+    float near_m;    // reversed-Z near plane in metres
+    float pad;
+} pc;
+
+void main()
+{
+    ivec2 dst = ivec2(gl_GlobalInvocationID.xy);
+    if (dst.x >= int(pc.dst_w) || dst.y >= int(pc.dst_h)) {
+        return;
+    }
+
+    // Mono output uses one eye. Sample the centre of the matching source block
+    // so the depth pixel lines up with the same pixel in the colour view.
+    uint eye_w = pc.src_w / 2u;
+    float sx = float(eye_w) * (float(dst.x) + 0.5) / float(pc.dst_w) +
+               float(pc.eye) * float(eye_w);
+    float sy = float(pc.src_h) * (float(dst.y) + 0.5) / float(pc.dst_h);
+    int ix = min(int(sx), int(pc.src_w) - 1);
+    int iy = min(int(sy), int(pc.src_h) - 1);
+
+    // The depth attachment is multisampled; sample 0 is the one the resolve
+    // would use for a point downsample.
+    float d = texelFetch(src_depth, ivec2(ix, iy), 0).r;
+    float z = d > 0.0 ? pc.near_m / d : 0.0;
+    depth_out.depth[dst.y * int(pc.dst_w) + dst.x] = z;
+
+    if (pc.has_color != 0u) {
+        uint cw = pc.color_w > 0u ? pc.color_w : pc.src_w;
+        uint ch = pc.color_h > 0u ? pc.color_h : pc.src_h;
+        float cx, cy;
+        if (cw == pc.src_w) {
+            // Stereo colour: take the same eye half as the depth.
+            cx = float(cw / 2u) * (float(dst.x) + 0.5) / float(pc.dst_w) +
+                 float(pc.eye) * float(cw / 2u);
+        } else {
+            // Window-sized colour: the whole image is the normal view.
+            cx = float(cw) * (float(dst.x) + 0.5) / float(pc.dst_w);
+        }
+        cy = float(ch) * (float(dst.y) + 0.5) / float(pc.dst_h);
+        int cix = min(int(cx), int(cw) - 1);
+        int ciy = min(int(cy), int(ch) - 1);
+        vec4 c = texelFetch(src_color, ivec2(cix, ciy), 0);
+        uvec4 q = uvec4(clamp(c * 255.0 + 0.5, 0.0, 255.0));
+        color_out.color[dst.y * int(pc.dst_w) + dst.x] =
+            uint(q.r) | (uint(q.g) << 8) | (uint(q.b) << 16) | (uint(q.a) << 24);
+    }
+}

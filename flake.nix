@@ -124,6 +124,11 @@
               # but Steam Linux Runtime 4 has 2.42 and the in-game layer would fail
               # to load. The compat pin's renderdoc 1.45 needs only glibc 2.38.
               pkgsCompat.renderdoc
+              # Build the depth-stream Vulkan layer (spike/e5) and regenerate its
+              # SPIR-V if the shader changes. The committed .spv/.h mean glslang is
+              # only needed for edits.
+              pkgs.vulkan-headers
+              pkgs.glslang
               # Sends the fullscreen client message weston's xwm needs; the game's
               # own _NET_WM_STATE_FULLSCREEN is ignored, so it would stay windowed.
               pkgs.xdotool
