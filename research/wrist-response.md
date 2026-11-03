@@ -216,3 +216,36 @@ path to lateral placement except wrist offsets — which are weak (~0.25 gain) a
 So the manipulation envelope is one lever: wrist offsets of ≤0.40 m magnitude and ≤0.18 m
 lateral, placed to **~3 cm in 3 commands (~3 s)**. That is small, and it is enough for Job
 Simulator, where a grab is a click on a hovered object rather than a grasp.
+
+## The body walks to balance a far reach, and that breaks pixel targeting
+
+Measured 2026-11-03, after a series of reaches past the standing clamp: **the root moved
+1.33 m** (to (−0.243, −1.329, 0.763)) while the arm was held far out. The whole-body policy
+steps to keep the centre of mass over the feet, which is correct behaviour and fatal to the
+obvious way of aiming.
+
+It creates a positive feedback loop:
+
+1. the wrist is commanded past the arm's real envelope, so the arm alone cannot comply;
+2. the body steps to balance, which *does* move the wrist — further than the arm could;
+3. the camera is the head, so the camera moves with the root;
+4. a pixel marked before the motion no longer points at its object;
+5. the next command is computed from that stale pixel and lands somewhere meaningless —
+   in this case a "target" 2.1 m away — which drives another far reach;
+6. back to 1.
+
+This is why the reach that "reached the card" ended up 0.067 m from it: the last 10 cm
+were almost certainly the body stepping, not the arm extending. It also means the earlier
+runs that looked like servo oscillation were partly the body relocating under the reach.
+
+**Consequences, and they are not optional:**
+
+- **Bound the reach so the body does not step.** The 0.40 m standing clamp is not merely a
+  stability guard, it is roughly the arm-only envelope; past it the body participates and
+  the geometry stops being predictable.
+- **Re-derive a pixel target from a fresh frame after any motion.** A pixel is valid only
+  for the camera pose it was marked in, and this camera is mounted on a walking body. The
+  pipeline must be frame → point → *one* command → new frame → verify, never
+  point → many commands.
+- **A reach that appears to succeed past the envelope should be treated as suspect** until
+  the root is checked, because the success may belong to the legs.
