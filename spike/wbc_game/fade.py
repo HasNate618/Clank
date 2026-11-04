@@ -109,3 +109,113 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
+
+def near_mask(
+    depth: np.ndarray,
+    target_m: float,
+    near: float = 0.75,
+    far: float = 2.4,
+) -> np.ndarray:
+    """Boolean mask of surfaces plausibly at the object's own distance.
+
+    Used to build a crop without an operator click. The band *starts below* the object
+    (0.75x) rather than above it: the object is the nearest thing in its own neighbourhood,
+    so the useful question is "what is behind it and still part of the scene", and the band
+    stops at 2.4x - the fade's 3.5x is for a backdrop, this is for a crop, and everything a
+    crop shows the model will try to interpret. Invalid depth is excluded, not
+    treated as far: unlike the fade, a forgotten sample here would put the room back in the
+    crop.
+    """
+    d = np.asarray(depth, dtype=np.float64)
+    ok = np.isfinite(d) & (d > 0.0) & (d < FAR_SENTINEL)
+    return ok & (d >= near * target_m) & (d <= far * target_m)
+
+
+def component_at(mask: np.ndarray, seed: tuple[int, int]) -> np.ndarray:
+    """The 4-connected component of `mask` containing `seed`.
+
+    A flood fill, not a library call: the mask is one object plus whatever it touches, and
+    pulling in scipy for that would be a heavier dependency than the eighteen lines below.
+    """
+    height, width = mask.shape
+    sx, sy = seed
+    if not (0 <= sx < width and 0 <= sy < height) or not mask[sy, sx]:
+        return np.zeros_like(mask, dtype=bool)
+    out = np.zeros_like(mask, dtype=bool)
+    stack = [(sx, sy)]
+    while stack:
+        x, y = stack.pop()
+        if out[y, x] or not mask[y, x]:
+            continue
+        out[y, x] = True
+        if x > 0:
+            stack.append((x - 1, y))
+        if x + 1 < width:
+            stack.append((x + 1, y))
+        if y > 0:
+            stack.append((x, y - 1))
+        if y + 1 < height:
+            stack.append((x, y + 1))
+    return out
+
+
+def nearest_surface(
+    depth: np.ndarray, seed_px: tuple[float, float], radius: int = 8
+) -> tuple[float, tuple[int, int]] | None:
+    """The nearest valid depth near a seed, and where it is.
+
+    A single sample is not enough and this is measured, not defensive: the JobBot card's
+    own pixel read **1.31 m** while the card is at **0.38 m**, because the card is thin and
+    the 480x270 raster misses it at that pixel - the background behind it wins. The object
+    is the nearest thing in its own neighbourhood, so take the minimum.
+    """
+    dh, dw = depth.shape[:2]
+    sx = int(seed_px[0] * dw / (seed_px[2] if len(seed_px) > 2 else dw))
+    sy = int(seed_px[1] * dh / (seed_px[3] if len(seed_px) > 3 else dh))
+    x0, x1 = max(0, sx - radius), min(dw, sx + radius + 1)
+    y0, y1 = max(0, sy - radius), min(dh, sy + radius + 1)
+    patch = np.asarray(depth[y0:y1, x0:x1], dtype=np.float64)
+    valid = np.isfinite(patch) & (patch > 0.0) & (patch < FAR_SENTINEL)
+    if not valid.any():
+        return None
+    best = np.argmin(np.where(valid, patch, np.inf))
+    by, bx = divmod(int(best), patch.shape[1])
+    return float(patch[by, bx]), (x0 + bx, y0 + by)
+
+
+def auto_crop(
+    rgb: np.ndarray,
+    depth: np.ndarray,
+    target_m: float,
+    seed_px: tuple[float, float],
+    pad: float = 0.15,
+) -> tuple[np.ndarray, tuple[int, int, int, int]]:
+    """A crop around the object's own connected near surface, as `(image, box)`.
+
+    `seed_px` is in **colour** pixels; the depth mask is at the buffer's resolution and is
+    indexed with the scaled coordinate. The box is padded by `pad` of its own size, because
+    a crop that cuts the object's edge teaches the model that the object ends there.
+    """
+    height, width = rgb.shape[:2]
+    dh, dw = depth.shape[:2]
+    sx = int(seed_px[0] * dw / width)
+    sy = int(seed_px[1] * dh / height)
+    mask = near_mask(depth, target_m)
+    if not mask[sy, sx]:
+        # The seed's own sample is the background behind a thin object; take the nearest
+        # surface in its neighbourhood, which is the object.
+        found = nearest_surface(depth, (seed_px[0], seed_px[1], width, height))
+        if found is not None:
+            target_m, (sx, sy) = found
+            mask = near_mask(depth, target_m)
+    blob = component_at(mask, (sx, sy))
+    if not blob.any():
+        raise ValueError(f"seed ({sx}, {sy}) is not on a near surface at {target_m:.2f} m")
+    ys, xs = np.nonzero(blob)
+    x0, x1 = xs.min() * width / dw, (xs.max() + 1) * width / dw
+    y0, y1 = ys.min() * height / dh, (ys.max() + 1) * height / dh
+    w, h = x1 - x0, y1 - y0
+    x0, x1 = max(0, int(x0 - pad * w)), min(width, int(x1 + pad * w))
+    y0, y1 = max(0, int(y0 - pad * h)), min(height, int(y1 + pad * h))
+    return rgb[y0:y1, x0:x1], (x0, y0, x1, y1)

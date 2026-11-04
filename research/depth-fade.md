@@ -48,3 +48,43 @@ It is the only *automatic* crop-like step available: the depth already isolates 
 from everything behind it, and the crop that refusal needs (see the brain spec, §10) can come
 from that mask rather than an operator click. What is missing is a mask that segments *near*
 geometry from *the object*: the console and the monitor are as close as the card.
+
+## Automatic crop from the depth mask: measured, and it does not work
+
+The obvious next step was to use the same mask to generate the crop that refusal needs.
+`fade.auto_crop()` builds a near-surface mask, takes the connected component containing the
+object, and returns its bounding box.
+
+**It returns the whole console.** The component containing the JobBot card is 910x350 px of a
+960x540 frame - the card, the green monitor it leans on, the counter under both, and the
+till to the left. They are all at 0.25-0.60 m, so depth cannot separate the object from the
+furniture it is standing on. See `research/evidence/fade-result.png` and the box
+`(50, 190, 960, 540)`.
+
+So the crop still has to come from something that knows *which object*: the model's own
+quadrant within a container, a template, or an operator click. Depth tells you what is near,
+not what is interesting.
+
+## The near-surface bug, twice
+
+Both defects in this file are the same mistake at different scales: **a point sample of this
+depth buffer is not evidence.**
+
+- The fade's target taken as the *median* of a patch read 1.31 m and kept the whole room.
+- The auto-crop's seed pixel read 1.31 m when the card is at 0.25-0.38 m.
+
+The card is thin and the 480x270 raster misses it at its own pixel; the background behind it
+wins. `nearest_surface()` now scans a small patch and takes the minimum valid depth, which is
+the right statistic because the object of interest is the nearest thing in its own
+neighbourhood.
+
+## `spike/wbc_game/see.py`
+
+The integration point. Captures the frame, finds the nearest surface at the object's pixel,
+fades, and writes a JPEG: what the robot sees, with the room it will never touch removed.
+Measured on the JobBot card: 0.249 m, 38.5% of pixels kept, and the card, monitor and console
+survive with the signage gone.
+
+That is a distraction fix, not an accuracy fix - full-frame grounding still sits at 236-363 px
+against 39-65 px for a crop. But it costs one array pass and it removes the thing the model
+keeps mistaking for the target.
