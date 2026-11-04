@@ -484,6 +484,7 @@ class NextStep:
     skill: str | None = None
     target: str | None = None
     side: str | None = None
+    object: str | None = None
     destination: str | None = None
     raw: str = ""
     error: str = ""
@@ -500,6 +501,7 @@ class NextStep:
             "skill": self.skill,
             "target": self.target,
             "side": self.side,
+            "object": self.object,
             "destination": self.destination,
             "raw": self.raw,
             "error": self.error,
@@ -558,8 +560,43 @@ def next_step(
         return NextStep(goal=goal, skill=None, side=side,
                         raw=reply.text, error="no target named",
                         prompt_ms=reply.prompt_ms, decode_ms=reply.decode_ms)
-    return NextStep(goal=goal, skill=skill, target=target, side=side, destination=dest,
-                    raw=reply.text, prompt_ms=reply.prompt_ms, decode_ms=reply.decode_ms)
+    return NextStep(goal=goal, skill=skill, target=target, side=side, object=obj or None,
+                    destination=dest, raw=reply.text,
+                    prompt_ms=reply.prompt_ms, decode_ms=reply.decode_ms)
+
+
+def sequence(
+    step: NextStep, holding: bool, object_noun: str = ""
+) -> list[tuple[str, str]]:
+    """The ordered steps the executor must run to realise `step`.
+
+    **Measured 2026-11-04: the model plans the goal, never the next step.** Told
+    "the cartridge tray is on the counter, your hands are empty", it answered
+    `{"goal": "insert cartridge", "destination": "INSERT CARTRIDGE"}` - a `place`
+    with nothing in the hand - and it did so under every phrasing tried, including
+    one that said "decide the immediate next action only, one step". Asking a model
+    to respect a precondition it cannot see is not something to fix with words.
+
+    So ordering is code: a `place` with an empty hand is a `grab` of the object the
+    goal names, then the `place`. Whether the hand is empty is the caller's to know
+    - from the grasp check, not from the model's opinion.
+
+    **`object_noun` comes from the task, not from the model.** Measured the same
+    session: with empty hands and a prompt asking what it must pick up first, it
+    answered "empty hands", then echoed the field's own description back, then
+    invented "the white cartridge pusher/insert tool". A model that cannot see a
+    hand full cannot say what belongs in it. The task line already names the object
+    ("take a cartridge"), and this function takes it from there.
+    """
+    if step.skill is None:
+        return []
+    if step.skill == "place" and not holding:
+        obj = object_noun or step.object or step.target or ""
+        if not obj:
+            # A place with neither an object nor a destination cannot be sequenced.
+            return []
+        return [("grab", obj), ("place", step.target or "")]
+    return [(step.skill, step.target or "")]
 
 
 # --------------------------------------------------------------------------- #

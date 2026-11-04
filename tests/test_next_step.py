@@ -110,3 +110,46 @@ class NextStepShapeTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SequenceTest(unittest.TestCase):
+    """Ordering is code, because the model plans the goal and ignores the precondition."""
+
+    def test_a_place_with_an_empty_hand_grabs_the_object_first(self) -> None:
+        step = NextStep(goal="insert cartridge", skill="place", object="cartridge",
+                        target="INSERT CARTRIDGE", destination="INSERT CARTRIDGE")
+        self.assertEqual(
+            brain.sequence(step, holding=False),
+            [("grab", "cartridge"), ("place", "INSERT CARTRIDGE")],
+        )
+
+    def test_a_place_with_a_full_hand_is_just_the_place(self) -> None:
+        step = NextStep(goal="insert", skill="place", object="cartridge",
+                        target="the slot", destination="the slot")
+        self.assertEqual(brain.sequence(step, holding=True), [("place", "the slot")])
+
+    def test_a_grab_stands_alone(self) -> None:
+        step = NextStep(goal="take my card", skill="grab", object="JobBot card",
+                        target="JobBot card")
+        self.assertEqual(brain.sequence(step, holding=False), [("grab", "JobBot card")])
+
+    def test_an_empty_plan_sequences_to_nothing(self) -> None:
+        self.assertEqual(brain.sequence(NextStep(), holding=False), [])
+
+    def test_the_task_names_the_object_when_the_model_cannot(self) -> None:
+        # Measured: with empty hands the model answered "empty hands", then echoed
+        # the field description, then invented a cartridge pusher. The task line
+        # says "take a cartridge", so the object comes from there.
+        step = NextStep(goal="insert cartridge", skill="place", object="empty hands",
+                        target="INSERT CARTRIDGE", destination="INSERT CARTRIDGE")
+        self.assertEqual(
+            brain.sequence(step, holding=False, object_noun="cartridge"),
+            [("grab", "cartridge"), ("place", "INSERT CARTRIDGE")],
+        )
+
+    def test_the_measured_failure_is_the_one_this_handles(self) -> None:
+        # The exact reply measured with empty hands, 2026-11-04.
+        step = NextStep(goal="insert cartridge", skill="place", object="cartridge",
+                        target="INSERT CARTRIDGE", destination="INSERT CARTRIDGE")
+        steps = brain.sequence(step, holding=False)
+        self.assertEqual(steps[0][0], "grab", "an empty hand must grab before it places")

@@ -155,7 +155,7 @@ def verify_present(
 
 
 def locate(
-    config: BrainConfig, frame: Frame, noun: str, size: tuple[int, int]
+    config: BrainConfig, frame: Frame, noun: str, size: tuple[int, int], verify: bool = True
 ) -> dict:
     """Quadrant, then one crop call. Returns a dict with a full-frame pixel in px."""
     width, height = size
@@ -184,6 +184,10 @@ def locate(
     u = box[0] + uv[0] * (box[2] - box[0])
     v = box[1] + uv[1] * (box[3] - box[1])
     out["pixel_px"] = [round(u * width, 1), round(v * height, 1)]
+    if not verify:
+        out["verify_raw"] = "skipped"
+        out["present"] = None
+        return out
     present, raw3 = verify_present(config, frame, noun, out["pixel_px"], size)
     out["verify_raw"] = raw3.strip()
     out["present"] = present
@@ -199,6 +203,14 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--noun", default="JobBot ID card")
     ap.add_argument("--truth", nargs=2, type=float, metavar=("X", "Y"))
     ap.add_argument("--model")
+    ap.add_argument(
+        "--no-verify",
+        action="store_true",
+        help="skip the tight-crop YES/NO. Measured 2026-11-04: on a cartridge label the "
+        "verifier refused a pixel that was dead centre on the object, because a tight crop "
+        "of a label reads as a fragment rather than as a cartridge. For a grab the grasp "
+        "itself is the stronger post-condition.",
+    )
     ap.add_argument("--jsonl", type=pathlib.Path)
     args = ap.parse_args(argv)
 
@@ -211,7 +223,7 @@ def main(argv: list[str] | None = None) -> int:
         size = img.size
     frame = Frame(index=0, t_s=0.0, jpeg=args.image.read_bytes(), source=str(args.image))
 
-    out = locate(config, frame, args.noun, size)
+    out = locate(config, frame, args.noun, size, verify=not args.no_verify)
     if args.truth and out["pixel_px"]:
         dx = out["pixel_px"][0] - args.truth[0]
         dy = out["pixel_px"][1] - args.truth[1]
