@@ -491,3 +491,49 @@ class HandsOnlyScaleTests(unittest.TestCase):
         both = wire.body_state_to_xr(self.STATE, scale=1.43, pivot=self.WRIST)
         plain = wire.body_state_to_xr(self.STATE)
         self.assertNotEqual(both["head"][0], plain["head"][0])
+
+
+class PivotFrameTests(unittest.TestCase):
+    """The pivot is in the body's world frame, so the scale runs before the yaw.
+
+    Uniform scaling commutes with a rotation only about that rotation's own origin. When
+    the scale was applied after the yaw, the pivot was effectively `R_yaw * pivot` and
+    every pose came out displaced by `(I - R_yaw) * pivot` - 0.18 m at this pivot and a
+    90 deg yaw offset, which is the size of a hand. The comment in the code claimed the
+    order did not matter.
+    """
+
+    PIVOT = (1.0, 0.0, 0.5)
+    YAW = math.radians(90.0)
+
+    def state_at_pivot(self) -> dict:
+        return {
+            "root_p": [0.0, 0.0, 0.0],
+            "root_q": [1.0, 0.0, 0.0, 0.0],
+            "head": {"p": [0.0, 0.0, 0.0], "q_xyzw": [0.0, 0.0, 0.0, 1.0]},
+            "left_hand": {"p": list(self.PIVOT), "q_xyzw": [0.0, 0.0, 0.0, 1.0]},
+            "right_hand": {"p": list(self.PIVOT), "q_xyzw": [0.0, 0.0, 0.0, 1.0]},
+        }
+
+    def test_a_hand_on_the_pivot_only_turns(self) -> None:
+        # Scaling about a point fixes that point; the yaw then turns it. Any other order
+        # moves it, so this test is a pure statement of which frame the pivot lives in.
+        poses = wire.body_state_to_xr(
+            self.state_at_pivot(), yaw_offset_rad=self.YAW, scale=2.0, pivot=self.PIVOT
+        )
+        expected = wire.mj_to_xr_vec(wire.rotate_z(self.PIVOT, self.YAW))
+        for axis in range(3):
+            self.assertAlmostEqual(poses["right"][0][axis], expected[axis], places=9)
+
+    def test_the_yaw_offset_and_the_scale_are_both_applied(self) -> None:
+        # A hand away from the pivot is scaled away from it and then turned, which is not
+        # the same as either operation alone - guards against "fixed" by dropping one.
+        state = self.state_at_pivot()
+        state["right_hand"]["p"] = [1.0, 1.0, 0.5]
+        poses = wire.body_state_to_xr(
+            state, yaw_offset_rad=self.YAW, scale=2.0, pivot=self.PIVOT
+        )
+        scaled = (1.0, 1.0 * 2.0, 0.5)  # (1,0,0.5) + 2 * ((1,1,0.5) - (1,0,0.5))
+        expected = wire.mj_to_xr_vec(wire.rotate_z(scaled, self.YAW))
+        for axis in range(3):
+            self.assertAlmostEqual(poses["right"][0][axis], expected[axis], places=9)

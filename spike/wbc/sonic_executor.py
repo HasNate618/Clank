@@ -123,6 +123,11 @@ class SonicExecutor:
         #: it would let the body fire exactly once per session, because nothing but a
         #: `release` verb would ever bring it back down.
         self._fire_ticks = [0, 0]
+        #: The state `channel_pose` rule 3 is allowed to answer with, and the command
+        #: that froze it. See `_fallback`: without this, an unclaimed channel chases
+        #: its own measurement.
+        self._held_key: tuple[object, ...] | None = None
+        self._held_state: BodyState | None = None
 
     # ---- geometry -------------------------------------------------------
 
@@ -187,6 +192,36 @@ class SonicExecutor:
             qw, qx, qy, qz = sr.quat_mul(q_yaw, np.array([qw, qx, qy, qz]))
         return Pose((x, y, z), (float(qx), float(qy), float(qz), float(qw)))
 
+    def _fallback(self, cmd: BodyCommand) -> BodyState | None:
+        """The state rule 3 answers with, frozen for the life of one command.
+
+        `channel_pose` answers any channel the command does not claim with the *last
+        achieved* pose. Passing `self.last_state` here refreshed that every tick, so a
+        command claiming only the right hand left the left arm tracking its own
+        measurement: measured drift 0.444 m over 20 s at 0.0413 m/s RMS in
+        `research/p2-soak.md`, against 0.0226 m when latched once. That is a servo
+        closing on itself, and it is half of why a reach looked like dancing.
+
+        A command that names some channels therefore means "leave the others where
+        they were when I asked". The latch is re-taken whenever the commanded poses
+        change - keyed on the poses, not on `seq`, because every command from
+        `body_view` carries `seq=0`.
+        """
+        key = tuple(
+            (bit, float(pose.p[0]), float(pose.p[1]), float(pose.p[2]))
+            for name, bit in (
+                ("head", AUTH_HEAD),
+                ("left_hand", AUTH_L_HAND),
+                ("right_hand", AUTH_R_HAND),
+            )
+            for pose in (commanded_pose(cmd, name, bit),)
+            if pose is not None
+        )
+        if key != self._held_key:
+            self._held_key = key
+            self._held_state = self.last_state
+        return self._held_state
+
     def _targets(self, cmd: BodyCommand) -> tuple[np.ndarray | None, np.ndarray | None]:
         """Absolute VR targets, replacing the clip's own, for the commanded points.
 
@@ -218,7 +253,7 @@ class SonicExecutor:
             ("left_hand", AUTH_L_HAND, L_WRIST),
             ("right_hand", AUTH_R_HAND, R_WRIST),
         ):
-            pose = channel_pose(cmd, self.last_state, name, bit)
+            pose = channel_pose(cmd, self._fallback(cmd), name, bit)
             if pose is None:
                 continue
             # Carry only what the writer asked for. A pose inherited from
@@ -348,6 +383,30 @@ class SonicExecutor:
         # of torso yaw for a 35 deg command - measured, not guessed.
         q_yaw = np.array([math.cos(half), 0.0, 0.0, math.sin(half)])
         return _pose_from(pts[3 * HEAD:3 * HEAD + 3], sr.quat_mul(q_yaw, q))
+
+    def hand_target_at(
+        self, side: str, p: tuple[float, float, float], yaw_deg: float = 0.0
+    ) -> Pose:
+        """A wrist pose at an absolute point in the pelvis frame, `(x, y, z)`.
+
+        The point is the **VR point**, which is what the game draws the hand with: the
+        relay sends `_achieved`'s poses, and those are the wrist link plus
+        `VR_OFFSETS[side]` (a 0.18 m lever in the wrist's own frame, measured today as
+        a 0.182 m gap between the link and the reported hand). Commanding this point at
+        the object's point therefore puts the game's hand on the object; commanding the
+        physical link there would put it 0.18 m away and sweeping as the wrist turned.
+
+        Absolute rather than offset because the offset path is measured worse: replacing
+        the clip's `vr_pos` outright tracks to 3.51 cm, while additive `vr_delta` offsets
+        plateaued at 13.8 cm in a 10 s soak.
+        """
+        index = L_WRIST if side == "left" else R_WRIST
+        _, orns = self._clip_targets()
+        quat = orns[4 * index:4 * index + 4]
+        if yaw_deg:
+            half = math.radians(yaw_deg) / 2.0
+            quat = sr.quat_mul(np.array([math.cos(half), 0.0, 0.0, math.sin(half)]), quat)
+        return _pose_from(np.asarray(p, dtype=np.float64), quat)
 
     def hand_target(
         self,

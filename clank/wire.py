@@ -310,6 +310,17 @@ def body_state_to_xr(
         rotated = quat_rotate(root_q, p_rel)
         p_world = (root_p[0] + rotated[0], root_p[1] + rotated[1], root_p[2] + rotated[2])
         q_world = quat_mul(root_q, q_rel)
+        if scale_this != 1.0:
+            # About `pivot`, not the origin: the origin is the floor, and scaling there
+            # lifts the hand faster than it lengthens the arm. This runs BEFORE the yaw
+            # because the pivot is documented and measured in the body's world frame
+            # (post root rotation, pre yaw offset). Uniform scaling commutes with a
+            # rotation only about that rotation's own origin, so scaling after the yaw
+            # pivots about a *rotated* pivot and displaces everything by
+            # (I - R_yaw) x pivot - 0.18 m at this pivot and a 90 deg yaw offset.
+            p_world = tuple(
+                pivot_v[k] + (p_world[k] - pivot_v[k]) * scale_this for k in range(3)
+            )
         if yaw_offset_rad != 0.0:
             # Rotate about world up. `rotate_z` is borrowed from projection rather
             # than restated, because a second copy of an axis convention is how
@@ -319,13 +330,6 @@ def body_state_to_xr(
             half = yaw_offset_rad / 2.0
             q_world = quat_mul(
                 (math.cos(half), 0.0, 0.0, math.sin(half)), q_world
-            )
-        if scale_this != 1.0:
-            # About `pivot`, not the origin: the origin is the floor, and scaling there
-            # lifts the hand faster than it lengthens the arm. Uniform scaling commutes
-            # with the yaw rotation below, so the order does not matter.
-            p_world = tuple(
-                pivot_v[k] + (p_world[k] - pivot_v[k]) * scale_this for k in range(3)
             )
         return mj_to_xr_vec(p_world), mj_to_xr_quat(q_world)
 

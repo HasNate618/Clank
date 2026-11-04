@@ -193,3 +193,83 @@ class FrameField(unittest.TestCase):
                 ),
                 "",
             )
+
+
+class AbsoluteTargetTests(unittest.TestCase):
+    """`target` is where the hand must be, in the pelvis frame.
+
+    Added because an offset from the clip's wrist is measured worse than an absolute
+    point: replacing `vr_pos` outright tracks to 3.51 cm, additive offsets plateaued at
+    13.8 cm. A depth-derived object position is already absolute, so it belongs here.
+    """
+
+    def test_a_target_round_trips(self) -> None:
+        raw = intent.Intent(
+            skill="reach", side="right", target=(0.32, -0.11, 0.05)
+        ).to_dict()
+        self.assertEqual(intent.Intent.from_dict(raw).target, (0.32, -0.11, 0.05))
+
+    def test_no_target_survives_as_none(self) -> None:
+        self.assertIsNone(intent.Intent(skill="reach", side="right").target)
+
+    def test_a_target_is_accepted_inside_the_frame(self) -> None:
+        self.assertEqual(
+            intent.validate_intent(
+                intent.Intent(skill="reach", side="right", target=(0.3, -0.2, 0.1))
+            ),
+            "",
+        )
+
+    def test_a_non_finite_target_is_refused(self) -> None:
+        for bad in ((float("nan"), 0.0, 0.0), (0.0, float("inf"), 0.0), (0.0, 0.0)):
+            if len(bad) != 3:
+                continue
+            self.assertNotEqual(
+                intent.validate_intent(
+                    intent.Intent(skill="reach", side="right", target=bad)
+                ),
+                "",
+            )
+
+    def test_a_target_far_outside_the_body_is_refused(self) -> None:
+        # Almost always a frame mix-up - world coordinates, or a game-space depth that was
+        # never converted - so it is refused rather than driven at.
+        self.assertIn(
+            "from the pelvis",
+            intent.validate_intent(
+                intent.Intent(skill="reach", side="right", target=(3.0, 0.0, 0.0))
+            ),
+        )
+
+
+class ReachVerbTargetTests(unittest.TestCase):
+    """A `reach` verb carrying a point must reach that point, not the default offset.
+
+    Found live: the parser only looked for `forward_m`/`up_m`/`lateral_m`, so
+    `{"verb": "reach", "target": [...]}` fell through to `DEFAULT_REACH` and moved the hand
+    0.20 m forward of the clip instead. The 0.45 m miss looked exactly like the policy
+    refusing to reach, which is how a parser bug survives a live test.
+    """
+
+    def test_a_target_becomes_the_target_and_not_an_offset(self) -> None:
+        got = intent.verb_to_intent("reach", {"target": [0.3, -0.2, 0.1], "side": "right"})
+        assert got is not None
+        self.assertEqual(got.target, (0.3, -0.2, 0.1))
+        self.assertIsNone(got.offset)
+
+    def test_a_target_pins_the_head_at_zero_yaw(self) -> None:
+        # The pixel was marked in the current view; the camera must not move under it.
+        got = intent.verb_to_intent("reach", {"target": [0.3, -0.2, 0.1]})
+        assert got is not None
+        self.assertEqual(got.yaw_rad, 0.0)
+
+    def test_an_offset_reach_still_uses_the_offset(self) -> None:
+        got = intent.verb_to_intent("reach", {"forward_m": 0.1, "up_m": 0.05})
+        assert got is not None
+        self.assertIsNone(got.target)
+        self.assertEqual(got.offset, (0.1, 0.05, intent.DEFAULT_REACH[2]))
+
+    def test_a_malformed_target_is_left_for_the_validator(self) -> None:
+        got = intent.verb_to_intent("reach", {"target": [0.3, -0.2]})
+        assert got is not None
+        self.assertIsNone(got.target)  # not silently half-accepted

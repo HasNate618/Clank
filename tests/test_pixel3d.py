@@ -103,7 +103,7 @@ class PlayerScale(unittest.TestCase):
     def test_a_marked_pixel_comes_back_scale_times_closer(self) -> None:
         f = frame(0.49)
         plain = point_from_pixel(f, 0.5, 0.5, HEAD, FOV)
-        scaled = point_from_pixel(f, 0.5, 0.5, HEAD, FOV, scale=1.43)
+        scaled = point_from_pixel(f, 0.5, 0.5, HEAD, FOV, head_scale=1.43)
         assert plain is not None and scaled is not None
         self.assertAlmostEqual(plain[0] / scaled[0], 1.43, places=6)
 
@@ -112,7 +112,7 @@ class PlayerScale(unittest.TestCase):
         # lands on the object, and it is the component the body leans to supply.
         f = frame(0.60)
         plain = point_from_pixel(f, 0.72, 0.38, HEAD, FOV)
-        scaled = point_from_pixel(f, 0.72, 0.38, HEAD, FOV, scale=1.6)
+        scaled = point_from_pixel(f, 0.72, 0.38, HEAD, FOV, head_scale=1.6)
         assert plain is not None and scaled is not None
         for a, b in zip(plain, scaled):
             self.assertAlmostEqual(a / b, 1.6, places=6)
@@ -121,18 +121,18 @@ class PlayerScale(unittest.TestCase):
         f = frame(0.42)
         self.assertEqual(
             point_from_pixel(f, 0.5, 0.5, HEAD, FOV),
-            point_from_pixel(f, 0.5, 0.5, HEAD, FOV, scale=1.0),
+            point_from_pixel(f, 0.5, 0.5, HEAD, FOV, head_scale=1.0),
         )
 
     def test_a_scale_that_would_mirror_the_world_is_rejected(self) -> None:
         for bad in (0.0, -1.0, float("nan"), float("inf")):
             with self.assertRaises(ValueError):
-                point_from_pixel(frame(0.4), 0.5, 0.5, HEAD, FOV, scale=bad)
+                point_from_pixel(frame(0.4), 0.5, 0.5, HEAD, FOV, head_scale=bad)
 
     def test_the_card_is_inside_the_arm_once_the_player_is_adult_sized(self) -> None:
         # The measurement this change exists for: 0.486 m of game distance is 0.34 m of
         # real arm travel at 1.43, against a 0.40 m standing clamp.
         f = frame(0.486)
-        p = point_from_pixel(f, 0.5, 0.5, HEAD, FOV, scale=1.43)
+        p = point_from_pixel(f, 0.5, 0.5, HEAD, FOV, head_scale=1.43)
         assert p is not None
         self.assertLess(math.dist((0.0, 0.0, 0.0), p), 0.40)

@@ -68,7 +68,7 @@ def main() -> int:
     cw, ch = int(before["color_width"]), int(before["color_height"])
     head = Pose(p=tuple(state()["head"]["p"]), q_xyzw=tuple(state()["head"]["q_xyzw"]))
     raw = sample_depth(before["depth"], before["width"], before["height"], px / cw, py / ch)
-    card = point_from_pixel(before, px / cw, py / ch, head, FOV, scale=scale)
+    card = point_from_pixel(before, px / cw, py / ch, head, FOV, head_scale=1.0)
     if card is None:
         print("no surface there")
         return 1

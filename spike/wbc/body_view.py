@@ -249,6 +249,29 @@ def _command_from_intent(
         return BodyCommand(**{**command.__dict__, "left_hand": pose})
 
     forward, up, lateral = intent.offset or (0.0, 0.0, 0.0)
+    if intent.skill == "reach" and intent.target is not None:
+        # An absolute point (a depth-derived object position): the hand goes where the
+        # point says. An absolute point is already in the pelvis frame, so `frame`
+        # cannot carry it - carrying would rotate a measurement that was taken in the
+        # frame it is expressed in. The head is claimed as well, because the camera is
+        # the pose the target was measured from: letting the body drag it moves every
+        # pixel that has not been re-read yet.
+        hand = executor.hand_target_at(intent.side, intent.target)
+        # Pin the head to the pose it is in *now*, not to the clip's. The pixel was marked in
+        # the current view, so any head rotation moves the target out from under itself -
+        # and `look_target(0.0)` asks for a yaw of 0 while the resting head measures +21 deg,
+        # so "pin at the clip" was itself a 21 deg camera swing (measured today: the head
+        # wandered 21 -> 14 -> 25 deg during one reach, which swung the card ~140 px across
+        # the frame). Claiming AUTH_HEAD with the achieved pose tells the policy to leave it
+        # alone. This is the one case where an achieved pose is the right reference: the
+        # goal is *stability*, not a particular orientation.
+        if executor.last_state is not None:
+            head = executor.last_state.head
+        else:
+            head = executor.look_target(0.0)
+        if intent.side == "right":
+            return reach_with_head(head=head, right_hand=hand, frame="root")
+        return reach_with_head(head=head, left_hand=hand, frame="root")
     if intent.skill == "reach":
         hand = executor.hand_target(
             intent.side, forward_m=forward, up_m=up, lateral_m=lateral

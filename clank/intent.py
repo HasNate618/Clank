@@ -63,6 +63,10 @@ DEFAULT_TTL_MS = 2000
 #: 5 m offset from reaching the solver as if it were a typo-free instruction.
 MAX_OFFSET_M = 1.0
 
+#: Same sanity cap for an absolute `target`, measured from the pelvis. The arm's own
+#: envelope is ~0.70 m from the shoulder; anything past this is not a request.
+MAX_TARGET_M = 1.2
+
 
 @dataclass(frozen=True)
 class Intent:
@@ -95,6 +99,14 @@ class Intent:
     #: This is the adapter supplying E3's local offsets, per design §9.
     offset: tuple[float, float, float] | None = None
 
+    #: Absolute wrist point in the pelvis frame, metres, `(x, y, z)` with +X forward,
+    #: +Y the robot's left, +Z up. This is where the hand must *be*, not how far to
+    #: move from the clip's wrist. Measured 2026-10-30: replacing the clip's VR point
+    #: outright tracks to 3.51 cm, while additive `vr_delta` offsets plateaued at
+    #: 13.8 cm. A depth-derived point is exactly this, so it belongs here rather than
+    #: as an offset from a pose that was never the hand.
+    target: tuple[float, float, float] | None = None
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "schema": self.schema,
@@ -108,6 +120,7 @@ class Intent:
             "pixel": list(self.pixel) if self.pixel is not None else None,
             "yaw_rad": self.yaw_rad,
             "offset": list(self.offset) if self.offset is not None else None,
+            "target": list(self.target) if self.target is not None else None,
         }
 
     @staticmethod
@@ -116,6 +129,7 @@ class Intent:
             raise TypeError("intent must be an object")
         pixel = raw.get("pixel")
         offset = raw.get("offset")
+        target = raw.get("target")
         yaw = raw.get("yaw_rad")
         return Intent(
             schema=str(raw.get("schema", SCHEMA)),
@@ -133,6 +147,9 @@ class Intent:
             offset=None
             if offset is None
             else (float(offset[0]), float(offset[1]), float(offset[2])),
+            target=None
+            if target is None
+            else (float(target[0]), float(target[1]), float(target[2])),
         )
 
 
@@ -181,6 +198,15 @@ def validate_intent(intent: Intent) -> str:
         for value in intent.offset:
             if abs(value) > MAX_OFFSET_M:
                 return f"offset {value:.2f} m outside +-{MAX_OFFSET_M} m"
+
+    if intent.target is not None:
+        if len(intent.target) != 3 or not _finite(*intent.target):
+            return "target must be three finite numbers"
+        if math.dist(intent.target, (0.0, 0.0, 0.0)) > MAX_TARGET_M:
+            # Not a reach model: the pelvis is the origin, so a point beyond this is a
+            # frame mix-up (world coordinates, or a game-space depth that was never
+            # divided) and should be refused rather than driven at.
+            return f"target {math.dist(intent.target, (0.0, 0.0, 0.0)):.2f} m from the pelvis"
 
     return ""
 
@@ -235,6 +261,20 @@ def verb_to_intent(name: str, raw: Mapping[str, Any]) -> Intent | None:
         # same yaw always gives the same view - measured 2026-11-01, a hand-only
         # reach let the body drag the head 0.101 m and about 23 deg per step.
         yaw = raw.get("look_yaw_deg")
+        target = raw.get("target")
+        if isinstance(target, (list, tuple)) and len(target) == 3:
+            # An absolute point wins over any offset, because it is a measurement rather
+            # than a nudge. The head is pinned at yaw 0: the pixel was marked in the
+            # current view, so the camera must not move out from under it. Without this
+            # branch the parser fell through to `DEFAULT_REACH` and quietly reached
+            # (0.20 forward, 0.12 up) instead - measured today as a 0.45 m miss that
+            # looked exactly like the policy refusing to move.
+            return make(
+                "reach",
+                _side(raw),
+                target=(float(target[0]), float(target[1]), float(target[2])),
+                yaw_rad=0.0 if yaw is None else math.radians(float(yaw)),
+            )
         return make(
             "reach",
             _side(raw),
