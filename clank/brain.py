@@ -432,6 +432,136 @@ def plan(
     )
 
 
+
+# --------------------------------------------------------------------------- #
+# NEXT STEP
+# --------------------------------------------------------------------------- #
+
+#: Words that mean each skill, in the order they are checked. The model is asked
+#: for a *goal in words*, and this table is what turns that into the closed
+#: vocabulary `clank.intent` accepts. Keeping the mapping here rather than in the
+#: prompt is deliberate: measured 2026-11-04, offering `grab|place|reach|release`
+#: as an enum turned "you are holding a cartridge" into `{"skill": "grab"}`
+#: every time, while asking for the goal in words produced "insert the cartridge
+#: into the game console" with the destination named. The model is good at
+#: saying what it wants and bad at picking from our enum, so we let it talk and
+#: do the picking ourselves.
+_SKILL_WORDS = (
+    ("place", ("insert", "place", "put", "slot", "load", "seat")),
+    ("grab", ("take", "grab", "pick", "lift")),
+    ("release", ("release", "let go", "drop")),
+)
+
+NEXT_STEP_PROMPT = (
+    "You are a robot playing a VR game. {situation} "
+    "No further instruction was given. Decide what you are trying to do next, and "
+    'where, from what you can see. Reply with JSON only, no explanation: '
+    '{{"goal": "the outcome you want", "object": "the thing you act on or are holding", '
+    '"destination": "the name of the visible thing it goes into, or none", '
+    '"side": "left|right"}}'
+)
+
+
+def skill_from_goal(goal: str) -> str:
+    """The intent skill a goal in words implies. `reach` when nothing matches."""
+    words = goal.lower()
+    for skill, keys in _SKILL_WORDS:
+        if any(key in words for key in keys):
+            return skill
+    return "reach"
+
+
+@dataclass(frozen=True)
+class NextStep:
+    """What the body should do next, decided from the scene rather than parsed.
+
+    `target` is the noun the aimer will resolve: the **destination** for `place`,
+    the object for everything else. That split is the whole point - `place` given
+    "cartridge" cannot move anywhere, while `place` given "the cartridge slot" can.
+    """
+
+    goal: str = ""
+    skill: str | None = None
+    target: str | None = None
+    side: str | None = None
+    destination: str | None = None
+    raw: str = ""
+    error: str = ""
+    prompt_ms: float = 0.0
+    decode_ms: float = 0.0
+
+    @property
+    def ok(self) -> bool:
+        return not self.error and self.skill is not None and bool(self.target)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "goal": self.goal,
+            "skill": self.skill,
+            "target": self.target,
+            "side": self.side,
+            "destination": self.destination,
+            "raw": self.raw,
+            "error": self.error,
+            "prompt_ms": round(self.prompt_ms, 1),
+            "decode_ms": round(self.decode_ms, 1),
+        }
+
+
+def next_step(
+    config: BrainConfig,
+    frame: Frame,
+    situation: str,
+    default_side: str = "right",
+) -> NextStep:
+    """Ask what to do next, given the situation in words and one still.
+
+    This is the autonomous path: no instruction is parsed, because in this game
+    there is often none - JobBot says "take a cartridge" and the rest is expected
+    to be understood. Measured 2026-11-04: given that situation and a still, the
+    model answers `{"goal": "insert the cartridge into the game console",
+    "destination": "INSERT CARTRIDGE screen on the central console"}`, which is a
+    destination `locate` can resolve. The same question with a skill enum in the
+    prompt degenerated to `{"skill": "grab"}` - hence the split.
+    """
+    prompt = NEXT_STEP_PROMPT.format(situation=situation)
+    reply = _chat(config, [{"role": "user", "content": [
+        _image_part(frame), {"type": "text", "text": prompt},
+    ]}])
+    if reply.error:
+        return NextStep(raw=reply.text, error=reply.error)
+
+    parsed = extract_json_object(reply.text)
+    if parsed is None:
+        return NextStep(raw=reply.text, error="reply contained no JSON object",
+                        prompt_ms=reply.prompt_ms, decode_ms=reply.decode_ms)
+
+    goal = str(parsed.get("goal") or "").strip()
+    obj = str(parsed.get("object") or "").strip()
+    dest = str(parsed.get("destination") or "").strip()
+    side = str(parsed.get("side") or "").strip().lower()
+    if side not in ("left", "right"):
+        # Measured once: the reply said "center". A hand must be chosen, and the
+        # right hand is the one every reach today used.
+        side = default_side
+
+    skill = skill_from_goal(goal)
+    if skill == "place":
+        if dest.lower() in ("", "none", "null"):
+            return NextStep(goal=goal, skill=None, side=side, destination=dest,
+                            raw=reply.text, error="place with no destination named",
+                            prompt_ms=reply.prompt_ms, decode_ms=reply.decode_ms)
+        target = dest
+    else:
+        target = obj or dest
+    if not target:
+        return NextStep(goal=goal, skill=None, side=side,
+                        raw=reply.text, error="no target named",
+                        prompt_ms=reply.prompt_ms, decode_ms=reply.decode_ms)
+    return NextStep(goal=goal, skill=skill, target=target, side=side, destination=dest,
+                    raw=reply.text, prompt_ms=reply.prompt_ms, decode_ms=reply.decode_ms)
+
+
 # --------------------------------------------------------------------------- #
 # GROUND
 # --------------------------------------------------------------------------- #

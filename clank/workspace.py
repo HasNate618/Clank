@@ -100,6 +100,15 @@ def in_workspace(point: tuple[float, ...]) -> bool:
 
 #: Hard cap on the *magnitude* of a commanded wrist offset. The measured arm travel is
 #: 0.41-0.51 m (`research/sonic-reach-envelope.md`), so 0.40 keeps a margin inside it.
+#: How far above a destination the wrist goes before the hand opens.
+#:
+#: `place` is `reach` to a point that has nothing under it, then `open`. The height
+#: is a constant here and **never** a number in the prompt: the brain names the
+#: destination, the geometry is the adapter's. 0.12 m clears the cartridge's own
+#: thickness and is inside the measured free-air reach (15-65 mm at that height),
+#: so the hand is where it was asked to be rather than at the envelope's edge.
+APPROACH_M = 0.12
+
 MAX_OFFSET_M = 0.40
 
 #: Cap on the lateral component alone. Lateral is the axis that leans the body: it is
@@ -107,6 +116,19 @@ MAX_OFFSET_M = 0.40
 #: and it has already put the robot on the floor. Measured 2026-11-03: a raw Jacobian
 #: inverse asked for -0.761 m of lateral offset and the body fell (`FALL detected`).
 MAX_LATERAL_OFFSET_M = 0.18
+
+
+def approach_point(
+    point: tuple[float, ...], height: float = APPROACH_M
+) -> tuple[float, float, float]:
+    """The point directly above `point` that a `place` hovers at before opening.
+
+    Clamped into the workspace: a destination near the top of the box would
+    otherwise put the hover above the arm's reach, and the arm would stop short of
+    a point it was told to hit exactly.
+    """
+    x, y, z = _validated(point)
+    return clamp_wrist((x, y, z + height))
 
 
 def clamp_offset(

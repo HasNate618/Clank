@@ -11,9 +11,11 @@ import math
 import unittest
 
 from clank.workspace import (
+    APPROACH_M,
     MAX_LATERAL_OFFSET_M,
     MAX_OFFSET_M,
     WRIST_BOX,
+    approach_point,
     box_bounds,
     clamp_offset,
     clamp_wrist,
@@ -144,3 +146,25 @@ class ClampOffset(unittest.TestCase):
     def test_a_non_positive_limit_is_a_caller_bug(self) -> None:
         with self.assertRaises(ValueError):
             clamp_offset(0.1, 0.0, 0.0, max_m=0.0)
+
+
+class ApproachTest(unittest.TestCase):
+    """`place` hovers above its destination; the height is a constant, not a prompt value."""
+
+    def test_approach_is_above_and_inside_the_workspace(self) -> None:
+        below = (0.30, -0.30, 0.10)
+        above = approach_point(below)
+        self.assertAlmostEqual(above[2], below[2] + APPROACH_M, places=6)
+        self.assertEqual(above[:2], below[:2])
+        self.assertTrue(in_workspace(above))
+
+    def test_approach_clamps_instead_of_leaving_the_box(self) -> None:
+        # A destination near the top of the box must not put the hover out of reach.
+        high = (0.30, -0.30, 10.0)
+        above = approach_point(high)
+        self.assertTrue(in_workspace(above))
+        self.assertLessEqual(above[2], box_bounds()[2][1])
+
+    def test_approach_rejects_a_short_point(self) -> None:
+        with self.assertRaises(ValueError):
+            approach_point((0.1, 0.2))

@@ -273,3 +273,20 @@ class ReachVerbTargetTests(unittest.TestCase):
         got = intent.verb_to_intent("reach", {"target": [0.3, -0.2]})
         assert got is not None
         self.assertIsNone(got.target)  # not silently half-accepted
+
+
+class PlaceSkillTest(unittest.TestCase):
+    """`place` is reach-with-a-destination: it addresses one hand and needs a side."""
+
+    def test_place_is_a_known_skill(self) -> None:
+        self.assertIn("place", intent.SKILLS)
+
+    def test_place_needs_a_side(self) -> None:
+        self.assertIn("place", intent.SIDE_SKILLS)
+        i = intent.Intent(schema=intent.SCHEMA, skill="place", side="none", source="vlm")
+        self.assertIn("needs a side", intent.validate_intent(i))
+
+    def test_place_with_a_side_and_a_target_validates(self) -> None:
+        i = intent.Intent(schema=intent.SCHEMA, skill="place", side="right", source="vlm",
+                          target=(0.3, -0.3, 0.1))
+        self.assertEqual(intent.validate_intent(i), "")

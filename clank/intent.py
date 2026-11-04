@@ -41,6 +41,7 @@ SKILLS = (
     "reach",
     "grab",
     "release",
+    "place",
     "fire",
     "strike",
     "dodge",
@@ -52,7 +53,7 @@ SIDES = ("none", "left", "right")
 #: Skills that address one hand. `hold`/`look`/`twitch` do not, and a side on one
 #: of those is rejected rather than ignored - a caller that believes it grabbed
 #: something with `hold` has a bug worth seeing.
-SIDE_SKILLS = ("reach", "grab", "release", "fire", "strike", "dodge")
+SIDE_SKILLS = ("reach", "grab", "release", "place", "fire", "strike", "dodge")
 
 SOURCES = ("human", "vlm", "planner", "script")
 
