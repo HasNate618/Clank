@@ -49,7 +49,15 @@ CROP_WIDTH = 960
 #: crop said `found: false` for an object that was not there, while a quadrant
 #: crop said a confident pixel. Refusal is a property of the crop, so the check
 #: needs its own, small crop.
-VERIFY_HALF = 0.09
+#:
+#: 0.09 was too small. Measured 2026-11-04: a pixel dead centre on the GOURMET
+#: CHEF label, verified with a +/-0.09 crop, was refused - a crop that tight holds
+#: one word of a label and reads as a fragment rather than as a cartridge. The same
+#: refusal, blamed on the verifier, then got verification switched off, and the
+#: next locate produced a confident error 0.83 m from the tray. A verifier that is
+#: wrong in both directions is worse than none, so the crop is now big enough to
+#: contain a whole object.
+VERIFY_HALF = 0.16
 
 _PIXEL = re.compile(r"(-?\d+(?:\.\d+)?)\s*(?:px)?\s*[, ]\s*(-?\d+(?:\.\d+)?)")
 

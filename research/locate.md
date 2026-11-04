@@ -71,6 +71,25 @@ ways forward, in order of how much they buy per unit of work:
    own cue was tried and invalidated (`glow-calibration.md`), but a still-life subtraction is
    deterministic, and the card is the thing that is not there when it is not there.
 
+## The verifier was wrong in both directions
+
+`VERIFY_HALF` was 0.09 of the frame. Measured 2026-11-04, live:
+
+- a pixel **dead centre on the GOURMET CHEF cartridge label** was **refused** - a crop that tight
+  holds one word of a label and reads as a fragment, not as a cartridge;
+- with verification switched off, the next run put "AUTO MECHANIC cartridge" at (367, 326), on the
+  robot's *left*, 0.83 m away, and nothing objected;
+- with `VERIFY_HALF = 0.16` the same "GOURMET CHEF cartridge" question returned **(364, 341)** -
+  still the wrong side of the frame - and the verifier said **YES**.
+
+So the crop size fixed the false refusal and changed nothing about the confident error: on a rack
+of near-identical cartridges the model lands on the wrong one and confirms it. Verification checks
+*presence*, and a cartridge-shaped thing is present wherever it looks.
+
+**The rack needs a different kind of answer than another model question** - the objects differ by a
+few words of text and by position within a known tower. That is a template problem, not a
+grounding problem.
+
 ## What this changes
 
 The card path no longer needs a human to frame it: `locate.py` produces the pixel that

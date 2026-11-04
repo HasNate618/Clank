@@ -50,10 +50,7 @@ def capture(width: int = 960) -> tuple[bytes, tuple[int, int]]:
 def grab(noun: str, side: str) -> int:
     """locate the noun, then reach and close in one process, with no gap."""
     jpeg, size = capture()
-    # No stage-3 verification for a grab: it refused a pixel that was dead centre on the
-    # cartridge label. The grasp is the post-condition that matters, and reach_vr --grab
-    # reports whether the object came with the hand.
-    out = locate.locate(BrainConfig(), Frame(0, 0.0, jpeg, "live"), noun, size, verify=False)
+    out = locate.locate(BrainConfig(), Frame(0, 0.0, jpeg, "live"), noun, size)
     print(f"   locate({noun!r}) -> {out['pixel_px']} quadrant={out['quadrant']} "
           f"present={out.get('present')} error={out['error']!r}")
     if not out["pixel_px"] or out.get("present") is False:
