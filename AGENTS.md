@@ -215,3 +215,48 @@ chromium --headless=new --no-sandbox --disable-gpu \
 | `research/` | Measured findings and `evidence/` artifacts (`depth-stream/`, `depth-live/`) |
 | `docs/` | Design docs; some are historical (the PNG preview predates VNC) |
 | `README.md`, `RESEARCH.md` | Broad design and original feasibility study |
+
+## Seeing the object, 2026-11-04
+
+Three measurements change how the reach and the grounding are built. Read them before
+changing anything in `spike/wbc_game/reach_vr.py`, `track.py` or `clank/brain.py`.
+
+**The head will not hold a commanded pose.** Held against one target for 10 s, the achieved
+head wobbled **11.7 deg of yaw**, sat ~16 deg off the command, and its position drifted
+**56 mm**. So a pixel marked once is stale within a tick - measured, the card moved
+`1009 -> 1122 -> 865 -> 1007 px` inside a single four-command reach. Do not try to solve
+this by pinning harder; the pin is a request the policy answers with something else.
+
+**Re-derive the pixel instead.** The object is fixed and the camera is measured every tick,
+so projecting the object's own point through the measured head is accurate: the *hand's*
+pixel, predicted from its 3D position, landed **18 px** from where the game drew it.
+`spike/wbc_game/track.py` does that; `watch_glow.py` runs beside a reach and logs the
+object pixel, the hand pixel, their separation, and the glow state.
+
+**Grounding is one call on a crop.** Measured against the JobBot card (truth (705, 420)):
+
+| mode | error |
+| --- | --- |
+| full frame, pixel | 360 px |
+| full frame, 3x3 cell | 565 px (wrong cell) |
+| crop, pixel | 65 px |
+| crop, quadrant | correct |
+| **one call including the crop** | **39 px, 0.72 s** |
+
+Two calls cost more and are *less* accurate (65 px plus 0.78 s for PLAN). PLAN alone invents
+targets when it has no image, so always pass the frame - `clank.brain.plan()` does.
+
+**The glow is a cliff, not a judgement.** The same card patch measures `min(G-R, B-R)` of
+97-108 glowing and 5.9-40.4 not. It cannot be *found* by scanning: within 120 px of the card,
+the brightest cyan patch in a non-glowing frame scored 163 against the card's 5.9, because the
+room is painted the same hue. Only the change at a known patch means anything.
+
+**Depth fading helps a little and is not a crop substitute.** `spike/wbc_game/fade.py` blends
+past `1.8x` the object's depth to a dark backdrop by `3.5x`, with a smoothstep because the
+depth buffer is torn often enough that a hard cut bites into the object. Measured: full-frame
+grounding 631 -> 363 px. Still unusable, so the crop stays. Sample the object's depth as the
+**nearest** surface in a patch, not the median - the card is 0.38 m inside a neighbourhood
+that is mostly background at 1.31 m.
+
+**The emulated hands are visible in the game view.** Hold one up in front of the face and it
+appears where the geometry says. An earlier note in this file said otherwise; it was wrong.
