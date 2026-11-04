@@ -58,6 +58,7 @@ from clank.body import (  # noqa: E402
     AUTH_R_HAND,
     AUTH_TRIGGER,
     BodyCommand,
+    Pose,
     hold,
     reach_with_head,
     rest,
@@ -265,7 +266,16 @@ def _command_from_intent(
         # the frame). Claiming AUTH_HEAD with the achieved pose tells the policy to leave it
         # alone. This is the one case where an achieved pose is the right reference: the
         # goal is *stability*, not a particular orientation.
-        if executor.last_state is not None:
+        # The caller may name the camera it measured from. Pinning to `last_state.head`
+        # re-locks whatever the neck has drifted to *now*, so the drift compounds: the
+        # camera walked off the card and ended up looking at the counter. A named pose is
+        # a constant, so every command rebuilds the same camera.
+        if intent.head is not None:
+            head = Pose(
+                p=intent.head[:3],
+                q_xyzw=(intent.head[3], intent.head[4], intent.head[5], intent.head[6]),
+            )
+        elif executor.last_state is not None:
             head = executor.last_state.head
         else:
             head = executor.look_target(0.0)

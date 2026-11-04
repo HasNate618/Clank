@@ -107,6 +107,13 @@ class Intent:
     #: as an offset from a pose that was never the hand.
     target: tuple[float, float, float] | None = None
 
+    #: The head pose a `target` was measured from, `(x, y, z, qx, qy, qz, qw)` in the
+    #: pelvis frame. The camera is what turned the pixel into a point, so a reach that
+    #: wants to stay aimed needs *that* pose, not whatever the neck has drifted to.
+    #: Pinning to the achieved pose re-locks the drift instead of stopping it: measured
+    #: 2026-11-04, the camera walked off the card until it was pointing at the counter.
+    head: tuple[float, ...] | None = None
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "schema": self.schema,
@@ -121,6 +128,7 @@ class Intent:
             "yaw_rad": self.yaw_rad,
             "offset": list(self.offset) if self.offset is not None else None,
             "target": list(self.target) if self.target is not None else None,
+            "head": list(self.head) if self.head is not None else None,
         }
 
     @staticmethod
@@ -131,6 +139,7 @@ class Intent:
         offset = raw.get("offset")
         target = raw.get("target")
         yaw = raw.get("yaw_rad")
+        head = raw.get("head")
         return Intent(
             schema=str(raw.get("schema", SCHEMA)),
             seq=int(raw.get("seq", 0)),
@@ -150,6 +159,7 @@ class Intent:
             target=None
             if target is None
             else (float(target[0]), float(target[1]), float(target[2])),
+            head=None if head is None else tuple(float(v) for v in head),
         )
 
 
@@ -199,6 +209,13 @@ def validate_intent(intent: Intent) -> str:
             if abs(value) > MAX_OFFSET_M:
                 return f"offset {value:.2f} m outside +-{MAX_OFFSET_M} m"
 
+    if intent.head is not None:
+        if len(intent.head) != 7 or not _finite(*intent.head):
+            return "head must be seven finite numbers (x, y, z, qx, qy, qz, qw)"
+        if math.dist(intent.head[:3], (0.0, 0.0, 0.0)) > MAX_TARGET_M:
+            return (
+                f"head {math.dist(intent.head[:3], (0.0, 0.0, 0.0)):.2f} m from the pelvis"
+            )
     if intent.target is not None:
         if len(intent.target) != 3 or not _finite(*intent.target):
             return "target must be three finite numbers"
@@ -262,6 +279,7 @@ def verb_to_intent(name: str, raw: Mapping[str, Any]) -> Intent | None:
         # reach let the body drag the head 0.101 m and about 23 deg per step.
         yaw = raw.get("look_yaw_deg")
         target = raw.get("target")
+        head = raw.get("head")
         if isinstance(target, (list, tuple)) and len(target) == 3:
             # An absolute point wins over any offset, because it is a measurement rather
             # than a nudge. The head is pinned at yaw 0: the pixel was marked in the
@@ -274,6 +292,9 @@ def verb_to_intent(name: str, raw: Mapping[str, Any]) -> Intent | None:
                 _side(raw),
                 target=(float(target[0]), float(target[1]), float(target[2])),
                 yaw_rad=0.0 if yaw is None else math.radians(float(yaw)),
+                head=None
+                if not isinstance(head, (list, tuple)) or len(head) != 7
+                else tuple(float(v) for v in head),
             )
         return make(
             "reach",

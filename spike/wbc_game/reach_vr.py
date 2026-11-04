@@ -59,7 +59,7 @@ sys.path.insert(0, str(REPO))
 from clank.body import Pose  # noqa: E402
 from clank.depth_stream import Stream  # noqa: E402
 from clank.pixel3d import point_from_pixel  # noqa: E402
-from clank.projection import Fov  # noqa: E402
+from clank.projection import Fov, project_point  # noqa: E402
 
 SOCK = Path.home() / ".local/state/Clank/sessions/body/control.sock"
 STATE = Path.home() / ".local/state/Clank/sessions/body/body_state.json"
@@ -190,13 +190,33 @@ def fmt(p) -> str:
     return "[" + ", ".join(f"{v:+.3f}" for v in p) + "]"
 
 
-def command(target, yaw_deg: float, side: str = "right") -> dict:
+def head7(head) -> list[float]:
+    """The camera pose as the intent carries it: position then quaternion, 7 numbers."""
+    return [round(v, 5) for v in (*head.p, *head.q_xyzw)]
+
+
+def command(target, yaw_deg: float, side: str = "right", camera=None) -> dict:
+    """One reach. `camera` is the head pose the pixel was marked from, and it is resent
+    every time: the executor pins the head to whatever it is given, so giving it the
+    current pose each round re-locks the drift instead of stopping it."""
+    extra = {} if camera is None else {"head": head7(camera)}
     return send(verb="reach", side=side, target=[round(v, 4) for v in target],
-                yaw_deg=yaw_deg)
+                yaw_deg=yaw_deg, **extra)
+
+
+def card_pixel(st: dict, goal_rel, camera) -> tuple[float, float] | None:
+    """Where the pinned goal lands in the *current* view, as a fraction of the frame.
+
+    This is the check the loop was missing: a reach can converge to millimetres on a
+    point the camera is no longer looking at. Projecting the goal back into the live
+    camera says whether the marked pixel still means the same surface."""
+    head = Pose(p=tuple(st["head"]["p"]), q_xyzw=tuple(st["head"]["q_xyzw"]))
+    p = project_point(head, goal_rel, FOV)
+    return None if p is None else p
 
 
 def hold(target, yaw_deg: float, seconds: float, guard: float, root0,
-         side: str = "right") -> str:
+         side: str = "right", camera=None) -> str:
     """Keep one target alive for `seconds`, watching the root. Returns "" or a reason."""
     t0 = time.monotonic()
     while time.monotonic() - t0 < seconds:
@@ -268,6 +288,7 @@ def main() -> int:
     rest = wrist(args.side)
     head = Pose(p=tuple(st["head"]["p"]), q_xyzw=tuple(st["head"]["q_xyzw"]))
 
+    camera = head
     if args.world is not None:
         goal_world = tuple(args.world)
         goal = to_rel(goal_world, st)
@@ -361,16 +382,22 @@ def main() -> int:
             target = [
                 target[k] + args.gain * (goal_now[k] - achieved[k]) for k in range(3)
             ]
-        command(target, args.yaw, args.side)
-        reason = hold(target, args.yaw, args.dwell, args.guard, root0, args.side)
+        command(target, args.yaw, args.side, camera)
+        reason = hold(target, args.yaw, args.dwell, args.guard, root0, args.side,
+                      camera)
         st = state()
         goal_now = to_rel(goal_world, st)
         achieved = tuple(st[f"{args.side}_hand"]["p"])
         residual = math.dist(achieved, goal_now)
         d = lever(st[f"{args.side}_hand"]["q_xyzw"])
         d_now = d
+        seen = card_pixel(st, goal_now, camera)
+        drift_px = ""
+        if seen is not None and args.px is not None:
+            drift_px = (f"  card at px ({seen[0] * cw:4.0f}, {seen[1] * ch:4.0f})"
+                        f" vs ({args.px:.0f}, {args.py:.0f})")
         print(f"cmd {issued}: target {fmt(target)} -> hand {fmt(achieved)}  "
-              f"residual {residual * 1000:5.1f} mm  lever {fmt(d)}")
+              f"residual {residual * 1000:5.1f} mm  lever {fmt(d)}{drift_px}")
         if reason:
             print(f"  ABORT after cmd {issued}: {reason}")
             return 3 if "root" in reason else 4
