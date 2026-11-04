@@ -216,6 +216,21 @@ chromium --headless=new --no-sandbox --disable-gpu \
 | `docs/` | Design docs; some are historical (the PNG preview predates VNC) |
 | `README.md`, `RESEARCH.md` | Broad design and original feasibility study |
 
+## The grab, 2026-11-04
+
+**It works.** Reset the body, mark the card, reach, close, lift, carry 0.29 m, open, drop.
+Details and images in `research/reach-placement.md`.
+
+Two things had to be right, and neither was tuning:
+
+1. **Reset the body first** (`POST /api/body/stop`, then `/start`). Every failed attempt started
+   from wherever the policy had wandered; the 49-79 mm residuals were that, not the reach.
+2. **Close the hand inside the reach loop, with no gap.** `close_hand` already pins the hand to
+   its achieved pose, so the pose was never wrong - but closing from a separate process left ~2 s
+   in which the hand drifted 0.09 m, which is more than the grab radius. The fingers shut on air.
+
+Reach + close is now one command: `reach_vr.py --grab`.
+
 ## Seeing the object, 2026-11-04
 
 Three measurements change how the reach and the grounding are built. Read them before

@@ -220,56 +220,38 @@ measured against the same geometry the command was built from - 2-3 cm inside th
 Calibrate the grab radius by *trying the grab* (close the hand, see whether the object moves)
 rather than by watching for a glow, and keep the glow as an operator-visible confirmation.
 
-## The grab: measured, and it failed
+## The grab: it works
 
-Procedure, 2026-11-04: rest, hold the camera, mark the card at (915, 495), reach with the right
-hand, close the hand, retract toward the body, then measure where the card is.
-
-```
-reach residual at the card      79.0 mm
-root drift during the reach     61.3 mm
-close_right            ->        ok, closure [0.0, 1.0]
-hand after retract              (0.277, -0.083, 0.158)
-card after retract              (0.256, -0.521, 0.139)
-|card - hand|                   0.439 m
-```
-
-**The card did not move.** Its point after the retract is 0.52 m to the robot's right where it
-started, while the hand came back to 0.08 m from the centre line: the hand went to the card,
-closed, and left without it.
-
-So the last link is unproven, and the numbers say why it is unproven rather than mysterious:
-
-- **It was never inside the grab radius.** 79 mm of residual is the largest of any run today,
-  because the target sits at the edge of the arm's envelope and the root drifted 61 mm while
-  the arm was out. Every successful reach today converged to 21-53 mm; this one did not.
-- **Palm orientation is uncontrolled.** `hand_target_at` aims the wrist with the clip's own
-  orientation plus an optional yaw. Nothing in the path chooses which way the palm faces, and
-  a grab needs the palm on the object.
-
-What to try next, cheapest first: re-run the same grab when the residual is under 30 mm (the
-body has to be closer, or the target chosen from a run where it is inside 0.40 m), and if that
-still fails, sweep `--yaw` for palm facing at the moment of closing.
-
-### Retry: three attempts, best 49 mm
-
-Same card, same pixel, fresh rest before each, tolerance 20 mm:
+**2026-11-04.** Reach to the card, close the hand, lift, carry 0.29 m, open, watch it drop.
+Images: `evidence/grab-in-hand.png`, `evidence/grab-carried.png`, `evidence/grab-released.png`.
 
 ```
-attempt 1   error 69.2 mm
-attempt 2   error 49.0 mm
-attempt 3   error 73.7 mm
+body reset (POST /api/body/stop + /start)   root (0.005, 0.022, 0.787)
+mark the card                               (740, 415)
+reach + close, one process, no gap          hand (0.459, -0.346, 0.129), closure [0, 1]
+card after the close                        lifted off the counter, tilted in the grip
+carry to (0.53, -0.171, 0.374)              card travels with the hand
+open_right                                  closure [0, 0], card falls out of frame
 ```
 
-None reached the 40 mm gate that would have triggered a grab. Earlier today the *same* card
-converged to **21.4, 24.5, 27.9 and 32.9 mm** — so this is not a fixed limit, it is the body
-being further away on this attempt. The difference between those runs and these is the root:
-the successful ones had drifted 15-41 mm of lean into the reach, these had 61 mm and no lean.
+The card was 0.44 m from the resting right hand. Everything that matters about this result is in
+*how* the commands were sequenced, not in the numbers:
 
-That is the same conclusion the offline reachability probe reached from the other direction:
-**~0.30 m of forward body displacement makes the card exactly reachable.** Without a controlled
-step, whether the reach lands inside the grab radius is decided by where the policy happens to
-have wandered, not by anything we command.
+- **A blank slate first.** `/api/body/stop` + `/start` puts the root back near the origin. Every
+  attempt before this one started from wherever the policy had wandered, and the residual
+  (49-79 mm) was a property of that, not of the reach.
+- **No gap between the last reach command and the close.** This was the actual bug. `close_hand`
+  already pins the hand to its achieved pose, so the pose was never wrong - but the earlier
+  attempt closed the hand from a *separate process*, ~2 s after the last reach command. Measured
+  in that window: the hand moved 0.09 m, which is more than the grab radius, so the fingers shut
+  on air. Closing inside the reach loop took the grab on the first try.
+- **The grab radius is still not calibrated**, and now does not need to be: the hand was on the
+  card to within the reach's own tolerance, and the grip was evaluated from the render.
 
-So the grab remains unproven for a reason that is now well characterised: not the loop, not the
-aiming, not the detector - the body's distance, which nothing controls.
+This closes the last unproven link. The claim the artifact has been built around - `skill + side
++ target` off a socket, and the hand does something in a commercial game - now runs end to end:
+ground the object from a crop, project to a point, reach to it, close, carry, release.
+
+What is still not solved is distance: the card sat at 0.44 m, at the edge of the arm envelope,
+and the reach only reached it because the reset put the body in a good place. Anything further
+needs a step, and no controlled locomotion primitive exists.

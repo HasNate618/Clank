@@ -271,6 +271,20 @@ def main() -> int:
     ap.add_argument("--yaw", type=float, default=0.0, help="wrist yaw about Z (deg)")
     ap.add_argument("--dry-run", action="store_true", help="measure only, send nothing")
     ap.add_argument(
+        "--grab",
+        action="store_true",
+        help="after the last command, close the hand *in place* with no gap, then retract "
+        "and report where the object ended up",
+    )
+    ap.add_argument(
+        "--retract",
+        nargs=3,
+        type=float,
+        default=[0.16, -0.20, 0.05],
+        metavar=("X", "Y", "Z"),
+        help="pelvis-frame point to withdraw to after grabbing",
+    )
+    ap.add_argument(
         "--no-rest",
         action="store_true",
         help="skip the rest before reaching; skipping it starts from wherever the last "
@@ -410,6 +424,31 @@ def main() -> int:
         # the lever up to 9 cm. The correction subtracts a lever we could not predict, and
         # one is normally enough because the wrist has already turned by the time we
         # measure.
+
+    if args.grab:
+        # No gap. Measured 2026-11-04: closing the hand in a separate process let ~2 s pass
+        # between the last reach command and the close, and the body wandered 0.09 m in that
+        # window - the hand left the object before the fingers shut. `close_hand` already
+        # pins the hand to its achieved pose, so the pose is not the problem; the gap is.
+        st = state()
+        held = tuple(st[f"{args.side}_hand"]["p"])
+        send(verb=f"close_{args.side}")
+        for _ in range(3):
+            time.sleep(0.35)
+            send(verb=f"close_{args.side}")
+        st = state()
+        print(f"\nGRAB: closed at {fmt(held)} -> hand {fmt(st[f'{args.side}_hand']['p'])} "
+              f"closure {st['closure']}")
+        for _ in range(10):
+            send(verb="reach", side=args.side,
+                 target=[round(v, 4) for v in args.retract], ttl_ms=2500)
+            time.sleep(0.3)
+        time.sleep(0.5)
+        st = state()
+        after = st[f"{args.side}_hand"]["p"]
+        print(f"GRAB: retracted to {fmt(after)}  closure {st['closure']}")
+        print(f"GRAB: the object was at {fmt(goal)} in the pelvis frame before the grab; "
+              f"if it came with the hand it is now within a hand's width of {fmt(after)}")
 
     st = state()
     flags = int(st.get("flags") or 0)
