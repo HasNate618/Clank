@@ -14,10 +14,11 @@ Omni hallucinated in 3/4. The reasoning is not wasted - it visibly locates the
 card on the full frame, where Omni misses by 360 px - but the one place it should
 help (deciding an object is absent) is exactly where it fails hardest.
 
-Recommendation at the bottom. Short version: **Omni stays the live planner; keep
-VL as an offline / one-shot locator when a single correct pixel is worth 5.7 s and
-you already have a crop.** Neither model can be trusted to refuse, so absence must
-be decided by the caller, not the model.
+Recommendation at the bottom. Short version: **Omni, and only Omni runs.** The
+project will not run both models, so the comparison is a verdict, not a division of
+labour: vl3's extra accuracy does not pay for 19 s per pixel or for losing audio,
+and it refuses less often than the model it was supposed to out-think. Neither
+model can be trusted to refuse, so absence is the caller's job.
 
 ## Setup
 
@@ -297,8 +298,11 @@ task decomposition; do not read "grab" as a plan. Both point at nothing: vl3's
 
 ## Recommendation
 
-**Do not make the reasoning model the default. It buys accuracy you already have,
-and it costs the two things you cannot spend: latency and the audio input.**
+**Do not run the reasoning model at all.** It buys accuracy you already have by
+cropping, and it costs the two things you cannot spend: latency and the audio
+input. It is also the less honest of the two, which settles it.
+
+*Decision, 2026-11-04: the project runs one model, Omni. vl3 is not deployed.*
 
 Reasoning (**MEASURED**):
 
