@@ -216,6 +216,36 @@ chromium --headless=new --no-sandbox --disable-gpu \
 | `docs/` | Design docs; some are historical (the PNG preview predates VNC) |
 | `README.md`, `RESEARCH.md` | Broad design and original feasibility study |
 
+## Locating without a human, 2026-11-04
+
+`spike/wbc_game/locate.py` - quadrant, then one pixel call on that crop, then a YES/NO on a tight
+crop. Measured in `research/locate.md`.
+
+- **Card: 3.0 px and 17.4 px**, nothing hand-marked. Refuses when the card is genuinely absent.
+- **Cartridge rack defeats it** (66 px, then 369 px), and on a live frame with the card fallen out
+  of view it returned a confident pixel at a white rectangle. **Stage 3 checks that *a* thing is
+  there, not that *the* thing is.**
+- **The model normalises a crop to a square, width-based grid.** Both axes divide by the resized
+  width. Dividing y by the crop's own height turned a 4.7 px answer into 163 px. Do not "correct"
+  the aspect ratio.
+- **locate on a 960-wide still.** The one confident error in the fixture set was on an un-resized
+  1920x1080 frame; resized, it refuses instead.
+- `find_and_reach.py` chains capture -> locate -> `reach_vr`, and stops with exit 2 on a refusal.
+
+## Which model, 2026-11-04
+
+`research/grounding-vl-vs-omni.md`. Same image, same prompts, both models:
+
+| | vl3 | omni |
+| --- | --- | --- |
+| full frame | **22 px** | 360 px |
+| one call on a crop | **30 px** / 19.3 s | 39 px / **0.73 s** |
+| absent object | hallucinated 4/4 | hallucinated 3/4 |
+
+Reasoning buys accuracy and costs 5-36x the wall time and the only audio channel. **Omni stays the
+planner**; vl3 is a one-shot locator when 5.7 s per pixel is acceptable. Neither model can be
+trusted to refuse, so absence is the caller's job.
+
 ## The grab, 2026-11-04
 
 **It works.** Reset the body, mark the card, reach, close, lift, carry 0.29 m, open, drop.
