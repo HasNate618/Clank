@@ -353,3 +353,47 @@ the rest. The seed does not need to be exact; it needs to be on the right surfac
 
 The quadrant answer is the only categorically correct one, so keep it as the confirmation
 while the pixel is the seed: if quadrant and pixel disagree, the seed is wrong.
+
+---
+
+# Model capability note (not tested): which of these can reason
+
+Recorded 2026-11-04 from the model cards, not from measurement. It matters because the whole
+grounding design above treats the model as a classifier, and the failure modes that hurt
+(inventing a location for an absent object, describing a white card as blue) are judgement
+failures rather than resolution failures.
+
+| model | sees | hears | thinks |
+| --- | --- | --- | --- |
+| **LFM3-Omni-2B** (in use) | image | audio | **no** - non-reasoning by design; `enable_thinking=True` unsupported, every answer opens with an empty think block |
+| LFM3-VL-2B | image | no | **yes** - reasons step by step; server needs `--reasoning-parser qwen3` |
+| LFM3-1.7B (text) | no | no | yes, by default; `enable_thinking=False` disables |
+| LFM3-Audio-2B | no | audio | opt-in, by prefilling the think tag |
+
+**Consequence for this project.** The model that hears the game is the one that cannot
+reason, and the models that can reason cannot hear it. As long as the brain is Omni, no
+prompt change turns on thinking - so "ask it to reason harder" is not available here.
+
+**Local state.** `LFM3-VL-2B-Q8_0.gguf` is on disk (1.57 GB) but **its `mmproj` projector is
+not**, so it cannot see anything yet; llama.cpp needs the pair. The running server exposes
+only Omni.
+
+**What to test when it is available**, in the order that the failures justify:
+
+1. **Absence.** Does reasoning stop the invented location for an object that is not there?
+   Measured failure today: both full-frame modes returned a pixel and `found: true` for a
+   fire extinguisher that is not in the frame. This is the one failure that costs a real
+   action, so it is the first thing worth a reasoning model.
+2. **Target description.** Omni called a white card blue. Does a reasoning pass produce
+   "the badge reading JobBot leaning on the green monitor" instead of a confident wrong
+   colour?
+3. **Multi-step lines.** "Take my card and put it in the slot" needs two actions; Omni emits
+   one. This is where reasoning should help most, and it is untested.
+
+**Not worth testing:** pixel accuracy. 39-65 px on a crop is a resolution limit, not a
+thinking limit, and a bigger think block does not put more pixels on the object.
+
+**The audio cost.** VL has no audio input, and `LFM3-Audio-2B` is not downloaded, so
+`VL + reasoning` means a second stage: transcribe first (Omni, or a separate ASR), then reason
+over text plus image. That is two calls and two failure modes where there is now one. Worth
+paying only if test 1 or 3 above shows reasoning changes the answer.
