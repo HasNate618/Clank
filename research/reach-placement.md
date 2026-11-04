@@ -135,3 +135,60 @@ IK's real job is an oracle: offline, damped-least-squares on the seven arm joint
 **0.0 mm in 6–7 iterations** for reachable points and reports a **223 mm residual at the joint
 limits** for an unreachable one — a reachability answer with zero motion and zero risk of
 walking the body.
+
+## Following the object instead of pinning it
+
+The head will not hold a commanded pose. Held against one target for 10 s, the achieved
+head wobbled **11.7 deg of yaw**, sat ~16 deg off the command, and its position drifted
+**56 mm**. That is the mechanism behind every "the camera turned away" complaint, and it is
+not fixable by commanding harder: the pin is a request the policy answers with something
+else while it balances the arm.
+
+Consequence: a pixel marked once is stale within a tick. Measured inside a single reach,
+the card moved `1009 -> 1122 -> 865 -> 1007 px`.
+
+So the pixel is re-derived instead. The object is fixed, the camera is measured every tick,
+and projecting the object's own point through the measured head is accurate: predicting the
+**hand's** pixel from its 3D position landed within **18 px** of where the game drew it.
+
+`spike/wbc_game/track.py` does that, and `spike/wbc_game/watch_glow.py` runs beside a reach
+and logs, per tick, the object's pixel, the hand's pixel, their separation in pixels, and
+the game's glow state.
+
+## The glow is a cliff, not a judgement
+
+Same patch of card, measured on frames from this session:
+
+| state | mean RGB | G − R | min(G−R, B−R) |
+|---|---|---|---|
+| hand at card | (130, 219, 219) | 89 | **97 – 108** |
+| hand away | (153, 166, 169) | 13 | **5.9** |
+| hand away, other view | (107, 149, 160) | 42 | **40.4** |
+
+`GLOW_ON = 60` separates every sample with room on both sides. The human walkthrough pair
+(`research/evidence/walkthrough-glow-*.png`) shows the same cue on the same family of
+objects: the tray rim goes cyan.
+
+**Searching for the glow does not work, and this is worth recording because it is the
+obvious wrong design.** Within 120 px of the card, the brightest cyan patch in a frame whose
+card was *not* glowing scored **163** against the card's own **5.9**. The room is painted in
+the same hue - walls, counter strips, the JOB CART sign - so "most glow-like patch" locks
+onto scenery. Only the change at a patch whose location is already known is informative,
+which is why following has to come first.
+
+The two walkthrough frames are 283 ms apart but **61 % of their pixels differ**: they are a
+labelled pair for what the cue looks like, not for measuring a patch, because the camera had
+moved.
+
+## Where the hand actually is
+
+Measured with the watcher during a reach to the card:
+
+```
+object (719, 435)   hand (678, 446)   gap 41.8 px   glow 37.6   state off
+```
+
+41.8 px at ~0.5 m is about **12 cm** from the patch centre, and the glow is off. The reach
+reported a 67 mm residual for the same instant, so the two agree within their own
+uncertainty. The gap that remains is the wrist lever: `[+0.133, +0.014, -0.123]`, a 0.18 m
+offset whose direction is set by the wrist orientation, which nothing yet controls.
