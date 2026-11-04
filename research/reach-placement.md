@@ -250,3 +250,26 @@ So the last link is unproven, and the numbers say why it is unproven rather than
 What to try next, cheapest first: re-run the same grab when the residual is under 30 mm (the
 body has to be closer, or the target chosen from a run where it is inside 0.40 m), and if that
 still fails, sweep `--yaw` for palm facing at the moment of closing.
+
+### Retry: three attempts, best 49 mm
+
+Same card, same pixel, fresh rest before each, tolerance 20 mm:
+
+```
+attempt 1   error 69.2 mm
+attempt 2   error 49.0 mm
+attempt 3   error 73.7 mm
+```
+
+None reached the 40 mm gate that would have triggered a grab. Earlier today the *same* card
+converged to **21.4, 24.5, 27.9 and 32.9 mm** — so this is not a fixed limit, it is the body
+being further away on this attempt. The difference between those runs and these is the root:
+the successful ones had drifted 15-41 mm of lean into the reach, these had 61 mm and no lean.
+
+That is the same conclusion the offline reachability probe reached from the other direction:
+**~0.30 m of forward body displacement makes the card exactly reachable.** Without a controlled
+step, whether the reach lands inside the grab radius is decided by where the policy happens to
+have wandered, not by anything we command.
+
+So the grab remains unproven for a reason that is now well characterised: not the loop, not the
+aiming, not the detector - the body's distance, which nothing controls.
