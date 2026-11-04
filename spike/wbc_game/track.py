@@ -24,19 +24,34 @@ The object's appearance changes underneath the tracker: a grabbable card goes fr
 is no template that survives that, and the prediction is accurate - the hand's pixel,
 predicted from its own 3D position, landed **18 px** from where the game drew it.
 
-## Why the glow is watched, not searched for
+## The glow is not a validated instrument, and that is the finding
 
-The glow is the game's own answer to "is this grabbable", and it is a cliff: `G - R` of 89
-glowing against 13 not. But it cannot be *found* by scanning, which was measured and is
-worth recording because it is the obvious wrong design: within 120 px of the card, the
-brightest cyan patch in a frame whose card is **not** glowing scored 163, and the card
-itself scored 5.9. The room is painted in the same hue - walls, counter strips, the JOB
-CART sign - so "most glow-like patch" locks onto scenery.
+The glow is the game's own "you may grab this", and on hand-picked patches it separates
+cleanly: `min(G - R, B - R)` of 97-108 glowing against 5.9-40.4 not. Every one of those
+numbers came from a box drawn by hand, and when the patch is placed automatically the
+separation does not survive:
 
-What works is the **change at a patch whose location is already known**: a baseline from
-when the object was approached, and a jump of `GLOW_STEP` in `G - R` at that patch. That
-is a frame difference, and it is only meaningful once the patch is pinned - which is what
-`follow` is for.
+| sample | reading |
+| --- | --- |
+| fixed 48x48 patch at the predicted pixel, 60 px off the glow | 59-93 |
+| fixed 48x48 patch on the glow, same frame | 144-168 |
+| max over a +-45 px window, card glowing, hand 10 cm away | 164-176 |
+| **same window max, on a saved frame with the hand away** | **153.5** |
+| **same window max, on a saved frame with the hand at the card** | **124.8** |
+
+The last two are the point: the window max is not selective, because the room is painted in
+the same hue - walls, counter strips, the JOB CART sign - and the brightest cyan in a +-45 px
+window is often scenery. A single frame cannot tell a glowing card from a glowing wall.
+
+So the detector is **not** trustworthy enough to gate an action, and it should not gate one.
+What is trustworthy is the reach's own measured residual: the policy puts the hand where it
+is told to 2-3 cm inside the envelope, and that number is measured every command against the
+same geometry the command was built from.
+
+Use the glow for what it is good for - an operator-visible confirmation that the game
+considers the object grabbable - and calibrate the grab radius by *trying the grab* (close the
+hand and see whether the object moves) rather than by watching for a glow. `glow_near()` is
+kept as the reporting helper, not as a decision.
 """
 
 from __future__ import annotations
@@ -51,6 +66,11 @@ from clank.projection import Fov, project_point
 #: Half-size of the patch the glow statistic is taken over, in colour pixels. The card is
 #: ~90 px wide at the counter, so a 24 px half-window stays on it while the arm passes.
 PATCH_HALF = 24
+
+#: Half-size of the window `glow_near` searches. A prediction's error is ~60 px, so this
+#: has to cover it; it is still small enough that the room's cyan signage outside it cannot
+#: win the max.
+SEARCH_PX = 45
 
 #: `mean(min(G - R, B - R))` above which a patch *is* glowing, when there is no baseline
 #: to compare against: 89-97 measured glowing, 5.9-40.4 not.
@@ -87,6 +107,30 @@ class Patch:
 
 def _clip(value: int, low: int, high: int) -> int:
     return max(low, min(high, value))
+
+
+def glow_near(
+    rgb: np.ndarray, x: float, y: float, radius: int = SEARCH_PX, half: int = PATCH_HALF
+) -> tuple[float, tuple[float, float]]:
+    """The strongest glow within `radius` of `(x, y)`, and where it is.
+
+    A prediction can be 60 px off - that is the measured spread of the projection against
+    the game's own drawing - and a 48 px patch missing the glow by that much reads 59-93
+    where the glow itself reads 164-176. Taking the max over the window removes that
+    dependency without letting the search wander into the room's own cyan signage.
+    """
+    height, width = rgb.shape[:2]
+    step = max(3, half // 3)
+    best: tuple[float, float, float] = (-1.0, x, y)
+    for dy in range(-radius, radius + 1, step):
+        for dx in range(-radius, radius + 1, step):
+            cx, cy = x + dx, y + dy
+            if not (0 <= cx < width and 0 <= cy < height):
+                continue
+            score = patch_at(rgb, cx, cy, half).glow
+            if score > best[0]:
+                best = (score, cx, cy)
+    return best[0], (best[1], best[2])
 
 
 def patch_at(rgb: np.ndarray, x: float, y: float, half: int = PATCH_HALF) -> Patch:

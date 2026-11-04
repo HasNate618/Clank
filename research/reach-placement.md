@@ -192,3 +192,30 @@ object (719, 435)   hand (678, 446)   gap 41.8 px   glow 37.6   state off
 reported a 67 mm residual for the same instant, so the two agree within their own
 uncertainty. The gap that remains is the wrist lever: `[+0.133, +0.014, -0.123]`, a 0.18 m
 offset whose direction is set by the wrist orientation, which nothing yet controls.
+
+## The glow detector is not validated - correcting an earlier claim
+
+The numbers that made the glow look like a cliff (97-108 glowing against 5.9-40.4 not) all
+came from boxes **drawn by hand** on saved frames. Placed automatically, the separation does
+not survive:
+
+| sample | reading |
+| --- | --- |
+| fixed patch at the predicted pixel, 60 px off the glow | 59-93 |
+| fixed patch on the glow, same frame | 144-168 |
+| max over a +-45 px window, live, hand 10 cm away | 164-176 |
+| window max, saved frame, **hand away** | **153.5** |
+| window max, saved frame, **hand at the card** | **124.8** |
+
+The window max is not selective: the room is painted in the same cyan, so the brightest patch
+within 45 px is often signage. A single frame cannot separate a glowing card from a glowing
+wall.
+
+I also claimed the glow "pulses". It does not: over 6 s at a fixed pixel the value drifts
+smoothly (144-168). What flickered was the patch drifting on and off the glow as the head
+wobbled - the same 11.7 deg wobble that started this thread.
+
+**Decision.** The glow does not gate an action. The reach's own residual does, because it is
+measured against the same geometry the command was built from - 2-3 cm inside the envelope.
+Calibrate the grab radius by *trying the grab* (close the hand, see whether the object moves)
+rather than by watching for a glow, and keep the glow as an operator-visible confirmation.
