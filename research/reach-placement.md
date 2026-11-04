@@ -219,3 +219,34 @@ wobbled - the same 11.7 deg wobble that started this thread.
 measured against the same geometry the command was built from - 2-3 cm inside the envelope.
 Calibrate the grab radius by *trying the grab* (close the hand, see whether the object moves)
 rather than by watching for a glow, and keep the glow as an operator-visible confirmation.
+
+## The grab: measured, and it failed
+
+Procedure, 2026-11-04: rest, hold the camera, mark the card at (915, 495), reach with the right
+hand, close the hand, retract toward the body, then measure where the card is.
+
+```
+reach residual at the card      79.0 mm
+root drift during the reach     61.3 mm
+close_right            ->        ok, closure [0.0, 1.0]
+hand after retract              (0.277, -0.083, 0.158)
+card after retract              (0.256, -0.521, 0.139)
+|card - hand|                   0.439 m
+```
+
+**The card did not move.** Its point after the retract is 0.52 m to the robot's right where it
+started, while the hand came back to 0.08 m from the centre line: the hand went to the card,
+closed, and left without it.
+
+So the last link is unproven, and the numbers say why it is unproven rather than mysterious:
+
+- **It was never inside the grab radius.** 79 mm of residual is the largest of any run today,
+  because the target sits at the edge of the arm's envelope and the root drifted 61 mm while
+  the arm was out. Every successful reach today converged to 21-53 mm; this one did not.
+- **Palm orientation is uncontrolled.** `hand_target_at` aims the wrist with the clip's own
+  orientation plus an optional yaw. Nothing in the path chooses which way the palm faces, and
+  a grab needs the palm on the object.
+
+What to try next, cheapest first: re-run the same grab when the residual is under 30 mm (the
+body has to be closer, or the target chosen from a run where it is inside 0.40 m), and if that
+still fails, sweep `--yaw` for palm facing at the moment of closing.
