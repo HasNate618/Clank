@@ -58,6 +58,7 @@ sys.path.insert(0, str(REPO))
 
 from clank.body import Pose  # noqa: E402
 from clank.depth_stream import Stream  # noqa: E402
+from clank.workspace import clamp_wrist
 from clank.pixel3d import point_from_pixel  # noqa: E402
 from clank.projection import Fov, project_point  # noqa: E402
 
@@ -72,6 +73,16 @@ FLAG_SATURATED = 1 << 0
 #: reach and the root walks, which invalidates the pixel and everything after it.
 ARM_ENVELOPE_M = 0.40
 KEEPALIVE_S = 0.5
+
+#: Waypoint spacing for the smooth path, in seconds. The plant settles in 0.77-1.05 s, so a
+#: reference that moves every 0.1 s is not "faster than the arm can respond" - it is a
+#: continuous reference the arm tracks, instead of a sequence of separate steps it answers
+#: with overshoot and then has to unwind.
+SMOOTH_DT = 0.1
+
+#: How long the straight section of the path takes. Matches the measured settle time, so the
+#: arm arrives once rather than arriving, overshooting and coming back.
+SMOOTH_S = 1.2
 
 #: A lean is ~0.03-0.06 m and is normal balancing; a *step* is what took the body 1.33 m and
 #: then 4.7 m in one session. The goal is pinned in the world so a lean does not invalidate
@@ -255,6 +266,13 @@ def main() -> int:
     ap.add_argument("--dwell", type=float, default=1.1, help="settle time per command (s)")
     ap.add_argument("--corrections", type=int, default=3)
     ap.add_argument(
+        "--no-smooth",
+        action="store_true",
+        help="use the old step-and-correct loop. Kept only to reproduce the measured "
+        "behaviour; the smooth path is the default because the step loop is what made the "
+        "arm jerk for ten seconds",
+    )
+    ap.add_argument(
         "--gain",
         type=float,
         default=0.6,
@@ -387,7 +405,41 @@ def main() -> int:
     # chase a model instead of the measurement. This converges 452 -> 150 -> 310 mm in the
     # bad case and 100 -> 14 mm in the good one, i.e. it is only as good as the lever is
     # stable, which is a property of the target, not of the loop.
+    if not args.no_smooth:
+        # A straight line from where the hand is to the goal, streamed as waypoints.
+        #
+        # Three faults in the old loop, all measured on 2026-11-04's cartridge attempt:
+        #   * ~5 commands x 1.2 s dwell is ten seconds of motion, and every command landed
+        #     while the arm was still settling from the last one (settle 0.77-1.05 s,
+        #     vertical overshoot +75 %), so the arm never tracked anything.
+        #   * `target += 0.6 * error` had no anti-windup and the goal was outside the
+        #     envelope, so the *commanded* point walked outward instead of converging: y went
+        #     -0.647 -> -0.670 -> -0.716 -> -0.868 -> -0.922 m, five times the 0.18 m lateral
+        #     clamp, with the arm saturated and the root leaning after it.
+        #   * the residual went 92 -> 110 -> 317 -> 128 -> 165 mm, i.e. it got worse three
+        #     times. Each fall is a direction reversal - the jerking.
+        # So: interpolate in world space (the root moves), clamp every waypoint, and let the
+        # reference be continuous.
+        start_rel = wrist(args.side)
+        start_world = to_world(start_rel, st)
+        steps = max(6, int(round(SMOOTH_S / SMOOTH_DT)))
+        clamp_hits = 0
+        for i in range(1, steps + 1):
+            a = i / steps
+            ahead = tuple(start_world[k] + (goal_world[k] - start_world[k]) * a
+                          for k in range(3))
+            way_rel = to_rel(ahead, state())
+            way = clamp_wrist(way_rel)
+            if way != way_rel:
+                clamp_hits += 1
+            command(way, args.yaw, args.side, camera)
+            time.sleep(SMOOTH_DT)
+        if clamp_hits:
+            print(f"  {clamp_hits}/{steps} waypoints clamped into the workspace")
+
     target = list(goal)
+    best_residual = float("inf")
+    best_target = list(target)
     for attempt in range(max(0, args.corrections) + 1):
         issued += 1
         # The world point is the authority; the root frame is just how the executor talks.
@@ -416,6 +468,16 @@ def main() -> int:
             print(f"  ABORT after cmd {issued}: {reason}")
             return 3 if "root" in reason else 4
         if residual <= args.tol:
+            break
+        if residual < best_residual:
+            best_residual, best_target = residual, list(target)
+        elif attempt > 0 and not args.no_smooth:
+            # The residual grew. Adding more of the same correction is how the commanded
+            # point walked to -0.92 m; go back to the best target instead and stop.
+            print(f"  residual grew to {residual * 1000:.1f} mm "
+                  f"(best {best_residual * 1000:.1f} mm): holding the best point")
+            command(best_target, args.yaw, args.side, camera)
+            target = best_target
             break
         # The next iteration applies the correction at its top, from a fresh state read.
         # Not servo gain: the policy puts the physical link on `target` (measured 2 mm in x
