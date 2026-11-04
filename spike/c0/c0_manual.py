@@ -37,6 +37,7 @@ import os
 import select
 import signal
 import socket
+import struct
 import sys
 import time
 from pathlib import Path
@@ -407,6 +408,21 @@ class Manual:
                 f"trig={int(self.trigger)} grip={int(self.grip)} punch={int(self.punch_active)}")
 
 
+def read_handshake(sock) -> None:
+    """Read the driver's two reply packets, then report that the client is ready.
+
+    The marker comes after both packets on purpose: the orchestrator uses it to
+    decide the mode switch worked. Printing it at TCP connect would report
+    success while the driver was still busy with the client it just replaced.
+    """
+    for name in ("reset", "latest"):
+        packet = c0.recv_exact(sock, c0.SIZE)
+        header = struct.unpack_from("<Q", packet)[0]
+        if header != c0.HEADER:
+            raise ValueError(f"handshake {name} header 0x{header:016x} != expected")
+    print("[manual] handshake ok", flush=True)
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--host", default="127.0.0.1")
@@ -435,8 +451,7 @@ def main():
     sock = socket.create_connection((args.host, args.port), timeout=5)
     sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
     print(f"[manual] connected {args.host}:{args.port}", flush=True)
-    c0.recv_exact(sock, c0.SIZE)
-    c0.recv_exact(sock, c0.SIZE)
+    read_handshake(sock)
     out = sock.makefile("wb")
 
     m = Manual(args)

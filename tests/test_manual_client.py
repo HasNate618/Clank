@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+import contextlib
 import importlib.util
+import io
 import json
 import socket
 import tempfile
+import threading
+import time
 import types
 import unittest
 from pathlib import Path
@@ -21,6 +25,49 @@ class FakeClock:
 
     def __call__(self) -> float:
         return self.now
+
+
+class HandshakeTests(unittest.TestCase):
+    @staticmethod
+    def packet() -> bytes:
+        return manual.c0.HEADER.to_bytes(8, "little") + bytes(manual.c0.SIZE - 8)
+
+    def test_reads_both_packets_before_reporting_success(self) -> None:
+        a, b = socket.socketpair()
+        a.settimeout(1.0)
+        output = io.StringIO()
+        errors: list[BaseException] = []
+
+        def run() -> None:
+            try:
+                with contextlib.redirect_stdout(output):
+                    manual.read_handshake(a)
+            except BaseException as exc:  # noqa: BLE001 - reported below
+                errors.append(exc)
+
+        thread = threading.Thread(target=run)
+        thread.start()
+        try:
+            time.sleep(0.05)
+            self.assertNotIn("handshake ok", output.getvalue())
+            b.sendall(self.packet() * 2)
+            thread.join(1.0)
+            self.assertFalse(thread.is_alive())
+            self.assertEqual(errors, [])
+            self.assertIn("[manual] handshake ok", output.getvalue())
+        finally:
+            a.close()
+            b.close()
+
+    def test_rejects_a_wrong_header(self) -> None:
+        a, b = socket.socketpair()
+        try:
+            b.sendall(bytes(manual.c0.SIZE * 2))
+            with self.assertRaisesRegex(ValueError, "header"):
+                manual.read_handshake(a)
+        finally:
+            a.close()
+            b.close()
 
 
 class BrowserInputTests(unittest.TestCase):

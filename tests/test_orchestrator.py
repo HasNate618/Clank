@@ -1995,6 +1995,19 @@ class OrchestratorTests(unittest.TestCase):
         socket_path = Path(argv[argv.index("--input-socket") + 1])
         self.assertEqual(socket_path.name, f"{self.manager._socket_name}-manual.sock")
 
+    def test_manual_mode_waits_for_the_handshake(self) -> None:
+        self.start()
+        seen: list[str] = []
+        original = self.runner.wait_log
+
+        def record(path, needle, timeout, abort=None):
+            seen.append(needle)
+            return original(path, needle, timeout, abort)
+
+        with patch.object(self.runner, "wait_log", side_effect=record):
+            self.manager.set_mode("manual")
+        self.assertIn("[manual] handshake ok", seen)
+
     def test_body_mode_starts_the_pose_relay(self) -> None:
         self.start()
         self.manager.set_mode("body")

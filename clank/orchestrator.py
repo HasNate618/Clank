@@ -899,7 +899,7 @@ class SessionManager:
                 str(input_socket),
                 *fov_flags,
             ]
-            needle = "connected 127.0.0.1"
+            needle = "[manual] handshake ok"
         elif mode == "body":
             # The join: the pose client stops inventing poses and relays the ones
             # the simulated body actually achieved (see clank/pose_relay.py).

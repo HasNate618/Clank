@@ -146,6 +146,69 @@ class HandshakeTests(unittest.TestCase):
             a.close()
 
 
+class ConnectTests(unittest.TestCase):
+    def _listener(self) -> socket.socket:
+        listener = socket.socket()
+        listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        listener.bind(("127.0.0.1", 0))
+        listener.listen(4)
+        self.addCleanup(listener.close)
+        return listener
+
+    def test_retries_while_the_driver_is_busy_with_another_client(self) -> None:
+        listener = self._listener()
+        port = listener.getsockname()[1]
+
+        def serve() -> None:
+            first, _ = listener.accept()
+            try:
+                time.sleep(0.30)
+            finally:
+                first.close()
+            second, _ = listener.accept()
+            try:
+                second.sendall(bytes(wire.blank_packet()) * 2)
+                time.sleep(0.20)
+            finally:
+                second.close()
+
+        thread = threading.Thread(target=serve, daemon=True)
+        thread.start()
+        sock = pose_relay.connect(
+            "127.0.0.1", port, timeout=2.0, handshake_timeout=0.10
+        )
+        try:
+            self.assertIsNotNone(sock)
+        finally:
+            sock.close()
+        thread.join(2)
+
+    def test_gives_up_when_no_handshake_arrives(self) -> None:
+        listener = self._listener()
+        port = listener.getsockname()[1]
+        release = threading.Event()
+
+        def serve() -> None:
+            conn, _ = listener.accept()
+            try:
+                release.wait(2)
+            finally:
+                conn.close()
+
+        thread = threading.Thread(target=serve, daemon=True)
+        thread.start()
+        start = time.monotonic()
+        try:
+            with self.assertRaises(OSError):
+                pose_relay.connect(
+                    "127.0.0.1", port, timeout=0.35, handshake_timeout=0.10
+                )
+            self.assertLess(time.monotonic() - start, 1.5)
+        finally:
+            release.set()
+            thread.join(2)
+
+
 class DriverButtonsTests(unittest.TestCase):
     def test_forced_pair_is_per_hand(self) -> None:
         self.assertEqual(pose_relay.forced_pair("left"), (1.0, 0.0))

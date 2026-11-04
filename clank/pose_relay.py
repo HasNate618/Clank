@@ -53,6 +53,11 @@ GRAB_MODES = ("squeeze", "curl", "both")
 #: covers Monado still coming up when the session starts.
 CONNECT_TIMEOUT_SEC = 20.0
 
+#: How long one handshake attempt may wait for the driver's two reply packets.
+#: The driver serves one client at a time, so a mode switch can connect while the
+#: previous client still owns it; a short attempt keeps the retry responsive.
+HANDSHAKE_TIMEOUT_SEC = 1.0
+
 
 def forced_pair(mode: str) -> tuple[float, float]:
     """(left, right) for a CLI force mode. 'none' releases both."""
@@ -221,19 +226,40 @@ def read_handshake(sock: socket.socket, size: int = wire.SIZE) -> None:
             raise ValueError(f"handshake {name} header 0x{header:016x} != expected")
 
 
-def connect(host: str, port: int, timeout: float = CONNECT_TIMEOUT_SEC) -> socket.socket:
+def connect(
+    host: str,
+    port: int,
+    timeout: float = CONNECT_TIMEOUT_SEC,
+    handshake_timeout: float = HANDSHAKE_TIMEOUT_SEC,
+) -> socket.socket:
+    """Connect and complete the handshake, retrying the whole attempt.
+
+    The remote driver serves one client at a time. A mode switch can therefore
+    accept our TCP connection while the previous client still owns the driver,
+    and no handshake arrives until that client is gone. Retrying (rather than
+    failing the session on the first quiet socket) lets the switch wait it out.
+    """
     deadline = time.monotonic() + timeout
     while True:
+        sock = None
+        remaining = deadline - time.monotonic()
         try:
-            sock = socket.create_connection((host, port), timeout=5)
-        except OSError:
+            sock = socket.create_connection(
+                (host, port), timeout=max(0.05, min(5.0, remaining))
+            )
+            sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+            sock.settimeout(max(0.05, min(handshake_timeout, remaining)))
+            read_handshake(sock)
+            return sock
+        except (OSError, ValueError):
+            if sock is not None:
+                try:
+                    sock.close()
+                except OSError:
+                    pass
             if time.monotonic() >= deadline:
                 raise
-            time.sleep(0.25)
-            continue
-        sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-        read_handshake(sock)
-        return sock
+            time.sleep(min(0.25, max(0.0, deadline - time.monotonic())))
 
 
 def log_row(writer: Any, t: float, poses: dict[str, Any], note: str, age: float | None,
