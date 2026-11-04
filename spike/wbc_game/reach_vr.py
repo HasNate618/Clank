@@ -7,10 +7,12 @@ looked like the robot dancing.
 
 What has to be right, each measured today:
 
-* **The camera is not the robot's head.** The relay turns the head by `--yaw-offset-deg`
-  (90 here) before sending it, so a pixel unprojected with the raw head names a point 90 deg
-  away. With the raw head the reach still "converged" to 14 mm - on the wrong side of the
-  room.
+* **The relay's yaw offset cancels, and applying it mirrors the target.** The relay rotates
+  the whole player about the world origin, and the depth image is rendered from that rotated
+  camera, so the object has not moved relative to the robot. Applying the +90 deg offset to
+  the camera put the card at the robot's LEFT: the left hand looked 0.54 m away when the
+  right hand was 0.44 m away and the card was on the right the whole time. Every left-hand
+  reach in this session aimed across the body at a mirrored point.
 * **`vr_pos` is the physical wrist link**, and `_achieved` reports that link plus a 0.18 m
   `VR_OFFSETS` lever rotated by the wrist. The policy rotates the wrist as it reaches, so the
   lever swings up to 0.09 m: that, not a gain, is most of the residual.
@@ -215,13 +217,6 @@ def main() -> int:
     ap.add_argument("py", type=float, nargs="?", default=None)
     ap.add_argument("--side", choices=("left", "right"), default="right")
     ap.add_argument(
-        "--yaw-offset-deg",
-        type=float,
-        default=90.0,
-        help="the relay's --yaw-offset-deg: the game camera is the robot's head turned "
-        "this far, so a pixel cannot be unprojected with the raw head",
-    )
-    ap.add_argument(
         "--target",
         type=float,
         nargs=3,
@@ -262,8 +257,8 @@ def main() -> int:
         "reach left the arm, which is how one run began 0.10 m from its goal and stalled",
     )
     args = ap.parse_args()
-    if args.target is None and (args.px is None or args.py is None):
-        ap.error("give a pixel or --target X Y Z")
+    if args.world is None and args.target is None and (args.px is None or args.py is None):
+        ap.error("give a pixel, --target X Y Z or --world X Y Z")
 
     if not args.dry_run and not args.no_rest:
         send(verb="rest")
@@ -292,21 +287,16 @@ def main() -> int:
             print("no depth frame")
             return 1
         cw, ch = int(frame["color_width"]), int(frame["color_height"])
-        # The camera is NOT the robot's head: the relay turns it by its yaw offset before
-        # sending it (`wire.body_state_to_xr` applies `yaw_offset_rad` to the head pose), so
-        # the pixel must be unprojected with the turned head or every ray comes back 90 deg
-        # wrong. Measured today: with the raw head the reach still "converged" to 14 mm -
-        # on a point 90 deg away from the card, self-consistent and completely wrong.
-        head_world = to_world(head.p, st)
-        q_world = _quat_mul(st["root_q"], _xyzw_to_wxyz(head.q_xyzw))
-        yaw = math.radians(args.yaw_offset_deg)
-        cam_q = _quat_mul((math.cos(yaw / 2.0), 0.0, 0.0, math.sin(yaw / 2.0)), q_world)
-        cam_p = (
-            math.cos(yaw) * head_world[0] - math.sin(yaw) * head_world[1],
-            math.sin(yaw) * head_world[0] + math.cos(yaw) * head_world[1],
-            head_world[2],
-        )
-        camera = Pose(p=cam_p, q_xyzw=_wxyz_to_xyzw(cam_q))
+        # The relay's yaw offset CANCELS and must not be applied here. The relay rotates the
+        # whole player by `yaw_offset_rad` about the world origin, so the game's camera sits
+        # at R(head) looking along R(q_head); the depth image is rendered from there, and the
+        # object it shows has not moved. Unprojecting with the rotated camera puts the point
+        # in the rotated world, R(p_true), and converting that to the pelvis frame without
+        # undoing R mirrors it. Measured: applying +90 deg put the card at the robot's LEFT
+        # (y = +0.33, 0.94 m from the left hand, 0.44 m from the right hand mirrored) when it
+        # is at y = -0.52, i.e. **0.44 m from the right hand** and 0.94 m from the left.
+        # The raw head is the correct camera: R^-1(R(head) + R(q) d n) = head + q d n.
+        camera = head
         points = []
         with Stream() as stream:
             for _ in range(3):
@@ -321,12 +311,14 @@ def main() -> int:
         if not points:
             print(f"no surface at {source}")
             return 1
-        world_point = tuple(
-            _median([q[k] for q in points]) for k in range(3)
-        )
-        spread = max(math.dist(q, world_point) for q in points)
+        point_rel = tuple(_median([q[k] for q in points]) for k in range(3))
+        spread = max(math.dist(q, point_rel) for q in points)
         print(f"depth samples {len(points)}  spread {spread * 1000:.0f} mm")
-        goal = to_rel(world_point, st)
+        # `point_from_pixel` returns a PELVIS-frame point (it unprojects from a root-relative
+        # head), so converting it with `to_rel` applies the root transform a second time.
+        # Measured: that turned a card at (0.356, -0.524, 0.125) - 0.44 m from the right hand
+        # - into (0.546, 0.345, -0.672), i.e. a point near the floor on the robot's left.
+        goal = point_rel
     need = math.dist(rest, goal)
     if need > MAX_PLAUSIBLE_M:
         # A reach target is an object within arm's length of the rest pose. Beyond this the

@@ -10,14 +10,31 @@ The streaming integrator (`reach_ho.py`, `grab_ho.py`) is an oscillator by const
 overshoot** on the up axis. That is the "dancing". But fixing the loop alone would not have
 made the hand arrive, because five separate targeting errors were stacked underneath it.
 
-### 1. The camera is not the robot's head
+### 1. The relay's yaw offset cancels — and applying it mirrors the target
 
-The relay sends the head turned by `--yaw-offset-deg` (90° here). Unprojecting a pixel with
-the raw head therefore names a point **90° away** in azimuth.
+The relay rotates the *whole player* by `--yaw-offset-deg` about the world origin. The depth
+image is rendered from that rotated camera, and the object it shows has not moved relative to
+the robot. So the rotation cancels exactly:
 
-That failure is invisible from the loop's own numbers: the reach converged to **14 mm** — on
-a point on the wrong side of the room, self-consistent and completely wrong. It was caught
-only by projecting the result back into the image.
+    p_robot = R^-1( R(head) + R(q_head) d n ) = head + q_head d n
+
+Applying the offset to the camera puts the point in the rotated world and, without undoing it,
+**mirrors the target about the robot**. Measured on the JobBot card:
+
+| convention | point (pelvis frame) | right hand | left hand |
+|---|---|---|---|
+| rotated camera (+90°) | (0.55, **+0.33**, 0.12) | 0.78 m | **0.54 m** |
+| **raw head (correct)** | (0.36, **−0.52**, 0.12) | **0.44 m** | 0.94 m |
+
+The card is on the robot's **right**. The rotated convention put it on the left, which made the
+left hand look closer and sent every reach in this session across the body. The error was
+caught by the operator looking at the robot and saying the right hand was obviously nearer —
+not by anything the loop reported, because the loop converged happily either way.
+
+A second, smaller version of the same mistake: `point_from_pixel` already returns a
+**pelvis-frame** point (it unprojects from a root-relative head), so converting it with
+`to_rel` applies the root transform twice. That turned (0.356, −0.524, 0.125) into
+(0.546, 0.345, −0.672) — a point near the floor on the wrong side.
 
 ### 2. `vr_pos` is the wrist link; the reported hand is link + lever
 
@@ -71,18 +88,24 @@ plus a step guard on the root and a plausibility check on the goal.
 | target | distance | result | commands |
 |---|---|---|---|
 | counter surface, left hand | 0.41 m | **26 mm** | 5 |
-| card pixel, left hand | 0.52 m | **14 mm** | 2 |
-| card pixel, right hand (cross-body) | 0.88 m | aborted, unreachable | – |
+| JobBot card, right hand | 0.44 m | **94 mm** | 4 |
+| JobBot card, left hand (cross-body) | 0.94 m | not attempted, unreachable | – |
+
+The card stalls at 94 mm: the corrections keep asking for a lower point and the hand stays
+6–7 cm high, so this is the arm's limit at that extension, not the loop's. The wrist lever is
+0.17 m here (measured `(−0.054, −0.163, −0.059)`), so most of the residual is lever, and the
+policy will not rotate the wrist further to give it back.
 
 Root lean 2–3 cm per reach; no step. Gain 1.0 overshoots (152 → 88 → 56 → 42 mm); gain 0.6
 converges (179 → 55 → 33 → 35 → 26 mm).
 
 ## The honest limit
 
-**The card is 0.57 m from the resting left hand.** The arm-only envelope is ~0.40 m and the
-measured maximum travel is 0.41–0.51 m. It is out of reach, and no loop tuning fixes that:
-the body has to walk closer. Everything before this was measuring a target the arm could not
-have reached anyway.
+**The card is 0.44 m from the resting right hand** and 0.94 m from the left. That is just
+outside the 0.40 m steering clamp and inside the 0.41–0.51 m measured travel, which is why it
+converges to 94 mm and stops: the arm is at its extension limit, and the last centimetres are
+wrist-lever, not aiming. Getting closer needs either a body step or a wrist orientation the
+policy will actually hold.
 
 ## Two false levers, both rejected by measurement
 
