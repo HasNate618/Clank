@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """
-Grounding harness for LFM3-Omni-2B on the Job Simulator "Take my card." task.
+Grounding harness for the local LFM3 vision models on the Job Simulator
+"Take my card." task.
 
-STATUS: NOT YET RUN. Every number this script would produce is UNMEASURED.
-Nothing in this file is a result; it is the instrument.
+Model-agnostic: the model id comes from --model, or from /v1/models so the
+harness measures whichever server `~/AI/llama.sh <key>` started (vl3, omni, ...).
 
 Design constraints (from the task owner):
   * client only. POSTs to http://127.0.0.1:11434/v1/chat/completions. It never
@@ -35,7 +36,27 @@ import urllib.error
 import urllib.request
 
 ENDPOINT = "http://127.0.0.1:11434/v1/chat/completions"
-MODEL = "/home/nate/AI/models/LFM3-Omni-2B-Q8_0.gguf"
+MODELS_ENDPOINT = "http://127.0.0.1:11434/v1/models"
+# Resolved at startup from --model or from whatever server is up, so the same
+# harness measures any of the model keys in ~/AI/llama.sh (vl3, omni, ...).
+MODEL = None
+
+
+def resolve_model(explicit: str | None) -> str:
+    """Model id to send. --model wins; otherwise ask the running server."""
+    if explicit:
+        return explicit
+    try:
+        with urllib.request.urlopen(MODELS_ENDPOINT, timeout=10) as resp:
+            data = json.loads(resp.read().decode("utf-8", "replace"))
+        ids = [m.get("id") or m.get("model") for m in data.get("data", [])]
+        ids = [i for i in ids if i]
+        if ids:
+            return ids[0]
+    except Exception as exc:
+        sys.exit("cannot resolve model from %s (%r); pass --model"
+                 % (MODELS_ENDPOINT, exc))
+    sys.exit("server reports no models; pass --model")
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.abspath(os.path.join(HERE, "..", ".."))
@@ -70,6 +91,9 @@ the NPC "JobBot", your co-worker. JobBot hands out tasks by speaking to you.
 """
 
 JOBBOT_LINE = "Take my card."
+# A two-step utterance: fetch the card AND deliver it. Used to see whether either
+# model plans past the first action or stops at it.
+MULTISTEP_LINE = "Take my card and put it in the slot."
 ABSENT_LINE = "Fetch the red fire extinguisher."
 
 
@@ -192,6 +216,8 @@ def make_crop(src: str, box, scale: int) -> tuple[str, int, int]:
 
 
 def post(prompt: str, image_path: str | None, temperature: float, max_tokens: int):
+    if MODEL is None:  # pragma: no cover - main() always resolves it first
+        sys.exit("MODEL unresolved; call resolve_model() first")
     content = [{"type": "text", "text": prompt}]
     if image_path:
         content.append({"type": "image_url", "image_url": {"url": data_url(image_path)}})
@@ -216,21 +242,27 @@ def post(prompt: str, image_path: str | None, temperature: float, max_tokens: in
         raw = exc.read().decode("utf-8", "replace")
         status = exc.code
     except Exception as exc:  # connection refused, timeout, ...
-        return "", time.perf_counter() - t0, {"error": repr(exc)}, 0
+        return "", "", time.perf_counter() - t0, {"error": repr(exc)}, 0
     wall = time.perf_counter() - t0
     try:
         payload = json.loads(raw)
     except json.JSONDecodeError:
-        return raw, wall, {"error": "non-json response", "body": raw[:2000]}, status
+        return raw, "", wall, {"error": "non-json response", "body": raw[:2000]}, status
     text = ""
+    reasoning = ""
     try:
-        text = payload["choices"][0]["message"]["content"] or ""
+        message = payload["choices"][0]["message"]
+        text = message.get("content") or ""
+        reasoning = message.get("reasoning_content") or ""
     except (KeyError, IndexError, TypeError):
         text = ""
-    meta = {"usage": payload.get("usage"), "timings": payload.get("timings")}
+    meta = {"usage": payload.get("usage"), "timings": payload.get("timings"),
+            "model": payload.get("model")}
+    if reasoning:
+        meta["reasoning_chars"] = len(reasoning)
     if not text:
         meta["raw_body"] = raw[:2000]
-    return text, wall, meta, status
+    return text, reasoning, wall, meta, status
 
 
 FENCE = re.compile(r"```(?:json)?\s*(.*?)```", re.S)
@@ -312,13 +344,18 @@ def run(args, mode, prompt, image_path, img_w, img_h, box, scale, expects):
         print("=" * 78)
         return
 
-    text, wall, meta, status = post(prompt, image_path, args.temperature, args.max_tokens)
+    text, reasoning, wall, meta, status = post(prompt, image_path,
+                                               args.temperature, args.max_tokens)
     obj, note = parse_json(text)
     obj = obj or {}
 
+    usage = (meta or {}).get("usage") or {}
     rec = {
         "mode": mode,
+        "model": MODEL,
         "temperature": args.temperature,
+        "completion_tokens": usage.get("completion_tokens"),
+        "reasoning_chars": len(reasoning),
         "prompt_sha256": sha(prompt),
         "wall_seconds": round(wall, 3),
         "http_status": status,
@@ -394,6 +431,10 @@ def run(args, mode, prompt, image_path, img_w, img_h, box, scale, expects):
     print("PROMPT:")
     print(prompt)
     print("-" * 78)
+    if reasoning:
+        print("REASONING (verbatim, reasoning_content):")
+        print(reasoning)
+        print("-" * 78)
     print("REPLY (verbatim):")
     print(text if text else "<empty>")
     print("-" * 78)
@@ -402,6 +443,7 @@ def run(args, mode, prompt, image_path, img_w, img_h, box, scale, expects):
 
     if args.jsonl:
         rec["reply"] = text
+        rec["reasoning"] = reasoning
         rec["prompt"] = prompt
         with open(args.jsonl, "a", encoding="utf-8") as fh:
             fh.write(json.dumps(rec, sort_keys=True) + "\n")
@@ -435,10 +477,10 @@ def cfg_quadrant(args):
 
 
 def cfg_one_call(args):
-    yield ("one-call", one_call_prompt(), args.image, None, 1, "one-call")
+    yield ("one-call", one_call_prompt(args.line), args.image, None, 1, "one-call")
     path, w, h = make_crop(args.image, CROP_RIGHT_BOX, args.crop_scale)
     print("# crop written: %s (%dx%d)" % (path, w, h))
-    yield ("one-call-crop-right", one_call_prompt(), path, CROP_RIGHT_BOX,
+    yield ("one-call-crop-right", one_call_prompt(args.line), path, CROP_RIGHT_BOX,
            args.crop_scale, "one-call")
 
 
@@ -461,8 +503,9 @@ def cfg_absent_two_call(args):
 
 
 MODES = {
-    "plan": lambda a: [("plan", plan_prompt(), None, None, 1, "plan")],
-    "plan-vision": lambda a: [("plan-vision", plan_prompt(), a.image, None, 1, "plan")],
+    "plan": lambda a: [("plan", plan_prompt(a.line), None, None, 1, "plan")],
+    "plan-vision": lambda a: [("plan-vision", plan_prompt(a.line), a.image, None, 1,
+                              "plan")],
     "ground-full": lambda a: [m for m in cfg_plain(a) if m[0] == "ground-full"],
     "ground-grid3": lambda a: [m for m in cfg_plain(a) if m[0] == "ground-grid3"],
     "ground-crop-right": lambda a: [m for m in cfg_crop_right(a)
@@ -471,6 +514,8 @@ MODES = {
                                           if m[0] == "ground-crop-right-grid3"],
     "ground-quadrant": lambda a: list(cfg_quadrant(a)),
     "one-call": lambda a: list(cfg_one_call(a)),
+    "multistep": lambda a: [("multistep", one_call_prompt(MULTISTEP_LINE),
+                             a.image, None, 1, "one-call")],
     "absent-one-call": lambda a: list(cfg_absent_one_call(a)),
     "absent-two-call": lambda a: list(cfg_absent_two_call(a)),
     "ground": lambda a: (list(cfg_plain(a)) + list(cfg_crop_right(a))
@@ -483,7 +528,7 @@ MODES = {
 
 def main(argv=None):
     p = argparse.ArgumentParser(
-        description="NOT-YET-RUN grounding harness for LFM3-Omni-2B. "
+        description="Grounding harness for the local LFM3 vision models. "
                     "Client only; never binds a port.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="modes: " + ", ".join(sorted(MODES)),
@@ -500,11 +545,25 @@ def main(argv=None):
                    help="integer upscale applied to crops (default 2)")
     p.add_argument("--jsonl", default=None,
                    help="append full records (prompt+reply) as JSONL to this path")
+    p.add_argument("--model", default=None,
+                   help="model id for the request (default: ask /v1/models, so the "
+                        "harness measures whichever server is running)")
+    p.add_argument("--line", default=JOBBOT_LINE,
+                   help="what JobBot says, for plan/plan-vision/one-call "
+                        "(default: %r; the absent-* modes keep their own line)"
+                        % JOBBOT_LINE)
     p.add_argument("--dry-run", action="store_true",
                    help="print the exact prompts without sending anything")
     p.add_argument("--vision", action="store_true",
                    help="alias for --mode plan-vision")
     args = p.parse_args(argv)
+
+    global MODEL
+    if args.dry_run:
+        # --dry-run must work with no server up: it prints prompts, sends nothing.
+        MODEL = args.model or "<dry run: no request sent>"
+    else:
+        MODEL = resolve_model(args.model)
 
     if args.vision:
         args.mode = "plan-vision"

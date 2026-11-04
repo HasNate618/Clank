@@ -1,0 +1,29 @@
+
+==============================================================================
+MODE: multistep   temp=0.0   image=grounding-seed-view.png (960x540)
+------------------------------------------------------------------------------
+PROMPT:
+You are the planner for a humanoid robot working a shift at the Job Simulator
+museum counter.
+
+Scene: you are facing a museum counter. In the middle is a white retro terminal.
+To your right sits a green desktop computer with a cartoon face; this machine is
+the NPC "JobBot", your co-worker. JobBot hands out tasks by speaking to you.
+
+JobBot says: "Take my card and put it in the slot."
+
+Decide the single best low-level action AND locate its target in the image you were given.
+- skill: one of grab, press, push, turn, place
+- side: which hand to use, left or right
+- target: the object to act on
+
+Reply with JSON only and nothing else:
+{"skill": "<skill>", "side": "<left|right>", "target": "<the object>", "found": true, "x": <integer pixel x>, "y": <integer pixel y>}
+
+x and y are pixel coordinates in the image you were given, origin at the TOP-LEFT corner, x increasing to the right. If the target is not in the image, reply {"found": false}.
+------------------------------------------------------------------------------
+REPLY (verbatim):
+{"skill": "grab", "side": "right", "target": "card", "found": true, "x": 680, "y": 720}
+------------------------------------------------------------------------------
+RECORD: {"completion_tokens": 39, "crop_box": [0, 0, 0, 0], "crop_scale": 1, "error_px": 301.0, "found": true, "hallucinated": false, "http_status": 200, "image": "grounding-seed-view.png", "image_wh": [960, 540], "in_frame": false, "mapped_px": [680.0, 720.0], "meta": {"model": "/home/nate/AI/models/LFM3-Omni-2B-Q8_0.gguf", "timings": {"cache_n": 1, "predicted_ms": 398.913, "predicted_n": 39, "predicted_per_second": 95.25886596826876, "predicted_per_token_ms": 10.49771052631579, "prompt_ms": 148.538, "prompt_n": 764, "prompt_per_second": 5143.464971926375, "prompt_per_token_ms": 0.1944214659685864}, "usage": {"completion_tokens": 39, "prompt_tokens": 765, "prompt_tokens_details": {"cached_tokens": 1}, "total_tokens": 804}}, "mode": "multistep", "model": "/home/nate/AI/models/LFM3-Omni-2B-Q8_0.gguf", "parse": "ok", "prompt_sha256": "01d0f6451bdbc3fc", "reasoning_chars": 0, "returned_px": [680.0, 720.0], "side": "right", "skill": "grab", "target": "card", "target_discriminative": false, "target_names_object": true, "temperature": 0.0, "truth_cell": null, "truth_px": [705, 420], "truth_quadrant": null, "wall_seconds": 0.578}
+==============================================================================

@@ -1,0 +1,59 @@
+# crop written: /home/nate/Projects/Clank/research/grounding/crop_480_0_960_540_x2.png (960x1080)
+
+==============================================================================
+MODE: one-call   temp=0.0   image=grounding-seed-view.png (960x540)
+------------------------------------------------------------------------------
+PROMPT:
+You are the planner for a humanoid robot working a shift at the Job Simulator
+museum counter.
+
+Scene: you are facing a museum counter. In the middle is a white retro terminal.
+To your right sits a green desktop computer with a cartoon face; this machine is
+the NPC "JobBot", your co-worker. JobBot hands out tasks by speaking to you.
+
+JobBot says: "Take my card."
+
+Decide the single best low-level action AND locate its target in the image you were given.
+- skill: one of grab, press, push, turn, place
+- side: which hand to use, left or right
+- target: the object to act on
+
+Reply with JSON only and nothing else:
+{"skill": "<skill>", "side": "<left|right>", "target": "<the object>", "found": true, "x": <integer pixel x>, "y": <integer pixel y>}
+
+x and y are pixel coordinates in the image you were given, origin at the TOP-LEFT corner, x increasing to the right. If the target is not in the image, reply {"found": false}.
+------------------------------------------------------------------------------
+REPLY (verbatim):
+{"skill": "grab", "side": "right", "target": "JobBot card", "found": true, "x": 720, "y": 760}
+------------------------------------------------------------------------------
+RECORD: {"completion_tokens": 41, "crop_box": [0, 0, 0, 0], "crop_scale": 1, "error_px": 340.3, "found": true, "hallucinated": false, "http_status": 200, "image": "grounding-seed-view.png", "image_wh": [960, 540], "in_frame": false, "mapped_px": [720.0, 760.0], "meta": {"model": "/home/nate/AI/models/LFM3-Omni-2B-Q8_0.gguf", "timings": {"cache_n": 1, "predicted_ms": 420.219, "predicted_n": 41, "predicted_per_second": 95.1884612547267, "predicted_per_token_ms": 10.505475, "prompt_ms": 141.664, "prompt_n": 758, "prompt_per_second": 5350.688954145019, "prompt_per_token_ms": 0.1868918205804749}, "usage": {"completion_tokens": 41, "prompt_tokens": 759, "prompt_tokens_details": {"cached_tokens": 1}, "total_tokens": 800}}, "mode": "one-call", "model": "/home/nate/AI/models/LFM3-Omni-2B-Q8_0.gguf", "parse": "ok", "prompt_sha256": "dab6e02162c60ae5", "reasoning_chars": 0, "returned_px": [720.0, 760.0], "side": "right", "skill": "grab", "target": "JobBot card", "target_discriminative": true, "target_names_object": true, "temperature": 0.0, "truth_cell": null, "truth_px": [705, 420], "truth_quadrant": null, "wall_seconds": 0.603}
+==============================================================================
+
+==============================================================================
+MODE: one-call-crop-right   temp=0.0   image=crop_480_0_960_540_x2.png (960x1080)   box=(480, 0, 960, 540) scale=2
+------------------------------------------------------------------------------
+PROMPT:
+You are the planner for a humanoid robot working a shift at the Job Simulator
+museum counter.
+
+Scene: you are facing a museum counter. In the middle is a white retro terminal.
+To your right sits a green desktop computer with a cartoon face; this machine is
+the NPC "JobBot", your co-worker. JobBot hands out tasks by speaking to you.
+
+JobBot says: "Take my card."
+
+Decide the single best low-level action AND locate its target in the image you were given.
+- skill: one of grab, press, push, turn, place
+- side: which hand to use, left or right
+- target: the object to act on
+
+Reply with JSON only and nothing else:
+{"skill": "<skill>", "side": "<left|right>", "target": "<the object>", "found": true, "x": <integer pixel x>, "y": <integer pixel y>}
+
+x and y are pixel coordinates in the image you were given, origin at the TOP-LEFT corner, x increasing to the right. If the target is not in the image, reply {"found": false}.
+------------------------------------------------------------------------------
+REPLY (verbatim):
+{"skill": "grab", "side": "right", "target": "JobBot card", "found": true, "x": 400, "y": 780}
+------------------------------------------------------------------------------
+RECORD: {"completion_tokens": 41, "crop_box": [480, 0, 960, 540], "crop_scale": 2, "error_px": 39.1, "found": true, "hallucinated": false, "http_status": 200, "image": "crop_480_0_960_540_x2.png", "image_wh": [960, 1080], "in_frame": true, "mapped_px": [680.0, 390.0], "meta": {"model": "/home/nate/AI/models/LFM3-Omni-2B-Q8_0.gguf", "timings": {"cache_n": 1, "predicted_ms": 420.833, "predicted_n": 41, "predicted_per_second": 95.04958023729128, "predicted_per_token_ms": 10.520825, "prompt_ms": 257.411, "prompt_n": 1268, "prompt_per_second": 4925.974414457813, "prompt_per_token_ms": 0.20300552050473186}, "usage": {"completion_tokens": 41, "prompt_tokens": 1269, "prompt_tokens_details": {"cached_tokens": 1}, "total_tokens": 1310}}, "mode": "one-call-crop-right", "model": "/home/nate/AI/models/LFM3-Omni-2B-Q8_0.gguf", "parse": "ok", "prompt_sha256": "dab6e02162c60ae5", "reasoning_chars": 0, "returned_px": [400.0, 780.0], "side": "right", "skill": "grab", "target": "JobBot card", "target_discriminative": true, "target_names_object": true, "temperature": 0.0, "truth_cell": null, "truth_px": [705, 420], "truth_quadrant": null, "wall_seconds": 0.727}
+==============================================================================

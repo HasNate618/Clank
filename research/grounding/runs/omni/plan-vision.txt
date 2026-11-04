@@ -1,0 +1,27 @@
+
+==============================================================================
+MODE: plan-vision   temp=0.0   image=grounding-seed-view.png (960x540)
+------------------------------------------------------------------------------
+PROMPT:
+You are the planner for a humanoid robot working a shift at the Job Simulator
+museum counter.
+
+Scene: you are facing a museum counter. In the middle is a white retro terminal.
+To your right sits a green desktop computer with a cartoon face; this machine is
+the NPC "JobBot", your co-worker. JobBot hands out tasks by speaking to you.
+
+JobBot says: "Take my card."
+
+Work out the single best low-level action. The action vocabulary is skill + side + target.
+- skill: one of grab, press, push, turn, place
+- side: which hand to use, left or right
+- target: the object to act on
+
+Reply with JSON only and nothing else:
+{"skill": "<skill>", "side": "<left|right>", "target": "<the object, described precisely enough that someone who never heard JobBot speak can find it in a photo of this scene>"}
+------------------------------------------------------------------------------
+REPLY (verbatim):
+{"skill": "grab", "side": "right", "target": "JobBot's card, the small rectangular card with the 'JobBot' logo and 'Museum Simulator' text, held in the green desktop computer on the right side of the counter"}
+------------------------------------------------------------------------------
+RECORD: {"completion_tokens": 59, "crop_box": [0, 0, 0, 0], "crop_scale": 1, "http_status": 200, "image": "grounding-seed-view.png", "image_wh": [960, 540], "meta": {"model": "/home/nate/AI/models/LFM3-Omni-2B-Q8_0.gguf", "timings": {"cache_n": 1, "predicted_ms": 600.959, "predicted_n": 59, "predicted_per_second": 96.51240766840999, "predicted_per_token_ms": 10.361362068965516, "prompt_ms": 146.406, "prompt_n": 716, "prompt_per_second": 4890.509951777933, "prompt_per_token_ms": 0.20447765363128492}, "usage": {"completion_tokens": 59, "prompt_tokens": 717, "prompt_tokens_details": {"cached_tokens": 1}, "total_tokens": 776}}, "mode": "plan-vision", "model": "/home/nate/AI/models/LFM3-Omni-2B-Q8_0.gguf", "parse": "ok", "prompt_sha256": "8ffe88276f63b540", "reasoning_chars": 0, "side": "right", "skill": "grab", "target": "JobBot's card, the small rectangular card with the 'JobBot' logo and 'Museum Simulator' text, held in the green desktop computer on the right side of the counter", "target_discriminative": true, "target_names_object": true, "temperature": 0.0, "truth_cell": null, "truth_px": [705, 420], "truth_quadrant": null, "wall_seconds": 0.776}
+==============================================================================

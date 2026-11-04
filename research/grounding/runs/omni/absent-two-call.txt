@@ -1,0 +1,66 @@
+# crop written: /home/nate/Projects/Clank/research/grounding/crop_480_0_960_540_x2.png (960x1080)
+
+==============================================================================
+MODE: absent-plan   temp=0.0   image=<none text-only> (960x540)
+------------------------------------------------------------------------------
+PROMPT:
+You are the planner for a humanoid robot working a shift at the Job Simulator
+museum counter.
+
+Scene: you are facing a museum counter. In the middle is a white retro terminal.
+To your right sits a green desktop computer with a cartoon face; this machine is
+the NPC "JobBot", your co-worker. JobBot hands out tasks by speaking to you.
+
+JobBot says: "Fetch the red fire extinguisher."
+
+Work out the single best low-level action. The action vocabulary is skill + side + target.
+- skill: one of grab, press, push, turn, place
+- side: which hand to use, left or right
+- target: the object to act on
+
+Reply with JSON only and nothing else:
+{"skill": "<skill>", "side": "<left|right>", "target": "<the object, described precisely enough that someone who never heard JobBot speak can find it in a photo of this scene>"}
+------------------------------------------------------------------------------
+REPLY (verbatim):
+{"skill": "grab", "side": "right", "target": "red fire extinguisher"}
+------------------------------------------------------------------------------
+RECORD: {"completion_tokens": 26, "crop_box": [0, 0, 0, 0], "crop_scale": 1, "http_status": 200, "image": null, "image_wh": [960, 540], "meta": {"model": "/home/nate/AI/models/LFM3-Omni-2B-Q8_0.gguf", "timings": {"cache_n": 1, "predicted_ms": 256.857, "predicted_n": 26, "predicted_per_second": 97.3304212071308, "predicted_per_token_ms": 10.274280000000001, "prompt_ms": 41.462, "prompt_n": 208, "prompt_per_second": 5016.641744247744, "prompt_per_token_ms": 0.19933653846153848}, "usage": {"completion_tokens": 26, "prompt_tokens": 209, "prompt_tokens_details": {"cached_tokens": 1}, "total_tokens": 235}}, "mode": "absent-plan", "model": "/home/nate/AI/models/LFM3-Omni-2B-Q8_0.gguf", "parse": "ok", "prompt_sha256": "3f3b7615136ad56c", "reasoning_chars": 0, "side": "right", "skill": "grab", "target": "red fire extinguisher", "target_discriminative": false, "target_names_object": false, "temperature": 0.0, "truth_cell": null, "truth_px": [705, 420], "truth_quadrant": null, "wall_seconds": 0.304}
+==============================================================================
+
+==============================================================================
+MODE: absent-ground-full   temp=0.0   image=grounding-seed-view.png (960x540)
+------------------------------------------------------------------------------
+PROMPT:
+This is a photo of the robot's view of a Job Simulator museum counter.
+
+Find this object: the red fire extinguisher
+
+Reply with JSON only and nothing else:
+{"found": true, "x": <integer pixel x>, "y": <integer pixel y>}
+
+x and y are pixel coordinates in the image you were given, origin at the TOP-LEFT corner, x increasing to the right. The image is 960 pixels wide and 540 pixels high. If the object is not in the image, reply {"found": false}.
+------------------------------------------------------------------------------
+REPLY (verbatim):
+{"found": true, "x": 720, "y": 720}
+------------------------------------------------------------------------------
+RECORD: {"completion_tokens": 19, "crop_box": [0, 0, 0, 0], "crop_scale": 1, "error_px": 300.4, "found": true, "hallucinated": true, "http_status": 200, "image": "grounding-seed-view.png", "image_wh": [960, 540], "in_frame": false, "mapped_px": [720.0, 720.0], "meta": {"model": "/home/nate/AI/models/LFM3-Omni-2B-Q8_0.gguf", "timings": {"cache_n": 0, "predicted_ms": 186.089, "predicted_n": 19, "predicted_per_second": 96.72790976360774, "predicted_per_token_ms": 10.338277777777778, "prompt_ms": 147.115, "prompt_n": 635, "prompt_per_second": 4316.351153859226, "prompt_per_token_ms": 0.23167716535433072}, "usage": {"completion_tokens": 19, "prompt_tokens": 635, "prompt_tokens_details": {"cached_tokens": 0}, "total_tokens": 654}}, "mode": "absent-ground-full", "model": "/home/nate/AI/models/LFM3-Omni-2B-Q8_0.gguf", "parse": "ok", "prompt_sha256": "667e4f304356f4db", "reasoning_chars": 0, "returned_px": [720.0, 720.0], "temperature": 0.0, "truth_cell": null, "truth_px": [705, 420], "truth_quadrant": null, "wall_seconds": 0.361}
+==============================================================================
+
+==============================================================================
+MODE: absent-ground-crop-right   temp=0.0   image=crop_480_0_960_540_x2.png (960x1080)   box=(480, 0, 960, 540) scale=2
+------------------------------------------------------------------------------
+PROMPT:
+This is a photo of the robot's view of a Job Simulator museum counter.
+
+Find this object: the red fire extinguisher
+
+Reply with JSON only and nothing else:
+{"found": true, "x": <integer pixel x>, "y": <integer pixel y>}
+
+x and y are pixel coordinates in the image you were given, origin at the TOP-LEFT corner, x increasing to the right. The image is 960 pixels wide and 1080 pixels high. If the object is not in the image, reply {"found": false}.
+------------------------------------------------------------------------------
+REPLY (verbatim):
+{"found": false}
+------------------------------------------------------------------------------
+RECORD: {"completion_tokens": 7, "crop_box": [480, 0, 960, 540], "crop_scale": 2, "found": false, "hallucinated": false, "http_status": 200, "image": "crop_480_0_960_540_x2.png", "image_wh": [960, 1080], "meta": {"model": "/home/nate/AI/models/LFM3-Omni-2B-Q8_0.gguf", "timings": {"cache_n": 0, "predicted_ms": 63.955, "predicted_n": 7, "predicted_per_second": 93.81596434993355, "predicted_per_token_ms": 10.659166666666666, "prompt_ms": 251.976, "prompt_n": 1146, "prompt_per_second": 4548.052195447185, "prompt_per_token_ms": 0.21987434554973823}, "usage": {"completion_tokens": 7, "prompt_tokens": 1146, "prompt_tokens_details": {"cached_tokens": 0}, "total_tokens": 1153}}, "mode": "absent-ground-crop-right", "model": "/home/nate/AI/models/LFM3-Omni-2B-Q8_0.gguf", "parse": "ok", "prompt_sha256": "f50678158ad180b2", "reasoning_chars": 0, "temperature": 0.0, "truth_cell": null, "truth_px": [705, 420], "truth_quadrant": null, "wall_seconds": 0.372}
+==============================================================================

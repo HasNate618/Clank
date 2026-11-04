@@ -1,0 +1,20 @@
+# crop written: /home/nate/Projects/Clank/research/grounding/crop_480_0_960_540_x2.png (960x1080)
+
+==============================================================================
+MODE: ground-crop-right   temp=0.0   image=crop_480_0_960_540_x2.png (960x1080)   box=(480, 0, 960, 540) scale=2
+------------------------------------------------------------------------------
+PROMPT:
+This is a photo of the robot's view of a Job Simulator museum counter.
+
+Find this object: the JobBot ID card: a small white badge with a barcode and small printed text reading JobBot, leaning against the lower left of the green monitor that has a cartoon face
+
+Reply with JSON only and nothing else:
+{"found": true, "x": <integer pixel x>, "y": <integer pixel y>}
+
+x and y are pixel coordinates in the image you were given, origin at the TOP-LEFT corner, x increasing to the right. The image is 960 pixels wide and 1080 pixels high. If the object is not in the image, reply {"found": false}.
+------------------------------------------------------------------------------
+REPLY (verbatim):
+{"found": true, "x": 400, "y": 720}
+------------------------------------------------------------------------------
+RECORD: {"completion_tokens": 19, "crop_box": [480, 0, 960, 540], "crop_scale": 2, "error_px": 65.0, "found": true, "hallucinated": false, "http_status": 200, "image": "crop_480_0_960_540_x2.png", "image_wh": [960, 1080], "in_frame": true, "mapped_px": [680.0, 360.0], "meta": {"model": "/home/nate/AI/models/LFM3-Omni-2B-Q8_0.gguf", "timings": {"cache_n": 1, "predicted_ms": 188.828, "predicted_n": 19, "predicted_per_second": 95.32484589149914, "predicted_per_token_ms": 10.490444444444444, "prompt_ms": 247.831, "prompt_n": 1175, "prompt_per_second": 4741.134079271762, "prompt_per_token_ms": 0.21092}, "usage": {"completion_tokens": 19, "prompt_tokens": 1176, "prompt_tokens_details": {"cached_tokens": 1}, "total_tokens": 1195}}, "mode": "ground-crop-right", "model": "/home/nate/AI/models/LFM3-Omni-2B-Q8_0.gguf", "parse": "ok", "prompt_sha256": "f343777a9ebdaa58", "reasoning_chars": 0, "returned_px": [400.0, 720.0], "temperature": 0.0, "truth_cell": null, "truth_px": [705, 420], "truth_quadrant": null, "wall_seconds": 0.505}
+==============================================================================

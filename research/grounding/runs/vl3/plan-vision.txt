@@ -1,0 +1,38 @@
+
+==============================================================================
+MODE: plan-vision   temp=0.0   image=grounding-seed-view.png (960x540)
+------------------------------------------------------------------------------
+PROMPT:
+You are the planner for a humanoid robot working a shift at the Job Simulator
+museum counter.
+
+Scene: you are facing a museum counter. In the middle is a white retro terminal.
+To your right sits a green desktop computer with a cartoon face; this machine is
+the NPC "JobBot", your co-worker. JobBot hands out tasks by speaking to you.
+
+JobBot says: "Take my card."
+
+Work out the single best low-level action. The action vocabulary is skill + side + target.
+- skill: one of grab, press, push, turn, place
+- side: which hand to use, left or right
+- target: the object to act on
+
+Reply with JSON only and nothing else:
+{"skill": "<skill>", "side": "<left|right>", "target": "<the object, described precisely enough that someone who never heard JobBot speak can find it in a photo of this scene>"}
+------------------------------------------------------------------------------
+REASONING (verbatim, reasoning_content):
+The user wants the single best low-level action for the robot facing a museum counter where JobBot says "Take my card." The card is held by JobBot (the green-faced computer/robot on the right). To take the card, I need to grab it. The target is the card / JobBot's hand area. Looking at the scene, JobBot holds a paper/card in its "hand" near the bottom right. The action vocabulary: skill = grab, side = left or right, target = object.
+
+The robot (me) should reach out with my left or right hand to grab the card that JobBot is holding. Which side? In the image, JobBot's card is on the right side of the scene. To take it, I'd extend my arm toward it. The side could be "right" since the card is on the right. But let's think about typical low-level action: grab the card. The target description should be precise: "the card held by JobBot" or "JobBot's card / paper in its hand."
+
+I need to reduce uncertainty: The instruction "Take my card" means I must grab the card from JobBot. So skill = grab, side = right (since it's on the right), target = "the card JobBot is holding / the white card with 'JobBot' text". Let's craft a precise description: "the white card/paper held by JobBot in its hand".
+
+Thus JSON: {"skill": "grab", "side": "right", "target": "the white card held by JobBot (the paper labeled 'JobBot')"}.
+
+I'll provide that.
+------------------------------------------------------------------------------
+REPLY (verbatim):
+{"skill": "grab", "side": "right", "target": "the white card/paper held by JobBot in its hand"}
+------------------------------------------------------------------------------
+RECORD: {"completion_tokens": 376, "crop_box": [0, 0, 0, 0], "crop_scale": 1, "http_status": 200, "image": "grounding-seed-view.png", "image_wh": [960, 540], "meta": {"model": "/home/nate/AI/models/LFM3-VL-2B-Q8_0.gguf", "reasoning_chars": 1342, "timings": {"cache_n": 1, "predicted_ms": 4058.677, "predicted_n": 376, "predicted_per_second": 92.39463992823276, "predicted_per_token_ms": 10.823138666666667, "prompt_ms": 142.678, "prompt_n": 716, "prompt_per_second": 5018.29293934594, "prompt_per_token_ms": 0.1992709497206704}, "usage": {"completion_tokens": 376, "prompt_tokens": 717, "prompt_tokens_details": {"cached_tokens": 1}, "total_tokens": 1093}}, "mode": "plan-vision", "model": "/home/nate/AI/models/LFM3-VL-2B-Q8_0.gguf", "parse": "ok", "prompt_sha256": "8ffe88276f63b540", "reasoning_chars": 1342, "side": "right", "skill": "grab", "target": "the white card/paper held by JobBot in its hand", "target_discriminative": true, "target_names_object": true, "temperature": 0.0, "truth_cell": null, "truth_px": [705, 420], "truth_quadrant": null, "wall_seconds": 4.23}
+==============================================================================

@@ -1,0 +1,27 @@
+
+==============================================================================
+MODE: plan   temp=0.0   image=<none text-only> (960x540)
+------------------------------------------------------------------------------
+PROMPT:
+You are the planner for a humanoid robot working a shift at the Job Simulator
+museum counter.
+
+Scene: you are facing a museum counter. In the middle is a white retro terminal.
+To your right sits a green desktop computer with a cartoon face; this machine is
+the NPC "JobBot", your co-worker. JobBot hands out tasks by speaking to you.
+
+JobBot says: "Take my card."
+
+Work out the single best low-level action. The action vocabulary is skill + side + target.
+- skill: one of grab, press, push, turn, place
+- side: which hand to use, left or right
+- target: the object to act on
+
+Reply with JSON only and nothing else:
+{"skill": "<skill>", "side": "<left|right>", "target": "<the object, described precisely enough that someone who never heard JobBot speak can find it in a photo of this scene>"}
+------------------------------------------------------------------------------
+REPLY (verbatim):
+{"skill": "grab", "side": "right", "target": "the white retro terminal"}
+------------------------------------------------------------------------------
+RECORD: {"completion_tokens": 25, "crop_box": [0, 0, 0, 0], "crop_scale": 1, "http_status": 200, "image": null, "image_wh": [960, 540], "meta": {"model": "/home/nate/AI/models/LFM3-Omni-2B-Q8_0.gguf", "timings": {"cache_n": 0, "predicted_ms": 250.562, "predicted_n": 25, "predicted_per_second": 95.78467604824354, "predicted_per_token_ms": 10.440083333333334, "prompt_ms": 48.616, "prompt_n": 205, "prompt_per_second": 4216.7187757117, "prompt_per_token_ms": 0.23715121951219512}, "usage": {"completion_tokens": 25, "prompt_tokens": 205, "prompt_tokens_details": {"cached_tokens": 0}, "total_tokens": 230}}, "mode": "plan", "model": "/home/nate/AI/models/LFM3-Omni-2B-Q8_0.gguf", "parse": "ok", "prompt_sha256": "8ffe88276f63b540", "reasoning_chars": 0, "side": "right", "skill": "grab", "target": "the white retro terminal", "target_discriminative": false, "target_names_object": false, "temperature": 0.0, "truth_cell": null, "truth_px": [705, 420], "truth_quadrant": null, "wall_seconds": 0.305}
+==============================================================================

@@ -1,0 +1,19 @@
+
+==============================================================================
+MODE: ground-full   temp=0.0   image=grounding-seed-view.png (960x540)
+------------------------------------------------------------------------------
+PROMPT:
+This is a photo of the robot's view of a Job Simulator museum counter.
+
+Find this object: the JobBot ID card: a small white badge with a barcode and small printed text reading JobBot, leaning against the lower left of the green monitor that has a cartoon face
+
+Reply with JSON only and nothing else:
+{"found": true, "x": <integer pixel x>, "y": <integer pixel y>}
+
+x and y are pixel coordinates in the image you were given, origin at the TOP-LEFT corner, x increasing to the right. The image is 960 pixels wide and 540 pixels high. If the object is not in the image, reply {"found": false}.
+------------------------------------------------------------------------------
+REPLY (verbatim):
+{"found": true, "x": 720, "y": 780}
+------------------------------------------------------------------------------
+RECORD: {"completion_tokens": 19, "crop_box": [0, 0, 0, 0], "crop_scale": 1, "error_px": 360.3, "found": true, "hallucinated": false, "http_status": 200, "image": "grounding-seed-view.png", "image_wh": [960, 540], "in_frame": false, "mapped_px": [720.0, 780.0], "meta": {"model": "/home/nate/AI/models/LFM3-Omni-2B-Q8_0.gguf", "timings": {"cache_n": 0, "predicted_ms": 188.083, "predicted_n": 19, "predicted_per_second": 95.70242924666238, "predicted_per_token_ms": 10.449055555555555, "prompt_ms": 195.55, "prompt_n": 665, "prompt_per_second": 3400.664791613398, "prompt_per_token_ms": 0.29406015037593985}, "usage": {"completion_tokens": 19, "prompt_tokens": 665, "prompt_tokens_details": {"cached_tokens": 0}, "total_tokens": 684}}, "mode": "ground-full", "model": "/home/nate/AI/models/LFM3-Omni-2B-Q8_0.gguf", "parse": "ok", "prompt_sha256": "530c5344a4f219d0", "reasoning_chars": 0, "returned_px": [720.0, 780.0], "temperature": 0.0, "truth_cell": null, "truth_px": [705, 420], "truth_quadrant": null, "wall_seconds": 0.426}
+==============================================================================
