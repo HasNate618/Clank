@@ -1,0 +1,36 @@
+{
+  "capture": "/tmp/game_capture2.rdc",
+  "session": "20261103T045802Z-27621a",
+  "renderdoc": "1.45",
+  "depth_texture": "ResourceId::1317 (D32S8, 3840x1080, ms=4), event 2573",
+  "stereo_width": 3840,
+  "height": 1080,
+  "per_eye": [
+    1920,
+    1080
+  ],
+  "f_px": 349.4114248955543,
+  "ipd_m": 0.063,
+  "near_m_estimate": 0.00992,
+  "near_estimator": "Z=f*B/disparity; near=Z*depth; median over 9 high-texture patches",
+  "depth_convention": "reversed-Z, Z=near/depth, far=infinity",
+  "valid_fraction": 0.96875,
+  "metric_min_m": 0.2758939862251282,
+  "metric_max_m": 8.612732887268066,
+  "metric_median_m": 4.282384395599365,
+  "artifacts": [
+    "depth-metric-stereo.png",
+    "depth-metric-left.png",
+    "depth-metric-right.png",
+    "normal-stereo.png",
+    "normal-left.png",
+    "normal-right.png",
+    "depth-metric-left.npy",
+    "depth-metric-right.npy",
+    "normal-left.npy",
+    "normal-right.npy",
+    "pointcloud-left.ply",
+    "capture-color-stereo.png"
+  ],
+  "note": "Depth from the game's Vulkan D32S8 depth attachment via RenderDoc, not from VNC/Weston (RGB only)."
+}

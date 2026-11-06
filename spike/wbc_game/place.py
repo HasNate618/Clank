@@ -46,12 +46,14 @@ def capture() -> tuple[bytes, tuple[int, int], dict]:
 
     with Stream() as stream:
         f = stream.read(timeout=2.0)
+    if f is None:
+        raise SystemExit("no depth frame: is the depth layer running?")
     image = Image.frombytes(
         "RGBA", (f["color_width"], f["color_height"]), bytes(f["color"])
     ).convert("RGB")
     width = 960
     height = round(width * image.height / image.width)
-    image = image.resize((width, height), Image.LANCZOS)
+    image = image.resize((width, height), Image.Resampling.LANCZOS)
     buf = io.BytesIO()
     image.save(buf, format="JPEG", quality=90)
     return buf.getvalue(), (width, height), f
@@ -84,7 +86,7 @@ def hover(
 
 
 def main(argv: list[str] | None = None) -> int:
-    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    ap = argparse.ArgumentParser(description=(__doc__ or "").splitlines()[0])
     ap.add_argument("--noun", required=True, help="the destination, named")
     ap.add_argument("--side", default="right", choices=("left", "right"))
     ap.add_argument("--height", type=float, default=workspace.APPROACH_M)
@@ -105,6 +107,9 @@ def main(argv: list[str] | None = None) -> int:
 
     u, v = out["pixel_px"][0] / size[0], out["pixel_px"][1] / size[1]
     dest = point_from_pixel(f, u, v, camera, FOV)
+    if dest is None:
+        print("no surface at the located pixel - no motion")
+        return 2
     goal = workspace.approach_point(dest, args.height)
     print(f"destination {rv.fmt(dest)}  hover {rv.fmt(goal)}  "
           f"({args.height:.2f} m above, in free air)")

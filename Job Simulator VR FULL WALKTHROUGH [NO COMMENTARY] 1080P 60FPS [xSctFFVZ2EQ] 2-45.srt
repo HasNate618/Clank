@@ -1,0 +1,16 @@
+1
+00:00:00,000 --> 00:00:08,660
+Hello human! Welcome to the Job Simulator. My name is Jobbot and I'm the curator of this
+
+2
+00:00:08,660 --> 00:00:27,680
+fine job museum. Here's my card. Hey human, take my card.
+
+3
+00:00:27,680 --> 00:00:32,120
+Alright, why don't you grab one of the job cartridges off the table and let's get started.
+
+4
+00:00:40,120 --> 00:00:43,000
+There's never a dull day in the old cuba-
+

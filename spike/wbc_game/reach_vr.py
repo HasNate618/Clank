@@ -74,15 +74,23 @@ FLAG_SATURATED = 1 << 0
 ARM_ENVELOPE_M = 0.40
 KEEPALIVE_S = 0.5
 
-#: Waypoint spacing for the smooth path, in seconds. The plant settles in 0.77-1.05 s, so a
-#: reference that moves every 0.1 s is not "faster than the arm can respond" - it is a
-#: continuous reference the arm tracks, instead of a sequence of separate steps it answers
-#: with overshoot and then has to unwind.
-SMOOTH_DT = 0.1
+#: How often the reference is re-sent, in Hz. The plant is a learned tracker with a
+#: 0.77-1.05 s settle and +75 % vertical overshoot, so what it needs is a reference that
+#: moves *continuously* at a speed it can follow - not a sequence of steps.
+STREAM_HZ = 20
 
-#: How long the straight section of the path takes. Matches the measured settle time, so the
-#: arm arrives once rather than arriving, overshooting and coming back.
-SMOOTH_S = 1.2
+#: How fast the reference is allowed to travel, in m/s. This is the number that matters and
+#: it is a property of the plant, not of the path: 12 waypoints in 1.2 s is 0.30 m/s, twice
+#: what the arm can track, and the gap between reference and hand is what the correction
+#: loop then fights (measured: 28 direction reversals over three reaches). Cruise below the
+#: plant's bandwidth and the gap never opens.
+CRUISE_MPS = 0.13
+
+#: Stop the stream this close to the goal; the settle and the corrections own the last bit.
+STREAM_STOP_M = 0.012
+
+#: Give up on the stream if it has not closed the distance in this long (s).
+STREAM_TIMEOUT_S = 9.0
 
 #: A lean is ~0.03-0.06 m and is normal balancing; a *step* is what took the body 1.33 m and
 #: then 4.7 m in one session. The goal is pinned in the world so a lean does not invalidate
@@ -112,7 +120,16 @@ def send(**kw: object) -> dict:
 
 
 def state() -> dict:
-    return json.loads(STATE.read_text())
+    # The body writes this file atomically, but the reader can still catch it missing: a
+    # reset deletes and recreates it. "No state" is not an exception here, it is a reason
+    # to wait, so the caller sees a plain failure instead of a traceback in the middle of a
+    # reach.
+    for _ in range(20):
+        try:
+            return json.loads(STATE.read_text())
+        except (FileNotFoundError, json.JSONDecodeError):
+            time.sleep(0.05)
+    raise SystemExit(f"no body state at {STATE} (is the body running?)")
 
 
 def wrist(side: str = "right") -> tuple[float, float, float]:
@@ -420,22 +437,60 @@ def main() -> int:
         #     times. Each fall is a direction reversal - the jerking.
         # So: interpolate in world space (the root moves), clamp every waypoint, and let the
         # reference be continuous.
+        # The reference is a point that walks toward the goal at CRUISE_MPS; the hand follows
+        # it. Nothing corrects until the reference has arrived, because a correction applied
+        # while the plant is still 0.2 m behind the reference is a correction to the lag, not
+        # to the goal - that is what made the residual grow and the arm reverse.
         start_rel = wrist(args.side)
-        start_world = to_world(start_rel, st)
-        steps = max(6, int(round(SMOOTH_S / SMOOTH_DT)))
+        ref = to_world(start_rel, st)
+        dt = 1.0 / STREAM_HZ
+        t0 = time.monotonic()
         clamp_hits = 0
-        for i in range(1, steps + 1):
-            a = i / steps
-            ahead = tuple(start_world[k] + (goal_world[k] - start_world[k]) * a
-                          for k in range(3))
-            way_rel = to_rel(ahead, state())
+        ticks = 0
+        stalled = 0
+        last = start_rel
+        left = 0.0
+        signs: list[int | None] = [None, None, None]
+        reversals = 0
+        while True:
+            err = tuple(goal_world[k] - ref[k] for k in range(3))
+            left = math.sqrt(sum(e * e for e in err))
+            if left <= STREAM_STOP_M:
+                break
+            step = min(left, CRUISE_MPS * dt)
+            ref = tuple(ref[k] + err[k] / left * step for k in range(3))
+            way_rel = to_rel(ref, state())
             way = clamp_wrist(way_rel)
             if way != way_rel:
                 clamp_hits += 1
             command(way, args.yaw, args.side, camera)
-            time.sleep(SMOOTH_DT)
+            ticks += 1
+            time.sleep(dt)
+            now = wrist(args.side)
+            # The hand has stopped following the reference: the arm is saturated, or the goal
+            # is past the envelope. Keep walking the reference and the root leans after it,
+            # which is how one reach took the body 1.33 m and then 4.7 m.
+            for k in range(3):
+                delta = now[k] - last[k]
+                if abs(delta) > 0.003:
+                    sign = 1 if delta > 0 else -1
+                    if signs[k] is not None and sign != signs[k]:
+                        reversals += 1
+                    signs[k] = sign
+            stalled = stalled + 1 if math.dist(now, last) < 0.0015 else 0
+            last = now
+            if stalled > int(0.7 / dt):
+                print(f"  reference stalled with {left * 1000:.0f} mm to go "
+                      f"({ticks} ticks): the arm is not following it")
+                break
+            if time.monotonic() - t0 > STREAM_TIMEOUT_S:
+                print(f"  stream timed out with {left * 1000:.0f} mm to go")
+                break
         if clamp_hits:
-            print(f"  {clamp_hits}/{steps} waypoints clamped into the workspace")
+            print(f"  {clamp_hits}/{ticks} waypoints clamped into the workspace")
+        print(f"  streamed {left * 1000 and math.dist(start_rel, goal) * 1000:.0f} mm in "
+              f"{time.monotonic() - t0:.2f} s ({ticks} ticks), "
+              f"hand direction changes {reversals}")
 
     target = list(goal)
     best_residual = float("inf")
