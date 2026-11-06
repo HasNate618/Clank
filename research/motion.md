@@ -55,3 +55,41 @@ The cause is upstream: stage-3 verification had been switched off minutes earlie
 correct answers and admitting a wrong one. A verifier that is wrong in both directions is not a
 safety net, and the honest fix is not "turn it off" - it is the tight-crop size, so that a crop of
 a label reads as a label.
+
+## Second pass: one continuous stream, and the workspace was fighting us
+
+The first fix left the arm stopping and nudging at the end: a cruise, then up to four separate
+commands each with its own 1.1 s dwell. Both are gone. The reference cruises at 20 Hz for the whole
+reach, and a correction restarts the cruise from where the hand actually is, so passes are a
+continuation rather than a jump.
+
+Three other things were wrong, all measurable:
+
+- **The loop ran at 14 Hz, not 20.** It read the state file twice per tick (`to_rel(..., state())`
+  and `wrist()`, which reads the same file). One read per tick fixed the rate.
+- **A goal outside `WRIST_BOX` was ground on for nine seconds.** The box is
+  `y ∈ (-0.31, 0.42)`; a test goal at `y = -0.35` clamped every waypoint, so the commanded point
+  stopped advancing while the reference walked past the wall. The goal is now clamped once, up
+  front, and the tool says so (`outside the measured workspace; using ... 40 mm closer in`).
+- **`CRUISE_MPS` was set by taste.** Swept the same 0.32 m in-box reach at three speeds:
+
+| speed | time | residual | hand direction changes |
+| --- | --- | --- | --- |
+| 0.13 m/s | 5.8 s | 113 mm | 15 |
+| 0.20 m/s | 5.3 s | **15 mm** | 18 |
+| 0.26 m/s | **3.1-4.3 s** | 16-27 mm | **8-13** |
+
+Faster was quicker *and* straighter, which says the arm was never the speed limit - the dwells
+were. Default is 0.26.
+
+Measured after the change, three in-box targets, no dwells:
+
+| target | time | residual | direction changes |
+| --- | --- | --- | --- |
+| (0.35, -0.28, 0.15) | 4.3 s | **16.4 mm** | 13 |
+| (0.20, -0.05, 0.30) | 7.5 s | 66.0 mm | 27 |
+| (0.42, -0.29, 0.36) | 5.3 s | 59.9 mm | 19 |
+
+The first is inside the arm's comfortable range and lands inside tolerance. The other two are
+crossing, near-limit reaches where the arm saturates: the residual there is the lever, not the
+path. For comparison the original loop was 9.2 s, 350 mm and 28 direction changes.

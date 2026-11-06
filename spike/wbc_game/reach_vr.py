@@ -84,10 +84,15 @@ STREAM_HZ = 20
 #: what the arm can track, and the gap between reference and hand is what the correction
 #: loop then fights (measured: 28 direction reversals over three reaches). Cruise below the
 #: plant's bandwidth and the gap never opens.
-CRUISE_MPS = 0.13
+CRUISE_MPS = 0.26
 
-#: Stop the stream this close to the goal; the settle and the corrections own the last bit.
+#: Stop the stream this close to the goal; the settle owns the last bit.
 STREAM_STOP_M = 0.012
+
+#: How long to keep commanding the target before measuring. Short on purpose: the plant starts
+#: responding immediately, and waiting a full 1.05 s settle at every pass is what made three
+#: passes cost five seconds.
+SETTLE_S = 0.55
 
 #: Give up on the stream if it has not closed the distance in this long (s).
 STREAM_TIMEOUT_S = 9.0
@@ -304,6 +309,13 @@ def main() -> int:
         help="abort if the root moves this far (m); a lean is ~0.03-0.06, a step >0.10",
     )
     ap.add_argument("--yaw", type=float, default=0.0, help="wrist yaw about Z (deg)")
+    ap.add_argument(
+        "--speed",
+        type=float,
+        default=CRUISE_MPS,
+        help="reference speed in m/s; the plant tracks ~0.13-0.30 depending on the direction, "
+        "and past its bandwidth the gap shows up as overshoot",
+    )
     ap.add_argument("--dry-run", action="store_true", help="measure only, send nothing")
     ap.add_argument(
         "--grab",
@@ -407,6 +419,17 @@ def main() -> int:
     else:
         print("  inside the arm envelope")
 
+    # Clamp the goal itself, once, before any motion. Measured 2026-11-04: a goal 0.04 m outside
+    # `WRIST_BOX` in y made every waypoint clamp, so the reference walked past the wall forever,
+    # the commanded point stopped advancing, and a 0.4 m reach ground on for nine seconds without
+    # arriving. The clamp is a measured safety wall; a goal outside it is a goal that will not be
+    # reached, and saying so once is better than fighting it 90 times.
+    goal_clamped = clamp_wrist(goal)
+    if goal_clamped != tuple(goal):
+        print(f"goal  {fmt(goal)} is outside the measured workspace; "
+              f"using {fmt(goal_clamped)} ({math.dist(goal, goal_clamped) * 1000:.0f} mm closer in)")
+        goal = goal_clamped
+        goal_world = to_world(goal, st)
     if args.world is None:
         goal_world = to_world(goal, st)
     if args.dry_run:
@@ -422,125 +445,133 @@ def main() -> int:
     # chase a model instead of the measurement. This converges 452 -> 150 -> 310 mm in the
     # bad case and 100 -> 14 mm in the good one, i.e. it is only as good as the lever is
     # stable, which is a property of the target, not of the loop.
-    if not args.no_smooth:
-        # A straight line from where the hand is to the goal, streamed as waypoints.
-        #
-        # Three faults in the old loop, all measured on 2026-11-04's cartridge attempt:
-        #   * ~5 commands x 1.2 s dwell is ten seconds of motion, and every command landed
-        #     while the arm was still settling from the last one (settle 0.77-1.05 s,
-        #     vertical overshoot +75 %), so the arm never tracked anything.
-        #   * `target += 0.6 * error` had no anti-windup and the goal was outside the
-        #     envelope, so the *commanded* point walked outward instead of converging: y went
-        #     -0.647 -> -0.670 -> -0.716 -> -0.868 -> -0.922 m, five times the 0.18 m lateral
-        #     clamp, with the arm saturated and the root leaning after it.
-        #   * the residual went 92 -> 110 -> 317 -> 128 -> 165 mm, i.e. it got worse three
-        #     times. Each fall is a direction reversal - the jerking.
-        # So: interpolate in world space (the root moves), clamp every waypoint, and let the
-        # reference be continuous.
-        # The reference is a point that walks toward the goal at CRUISE_MPS; the hand follows
-        # it. Nothing corrects until the reference has arrived, because a correction applied
-        # while the plant is still 0.2 m behind the reference is a correction to the lag, not
-        # to the goal - that is what made the residual grow and the arm reverse.
-        start_rel = wrist(args.side)
-        ref = to_world(start_rel, st)
-        dt = 1.0 / STREAM_HZ
-        t0 = time.monotonic()
-        clamp_hits = 0
-        ticks = 0
-        stalled = 0
-        last = start_rel
-        left = 0.0
-        signs: list[int | None] = [None, None, None]
-        reversals = 0
-        while True:
-            err = tuple(goal_world[k] - ref[k] for k in range(3))
-            left = math.sqrt(sum(e * e for e in err))
-            if left <= STREAM_STOP_M:
-                break
-            step = min(left, CRUISE_MPS * dt)
-            ref = tuple(ref[k] + err[k] / left * step for k in range(3))
-            way_rel = to_rel(ref, state())
-            way = clamp_wrist(way_rel)
-            if way != way_rel:
-                clamp_hits += 1
-            command(way, args.yaw, args.side, camera)
-            ticks += 1
-            time.sleep(dt)
-            now = wrist(args.side)
-            # The hand has stopped following the reference: the arm is saturated, or the goal
-            # is past the envelope. Keep walking the reference and the root leans after it,
-            # which is how one reach took the body 1.33 m and then 4.7 m.
-            for k in range(3):
-                delta = now[k] - last[k]
-                if abs(delta) > 0.003:
-                    sign = 1 if delta > 0 else -1
-                    if signs[k] is not None and sign != signs[k]:
-                        reversals += 1
-                    signs[k] = sign
-            stalled = stalled + 1 if math.dist(now, last) < 0.0015 else 0
-            last = now
-            if stalled > int(0.7 / dt):
-                print(f"  reference stalled with {left * 1000:.0f} mm to go "
-                      f"({ticks} ticks): the arm is not following it")
-                break
-            if time.monotonic() - t0 > STREAM_TIMEOUT_S:
-                print(f"  stream timed out with {left * 1000:.0f} mm to go")
-                break
-        if clamp_hits:
-            print(f"  {clamp_hits}/{ticks} waypoints clamped into the workspace")
-        print(f"  streamed {left * 1000 and math.dist(start_rel, goal) * 1000:.0f} mm in "
-              f"{time.monotonic() - t0:.2f} s ({ticks} ticks), "
-              f"hand direction changes {reversals}")
-
-    target = list(goal)
+    # ---- the reach: one continuous stream, corrections folded in ------------------------
+    #
+    # Everything below commands at STREAM_HZ and never stops between "the path" and "a
+    # correction". The old shape - stream, then up to four separate commands each with its own
+    # 1.1 s dwell - is what made the arm visibly stop, nudge, stop, nudge at the end, and it is
+    # also why a correction landed on top of a still-settling arm.
+    #
+    # The reference walks toward the target at CRUISE_MPS. When it arrives, the hand is measured
+    # once, and if it is short the target moves by the measured error and the reference starts
+    # walking again - from wherever the hand actually is, not from where it was asked to be.
+    dt = 1.0 / STREAM_HZ
+    signs: list[int | None] = [None, None, None]
+    reversals = 0
+    clamp_hits = 0
+    ticks = 0
+    stalled_ticks = 0
+    target_world = list(goal_world)
     best_residual = float("inf")
-    best_target = list(target)
+    best_target = list(target_world)
+    ref_world = list(to_world(wrist(args.side), st))
+    t_reach = time.monotonic()
+    reason = None
+
     for attempt in range(max(0, args.corrections) + 1):
         issued += 1
-        # The world point is the authority; the root frame is just how the executor talks.
-        goal_now = to_rel(goal_world, state())
-        if issued > 1:
-            target = [
-                target[k] + args.gain * (goal_now[k] - achieved[k]) for k in range(3)
-            ]
-        command(target, args.yaw, args.side, camera)
-        reason = hold(target, args.yaw, args.dwell, args.guard, root0, args.side,
-                      camera)
+        if args.no_smooth:                      # legacy, kept to reproduce the old behaviour
+            goal_now = to_rel(goal_world, state())
+            if issued > 1:
+                target = [
+                    target[k] + args.gain * (goal_now[k] - achieved[k]) for k in range(3)
+                ]
+            else:
+                target = list(goal)
+            command(target, args.yaw, args.side, camera)
+            reason = hold(target, args.yaw, args.dwell, args.guard, root0, args.side, camera)
+        else:
+            stalled = 0
+            last = wrist(args.side)
+            while True:
+                err = [target_world[k] - ref_world[k] for k in range(3)]
+                left = math.sqrt(sum(e * e for e in err))
+                if left <= STREAM_STOP_M:
+                    break
+                advance = min(left, args.speed * dt)
+                ref_world = [ref_world[k] + err[k] / left * advance for k in range(3)]
+                # One state read per tick. Reading it twice (once for to_rel, once for wrist)
+                # cost the loop a third of its rate: measured 14 Hz against a 20 Hz target.
+                st_now = state()
+                way_rel = to_rel(tuple(ref_world), st_now)
+                way = clamp_wrist(way_rel)
+                if way != way_rel:
+                    clamp_hits += 1
+                command(way, args.yaw, args.side, camera)
+                ticks += 1
+                time.sleep(dt)
+                now = tuple(st_now[f"{args.side}_hand"]["p"])
+                for k in range(3):
+                    delta = now[k] - last[k]
+                    if abs(delta) > 0.003:
+                        sign = 1 if delta > 0 else -1
+                        if signs[k] is not None and sign != signs[k]:
+                            reversals += 1
+                        signs[k] = sign
+                # The hand has stopped following the reference: the arm is saturated or the goal
+                # is past the envelope. Walking the reference further just leans the body after
+                # it, which is how one reach took the root 1.33 m and then 4.7 m.
+                stalled = stalled + 1 if math.dist(now, last) < 0.0015 else 0
+                last = now
+                if stalled > int(0.7 / dt):
+                    print(f"  reference stalled with {left * 1000:.0f} mm to go ({ticks} ticks)")
+                    stalled_ticks += 1
+                    break
+                if time.monotonic() - t_reach > STREAM_TIMEOUT_S:
+                    print(f"  stream timed out with {left * 1000:.0f} mm to go")
+                    break
+            # Settle *on the target*, still commanding at full rate. Commanding the raw goal here
+            # instead of the corrected target is what produced a 0.25 m "error" that was the arm
+            # still moving, and a lever that had swung somewhere else.
+            for _ in range(int(SETTLE_S / dt)):
+                command(clamp_wrist(to_rel(tuple(target_world), state())),
+                        args.yaw, args.side, camera)
+                ticks += 1
+                time.sleep(dt)
+            drift = math.dist(root(), root0)
+            if drift > args.guard:
+                reason = f"root moved {drift * 1000:.0f} mm"
         st = state()
         goal_now = to_rel(goal_world, st)
         achieved = tuple(st[f"{args.side}_hand"]["p"])
         residual = math.dist(achieved, goal_now)
         d = lever(st[f"{args.side}_hand"]["q_xyzw"])
-        d_now = d
         seen = card_pixel(st, goal_now, camera)
         drift_px = ""
         if seen is not None and args.px is not None:
             drift_px = (f"  card at px ({seen[0] * cw:4.0f}, {seen[1] * ch:4.0f})"
                         f" vs ({args.px:.0f}, {args.py:.0f})")
-        print(f"cmd {issued}: target {fmt(target)} -> hand {fmt(achieved)}  "
-              f"residual {residual * 1000:5.1f} mm  lever {fmt(d)}{drift_px}")
+        print(f"pass {attempt + 1}: target {fmt(to_rel(tuple(target_world), st))} -> "
+              f"hand {fmt(achieved)}  residual {residual * 1000:5.1f} mm  lever {fmt(d)}{drift_px}")
         if reason:
-            print(f"  ABORT after cmd {issued}: {reason}")
+            print(f"  ABORT after pass {attempt + 1}: {reason}")
             return 3 if "root" in reason else 4
         if residual <= args.tol:
             break
         if residual < best_residual:
-            best_residual, best_target = residual, list(target)
-        elif attempt > 0 and not args.no_smooth:
-            # The residual grew. Adding more of the same correction is how the commanded
-            # point walked to -0.92 m; go back to the best target instead and stop.
+            best_residual, best_target = residual, list(target_world)
+        else:
+            # The residual grew. Adding more of the same is how the commanded point walked to
+            # -0.92 m; go back to the best point and stop instead of chasing.
             print(f"  residual grew to {residual * 1000:.1f} mm "
-                  f"(best {best_residual * 1000:.1f} mm): holding the best point")
-            command(best_target, args.yaw, args.side, camera)
-            target = best_target
+                  f"(best {best_residual * 1000:.1f} mm): backing off")
+            target_world = best_target
             break
-        # The next iteration applies the correction at its top, from a fresh state read.
-        # Not servo gain: the policy puts the physical link on `target` (measured 2 mm in x
-        # and y) and then reports the link plus a lever whose direction follows whatever
-        # wrist orientation it picked - 28.5 deg from rest on the first command, swinging
-        # the lever up to 9 cm. The correction subtracts a lever we could not predict, and
-        # one is normally enough because the wrist has already turned by the time we
-        # measure.
+        # Fold the correction into the world target, and restart the reference from the hand's
+        # measured position so the next pass is a continuation and not a jump.
+        here_world = to_world(achieved, st)
+        target_world = [
+            target_world[k] + args.gain * (goal_world[k] - here_world[k]) for k in range(3)
+        ]
+        ref_world = list(here_world)
+
+    if not args.no_smooth:
+        elapsed = time.monotonic() - t_reach
+        print(f"  {ticks} commands over {elapsed:.2f} s "
+              f"({ticks / max(1e-6, elapsed):.0f} Hz), "
+              f"hand direction changes {reversals}"
+              + (f", {clamp_hits} clamped into the workspace" if clamp_hits else "")
+              + ("  [arm saturated]" if stalled_ticks else ""))
 
     if args.grab:
         # No gap. Measured 2026-11-04: closing the hand in a separate process let ~2 s pass
