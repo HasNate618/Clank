@@ -37,6 +37,17 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 DEPLOY = os.path.join(HERE, "vendor", "GR00T-WholeBodyControl", "gear_sonic_deploy")
 XML = os.path.join(DEPLOY, "g1", "scene_sonic_floor.xml")
 MOTION_ROOT = os.path.join(DEPLOY, "reference", "example", "_dl")
+
+#: The deploy's upper-body override, verbatim from
+#: `gear_sonic_deploy/.../include/policy_parameters.hpp:80-81`. NVIDIA's own C++ deploy accepts
+#: 17 upper-body joint angles (`upper_body_position[17]` on the planner topic) and substitutes
+#: them into the *reference motion* every look-ahead frame, leaving the legs and balance on the
+#: policy. `GatherMotionJointPositionsMultiFrame` is the code: it copies the clip's 29 joints,
+#: then overwrites these 17. This is the escape hatch the wrist-pose interface lacks - the VR
+#: path is 9 positions and 12 quaternion floats with no velocity and no horizon, which is why a
+#: step target rings (measured here: 0.77-1.05 s settle, +75 % overshoot).
+UPPER_BODY_ISAACLAB_IDX = (2, 5, 8, 11, 12, 15, 16, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28)
+UPPER_BODY_MUJOCO_IDX = (12, 13, 14, 15, 22, 16, 23, 17, 24, 18, 25, 19, 26, 20, 27, 21, 28)
 WEIGHTS = os.path.join(HERE, "weights", "sonic")
 
 CONTROL_DT = 0.02
@@ -181,6 +192,9 @@ class SonicRunner:
         self.verbose = verbose
         self.v11 = model == "v11"
         self.lowlat = model == "lowlat"
+        #: 17 upper-body joint angles (rad, IsaacLab order) to substitute into the reference
+        #: every tick, or None to leave the clip alone. Set by the executor from IK.
+        self.upper_body = None
         self.model = mujoco.MjModel.from_xml_path(XML)
         self.data = mujoco.MjData(self.model)
         self.model.opt.timestep = PHYSICS_DT
@@ -267,6 +281,15 @@ class SonicRunner:
                     action=np.zeros(29) if last_action is None else last_action.copy(),
                     gravity=gravity, base_quat=base_quat)
 
+    def _jp(self, motion, f):
+        """The reference joint row with the upper-body override applied, if any."""
+        row = motion["jp"][f]
+        if self.upper_body is None:
+            return row
+        out = np.array(row, dtype=np.float64, copy=True)
+        out[list(UPPER_BODY_ISAACLAB_IDX)] = self.upper_body
+        return out
+
     def build_encoder_obs(self, motion, frame, base_quat, vr_pos=None, vr_orn=None, vr_delta=None, vr_orn_delta=None):
         obs = np.zeros(1247 if self.lowlat else (1751 if self.v11 else 1762), dtype=np.float32)
         o = 0
@@ -276,14 +299,14 @@ class SonicRunner:
             idx = motion_frames(motion, frame, step=1)
             if self.mode == 0:
                 for f in idx:
-                    obs[o:o + 29] = motion["jp"][f]
+                    obs[o:o + 29] = self._jp(motion, f)
                     o += 29
                 for f in idx:
                     obs[o:o + 29] = motion["jv"][f]
                     o += 29
             else:
                 for f in idx:
-                    obs[o:o + 29] = motion["jp"][f]
+                    obs[o:o + 29] = self._jp(motion, f)
                     o += 29
                 for f in idx:
                     obs[o:o + 29] = motion["jv"][f]
@@ -319,7 +342,7 @@ class SonicRunner:
             idx = motion_frames(motion, frame)
             if self.mode == 0:
                 for f in idx:
-                    obs[o:o + 29] = motion["jp"][f]
+                    obs[o:o + 29] = self._jp(motion, f)
                     o += 29
                 for f in idx:
                     obs[o:o + 29] = motion["jv"][f]
@@ -357,7 +380,7 @@ class SonicRunner:
         if self.mode == 0:
             idx = motion_frames(motion, frame)
             for f in idx:
-                obs[o:o + 29] = motion["jp"][f]
+                obs[o:o + 29] = self._jp(motion, f)
                 o += 29
             for f in idx:
                 obs[o:o + 29] = motion["jv"][f]
