@@ -93,3 +93,57 @@ Measured after the change, three in-box targets, no dwells:
 The first is inside the arm's comfortable range and lands inside tolerance. The other two are
 crossing, near-limit reaches where the arm saturates: the residual there is the lever, not the
 path. For comparison the original loop was 9.2 s, 350 mm and 28 direction changes.
+
+## Third pass: why it "dances", and what could not be removed
+
+The operator's report was a long, wacky, repetitive motion for what should be one move. Three of
+the four causes were bugs, and are fixed. The fourth is the plant.
+
+**Bugs, all measured on the live body:**
+
+- The settle phase re-ran a pelvis-frame target through `to_rel`, subtracting the root transform a
+  second time (0.787 m in z). The cruise tracked to 162 mm and the settle then threw it to 613 mm.
+- The head pose was re-sent 20 times a second. A constant pin hammered into the policy makes the
+  torso twist against it, which moves the root frame the target lives in: the same 0.35 m reach
+  landed at y = +0.15 instead of -0.28 and 500 mm out.
+- The reference started in the *reported* frame while aiming at a *link* frame, one lever (0.18 m)
+  of mismatch.
+
+**Cancellations, swept rather than guessed.** The arm coasts past where the reference stops, so the
+reference now stops short and decelerates:
+
+| stop-short | pass-1 residual |
+| --- | --- |
+| 12 mm | 162 mm |
+| 45 mm | 123 mm |
+| 75 mm | 97 mm |
+
+| decel distance (stop 45 mm) | residual | time |
+| --- | --- | --- |
+| none | 148 mm | 1.9 s |
+| 0.18 m | 93 mm | 2.8 s |
+| 0.26 m | 83 mm | 3.3 s |
+
+**Two feedforward attempts, both measured bad and both kept behind a flag:**
+
+- *Live* lever subtraction (`aim = goal - lever(q_now)`) closes a loop whose gain is about one,
+  because the wrist that rotates is the same wrist we are asking to move. Measured: the hand ended
+  at z = -0.18, back at the rest pose, 481 mm out.
+- *One-shot* rest-pose lever subtraction over-corrects: commanding z = 0.33 for a 0.15 target drove
+  the hand to z = 0.45, 310 mm out.
+
+**What is left is the arm's own overshoot.** A raised target over-travels by 0.06-0.11 m and does
+not settle back on its own: holding the target for 1.05 s recovers only 160 -> 120 mm, and holding
+1.5 s is worse again. Joint-space command does not fix it - measured twice, at ctrl
+(0.0114 m policy against 0.1440 m hard IK) and at the reference (0.125 rad tracking error, 33 mm of
+motion for 235 mm asked). So the last 5-7 cm is bought with exactly one correction pass.
+
+Final, three in-box targets, one correction allowed:
+
+| target | time | residual |
+| --- | --- | --- |
+| (0.35, -0.28, 0.15) | 4.4 s | **65.0 mm** |
+| (0.20, -0.05, 0.30) | 5.4 s | **76.0 mm** |
+| (0.42, -0.29, 0.36) | 5.3 s | 57.4 mm (aborted at 167 mm root lean) |
+
+The original loop on the same kind of target: 9.2 s, 350 mm, 28 direction changes.
