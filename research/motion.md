@@ -173,3 +173,27 @@ once goes stale and why pinning the head inside the loop made things worse rathe
 
 One pass of the existing correction loop on top of the gain-corrected aim is what gets the last
 5-7 cm, which is where this sits today.
+
+## The vertical gain, baked in
+
+`Z_GAIN = 1.58`, applied as `aim_z = rest_z + (goal_z - rest_z) / Z_GAIN`. Pivot about the resting
+hand, not about zero: measured one-shot at three heights,
+
+| | z = 0.10 | z = 0.20 | z = 0.30 |
+| --- | --- | --- | --- |
+| no compensation | 143 mm (dz -125) | 197 mm (dz -190) | 229 mm (dz -226) |
+| **gain 1.58** | **60 mm (dz -0)** | **79 mm (dz +25)** | **78 mm (dz +40)** |
+
+dz collapsing to zero at all three heights is what says gain rather than bias. Baked into `reach_vr`
+as the *first* aim only: every later pass corrects against the real goal, so it is a better starting
+point and not a redefinition of success.
+
+End to end with one correction allowed, no clamping:
+
+| target | time | residual |
+| --- | --- | --- |
+| (0.427, -0.358, 0.357) - the operator's clicked lever point | 4.3 s | **37.1 mm** |
+| (0.30, -0.20, 0.12) | 2.4 s | **49.9 mm** |
+| (0.45, -0.30, 0.25) | 4.0 s | 61.4 mm |
+
+Before the gain that first target took three passes to reach 73 mm, and one shot was 260 mm.

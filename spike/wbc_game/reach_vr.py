@@ -100,6 +100,13 @@ STREAM_STOP_M = 0.045
 #: 83 mm in 3.3 s. 0.20 is the knee.
 DECEL_M = 0.20
 
+#: The plant's vertical gain, about the resting hand: asked to climb, the arm climbs ~1.6x as far
+#: and ends up high. Measured one-shot, no passes, three heights: no compensation gave
+#: 143 / 197 / 229 mm with dz -125 / -190 / -226; dividing the climb by 1.58 gave
+#: 60 / 79 / 78 mm with dz -0 / +25 / +40. It is a gain, not a bias - a constant offset per
+#: target height would not have collapsed all three.
+Z_GAIN = 1.58
+
 #: How long to keep commanding the target before measuring. Swept 0.55 / 1.05 / 1.5 s on a raised
 #: target: pass-1 residual 160 / 120 / 146 mm, so waiting longer does not buy the last centimetres
 #: and the arm does not settle back on its own. The correction pass is what closes it.
@@ -331,6 +338,13 @@ def main() -> int:
         "measurement can be repeated",
     )
     ap.add_argument(
+        "--z-gain",
+        type=float,
+        default=Z_GAIN,
+        help="divide the commanded climb in height by this, about the resting hand, to cancel the "
+        "plant's vertical gain. 1.0 disables it",
+    )
+    ap.add_argument(
         "--no-clamp",
         action="store_true",
         help="do not clamp waypoints into WRIST_BOX. The box is a measured steering limit "
@@ -489,7 +503,14 @@ def main() -> int:
     clamp_hits = 0
     ticks = 0
     stalled_ticks = 0
-    target_world = list(goal)
+    # Aim low. The first pass targets the gain-corrected point and every later pass corrects
+    # against the real goal, so this is a better starting aim and not a redefinition of success.
+    aim_goal = (
+        goal[0],
+        goal[1],
+        rest[2] + (goal[2] - rest[2]) / args.z_gain if args.z_gain != 1.0 else goal[2],
+    )
+    target_world = list(aim_goal)
     best_residual = float("inf")
     best_target = list(target_world)
     # Frame rule: with feedforward the command is a LINK point, so the reference must start at the
@@ -512,7 +533,7 @@ def main() -> int:
                     target[k] + args.gain * (goal_now[k] - achieved[k]) for k in range(3)
                 ]
             else:
-                target = list(goal)
+                target = list(aim_goal)
             command(target, args.yaw, args.side, camera)
             reason = hold(target, args.yaw, args.dwell, args.guard, root0, args.side, camera)
         else:
