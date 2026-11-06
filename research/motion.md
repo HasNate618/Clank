@@ -147,3 +147,29 @@ Final, three in-box targets, one correction allowed:
 | (0.42, -0.29, 0.36) | 5.3 s | 57.4 mm (aborted at 167 mm root lean) |
 
 The original loop on the same kind of target: 9.2 s, 350 mm, 28 direction changes.
+
+## The measurement the operator asked for: gap after one reach
+
+`spike/wbc_game/measure_reach.py` does exactly one thing: command a point, wait, and report the
+distance from the hand to the target - no correction passes, and no head pin (re-sending a head
+pose during a reach was already measured to twist the torso and drag the arm).
+
+Target: the lever/card point the operator clicked in the picker, `(0.427, -0.358, 0.357)` in the
+pelvis frame, 0.63 m from the resting hand.
+
+| aim | gap to the clicked point | what dominated it |
+| --- | --- | --- |
+| the clicked point itself | **260.5 mm** | dz -247 mm: the hand ends ~0.25 m **too high** |
+| clicked point, z divided by 1.75 | **83.9 mm**, then **85.7 mm** | dz -74 mm |
+
+The arm's height error is a **gain**, not a bias: asking for z = 0.11 put the hand at 0.33, asking
+0.357 put it at 0.43-0.60. That is the +75 % vertical gain from `research/wrist-response.md`
+expressing itself as a 1.75x factor on a raised target. Dividing the commanded height by it takes
+one shot from 260 mm to 84 mm.
+
+And the operator's suspicion was right: during a single 3.8 s reach the **head moved 25-55 mm and
+the root 62-87 mm** on its own. The arm is not the only thing moving, which is why a pixel marked
+once goes stale and why pinning the head inside the loop made things worse rather than better.
+
+One pass of the existing correction loop on top of the gain-corrected aim is what gets the last
+5-7 cm, which is where this sits today.

@@ -5,6 +5,11 @@ The layer manifest is written under ~/.local/state/Clank/depth-layer and the
 dashboard is exec'd with an XDG_DATA_DIRS that pressure-vessel will import. The
 manifest's enable_environment keys keep the layer out of the host Steam client
 and out of the Wine steam.exe that launches the game.
+
+`run.sh` runs this by default, so the dashboard gets the live colour preview
+without the VNC fallback. `--no-depth` starts the plain dashboard instead, and
+a missing layer library or compatdata falls back to the same thing with a
+warning rather than refusing to start.
 """
 
 from __future__ import annotations
@@ -29,24 +34,79 @@ def _default_near() -> float:
         return 0.00992
 
 
+def _config_path(args: argparse.Namespace) -> Path:
+    """The config clank will load.
+
+    An explicit --config wins and resolves against the cwd, exactly as clank
+    resolves it. Without one the repository config.toml is used, so the
+    launcher works from any directory.
+    """
+    if args.config:
+        path = Path(args.config)
+        return path if path.is_absolute() else Path.cwd() / path
+    return REPO / "config.toml"
+
+
+def _clank_argv(args: argparse.Namespace) -> list[str]:
+    """The clank command line, with the launcher's own flags left out."""
+    argv = [sys.executable, "-m", "clank"]
+    if args.replace:
+        argv.append("--replace")
+    if args.config:
+        argv += ["--config", args.config]
+    if args.host:
+        argv += ["--host", args.host]
+    if args.port is not None:
+        argv += ["--port", str(args.port)]
+    if args.preview_smoke:
+        argv.append("--preview-smoke")
+    return argv
+
+
+def _exec(argv: list[str], env: dict[str, str]) -> int:
+    """Hand the process over to the dashboard; there is one call site on purpose."""
+    os.execvpe(argv[0], argv, env)  # noqa: S606 - fixed argv, exec of sys.executable
+    return 0
+
+
+def _exec_plain(args: argparse.Namespace, argv: list[str]) -> int:
+    """Start the dashboard without the layer, leaving the env untouched."""
+    if args.dry_run:
+        print(f"command: {' '.join(argv)}")
+        return 0
+    return _exec(argv, os.environ.copy())
+
+
 def launch(args: argparse.Namespace) -> int:
-    cfg = load_config(REPO / "config.toml", env=os.environ)
+    argv = _clank_argv(args)
+    if args.no_depth:
+        return _exec_plain(args, argv)
+
+    cfg = load_config(_config_path(args), env=os.environ)
     compatdata = (
         Path.home()
         / ".local/share/Steam/steamapps/compatdata"
         / str(cfg.launch.proton_app_id)
     )
-    if not compatdata.exists():
-        raise SystemExit(f"compatdata path does not exist: {compatdata}")
-
     layer_so = Path(
         os.environ.get(
             "DEPTH_STREAM_LAYER",
             REPO / "spike/e5/build/depth_stream_layer.so",
         )
     ).resolve()
+    problems = []
+    if not compatdata.exists():
+        problems.append(f"compatdata path does not exist: {compatdata}")
     if not layer_so.is_file():
-        raise SystemExit(f"depth layer not built: {layer_so} (run spike/e5/build.sh)")
+        problems.append(f"depth layer not built: {layer_so} (run spike/e5/build.sh)")
+    if problems:
+        print(
+            "depth-stream-launch: "
+            + "; ".join(problems)
+            + "; starting the plain dashboard (the preview falls back to VNC)",
+            file=sys.stderr,
+        )
+        return _exec_plain(args, argv)
 
     layer_root = Path.home() / ".local/state/Clank/depth-layer"
     layer_dir = layer_root / "vulkan/implicit_layer.d"
@@ -106,11 +166,6 @@ def launch(args: argparse.Namespace) -> int:
     env["DEPTH_STREAM_COLOR_SCALE"] = str(args.color_scale)
     env["DEPTH_STREAM_FPS"] = str(args.fps)
 
-    argv = [sys.executable, "-m", "clank"]
-    if args.replace:
-        argv.append("--replace")
-    argv += args.clank_args
-
     if args.dry_run:
         print(f"layer manifest: {layer_dir / 'depth_stream.json'}")
         print(f"layer library: {layer_so}")
@@ -122,8 +177,7 @@ def launch(args: argparse.Namespace) -> int:
         print(f"command: {' '.join(argv)}")
         return 0
 
-    os.execvpe(sys.executable, argv, env)
-    return 0
+    return _exec(argv, env)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -137,7 +191,16 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--color-scale", type=int, default=2, choices=(1, 2, 3, 4))
     parser.add_argument("--fps", type=int, default=30)
     parser.add_argument("--no-color", action="store_true")
-    parser.add_argument("clank_args", nargs=argparse.REMAINDER)
+    parser.add_argument(
+        "--no-depth",
+        action="store_true",
+        help="start the plain dashboard, without the layer (VNC preview only)",
+    )
+    # run.sh forwards these; resolving them here keeps one code path for both.
+    parser.add_argument("--config", help="clank config path, resolved like clank's")
+    parser.add_argument("--host", help="override dashboard host")
+    parser.add_argument("--port", type=int, help="override dashboard port")
+    parser.add_argument("--preview-smoke", action="store_true")
     args = parser.parse_args(argv)
     return launch(args)
 

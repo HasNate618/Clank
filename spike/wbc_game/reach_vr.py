@@ -331,6 +331,13 @@ def main() -> int:
         "measurement can be repeated",
     )
     ap.add_argument(
+        "--no-clamp",
+        action="store_true",
+        help="do not clamp waypoints into WRIST_BOX. The box is a measured steering limit "
+        "(y >= -0.31), not the arm's reach: measured 0.70 m forward, and an unclamped reach to "
+        "y = -0.35 converged to within 0.04 m of the y target where the clamp refused it entirely",
+    )
+    ap.add_argument(
         "--speed",
         type=float,
         default=CRUISE_MPS,
@@ -445,7 +452,7 @@ def main() -> int:
     # the commanded point stopped advancing, and a 0.4 m reach ground on for nine seconds without
     # arriving. The clamp is a measured safety wall; a goal outside it is a goal that will not be
     # reached, and saying so once is better than fighting it 90 times.
-    goal_clamped = clamp_wrist(goal)
+    goal_clamped = tuple(goal) if args.no_clamp else clamp_wrist(goal)
     if goal_clamped != tuple(goal):
         print(f"goal  {fmt(goal)} is outside the measured workspace; "
               f"using {fmt(goal_clamped)} ({math.dist(goal, goal_clamped) * 1000:.0f} mm closer in)")
@@ -536,7 +543,7 @@ def main() -> int:
                 speed = args.speed * min(1.0, left / DECEL_M) if DECEL_M > 0 else args.speed
                 advance = min(left, max(speed, 0.04) * dt)
                 ref_rel = [ref_rel[k] + err[k] / left * advance for k in range(3)]
-                way = clamp_wrist(tuple(ref_rel))
+                way = tuple(ref_rel) if args.no_clamp else clamp_wrist(tuple(ref_rel))
                 if way != tuple(ref_rel):
                     clamp_hits += 1
                 # No head pin on the stream. Measured: re-sending a constant head pose 20 times a
@@ -586,7 +593,8 @@ def main() -> int:
                 # time - 0.787 m in z - and drove the arm down at the end of every pass. Measured:
                 # the cruise tracked to 162 mm and the settle then threw it to 613 mm.
                 settle_rel = tuple(target_world[k] - off[k] for k in range(3))
-                command(clamp_wrist(settle_rel), args.yaw, args.side)
+                command(tuple(settle_rel) if args.no_clamp else clamp_wrist(settle_rel),
+                        args.yaw, args.side)
                 ticks += 1
                 time.sleep(dt)
             drift = math.dist(root(), root0)

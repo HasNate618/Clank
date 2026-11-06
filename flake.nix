@@ -182,6 +182,10 @@
                 cp -r ${./spike/c0} spike/c0
                 # test_vnc_auth imports the grabber to exercise its RSA-AES code.
                 cp ${./spike/vnc_grab.py} spike/vnc_grab.py
+                # run.sh's launcher and its dry-run tests, no layer library needed.
+                cp ${./run.sh} run.sh
+                mkdir -p spike/e5
+                cp ${./spike/e5/launch.py} spike/e5/launch.py
                 chmod -R u+w clank tests spike
                 # The orchestrator puts its Unix sockets under XDG_RUNTIME_DIR and
                 # the sandbox has none, so give it one that exists.

@@ -28,11 +28,12 @@ stream, drives pose modes, and exposes the logs.
 
 ```bash
 # Dashboard WITH the depth layer (writes the layer manifest, sets DEPTH_STREAM_*).
-# Use this, not run.sh, when you need depth.
-nix develop --command python3 spike/e5/launch.py --replace
-
-# Plain dashboard, no depth layer.
+# run.sh now runs this by default; launch.py is the same thing spelled out.
 ./run.sh --replace
+
+# Plain dashboard, no depth layer. The preview is then VNC only, which is a
+# frozen black window for Job Simulator (it renders only to the OpenXR views).
+./run.sh --no-depth --replace
 
 # Session control (the UI calls the same endpoints).
 curl -s -X POST -H 'Content-Type: application/json' -d '{}' \
@@ -115,7 +116,9 @@ renderdoc-layer/vulkan/implicit_layer.d/  # e4 manifest
   config loader rejects unknown `CLANK_*` overrides.
 - The manifest is gated on `STEAM_COMPAT_DATA_PATH` +
   `GNUTLS_SYSTEM_PRIORITY_FILE=/dev/null` (present only in the game container)
-  and disabled by `DISABLE_DEPTH_STREAM_PATH=1`.
+  and disabled by `DISABLE_DEPTH_STREAM_PATH=1`. `run.sh` starts the dashboard
+  through `spike/e5/launch.py`; when the layer library or the compatdata dir is
+  missing it warns and starts the plain dashboard instead of failing.
 - Near plane defaults to `research/evidence/depth-live/depth-calibration.json`
   (`near_m = 0.009403795`).
 

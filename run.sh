@@ -47,12 +47,18 @@ done
 
 cd "$SCRIPT_DIR"
 
+# The depth layer is part of the default launch: without it the dashboard has no
+# live frame and silently falls back to VNC, which is a frozen black window for
+# games that render only to the OpenXR views. `--no-depth` starts the plain
+# dashboard instead; a missing layer library falls back to it with a warning.
+launcher=spike/e5/launch.py
+
 if command -v weston >/dev/null 2>&1 \
   && command -v weston-screenshooter >/dev/null 2>&1 \
   && command -v weston-debug >/dev/null 2>&1 \
   && command -v novnc >/dev/null 2>&1 \
   && command -v websockify >/dev/null 2>&1; then
-  exec python3 -m clank "${args[@]}"
+  exec python3 "$launcher" "${args[@]}"
 fi
 
-exec nix develop "$SCRIPT_DIR" -c python3 -m clank "${args[@]}"
+exec nix develop "$SCRIPT_DIR" -c python3 "$launcher" "${args[@]}"
