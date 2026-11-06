@@ -272,7 +272,7 @@ def _command_from_intent(
         # a constant, so every command rebuilds the same camera.
         if intent.head is not None:
             head = Pose(
-                p=intent.head[:3],
+                p=(intent.head[0], intent.head[1], intent.head[2]),
                 q_xyzw=(intent.head[3], intent.head[4], intent.head[5], intent.head[6]),
             )
         elif executor.last_state is not None:
@@ -379,7 +379,7 @@ def verb_command(
         trigger = (0.0, 1.0) if side == "right" else (1.0, 0.0)
         return BodyCommand(seq=0, authority=AUTH_TRIGGER, trigger=trigger)
 
-    def close_hand(side: str, closed: bool) -> BodyCommand:
+    def close_hand(side: str, closed: bool) -> BodyCommand | None:
         """Close or open the hand **where it is**, changing nothing else.
 
         `grab_right` exists and is the wrong tool for a grab: it commands

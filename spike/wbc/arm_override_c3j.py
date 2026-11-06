@@ -1,3 +1,6 @@
+# pyright: reportAttributeAccessIssue=false
+# mujoco's bundled stubs omit MjModel/MjData/mj_kinematics/mj_jacBody. Every file in
+# spike/wbc/ raises the same report; it is a stub gap, not a defect.
 #!/usr/bin/env python3
 """C3j — can SONIC's 14 arm joints be replaced by a sharper IK solve?
 

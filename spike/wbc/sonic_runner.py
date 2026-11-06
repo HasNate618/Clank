@@ -195,6 +195,9 @@ class SonicRunner:
         #: 17 upper-body joint angles (rad, IsaacLab order) to substitute into the reference
         #: every tick, or None to leave the clip alone. Set by the executor from IK.
         self.upper_body = None
+        #: Last VR targets seen. Only the mode-1 branches set it, so mode 0 needs a default or
+        #: the per-tick log raises AttributeError the first time it formats a row.
+        self.last_vr = (np.zeros(9), np.zeros(12))
         self.model = mujoco.MjModel.from_xml_path(XML)
         self.data = mujoco.MjData(self.model)
         self.model.opt.timestep = PHYSICS_DT

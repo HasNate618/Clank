@@ -79,3 +79,71 @@ Open questions worth an A/B, from the scout:
   finite differences, and the clip's own velocities.
 - Whether the leg channel of the loaded clip keeps playing while standing (the override touches
   only the 17).
+
+## Measured: the override does not work here, and VR mode cannot read it
+
+Two experiments after wiring it up. Both are negative, and the second one corrects the claim
+above, so read this before trusting the section before it.
+
+### The 17 joints are never read in VR mode
+
+`sonic_runner.build_encoder_obs`, default model, mode 1 (VR):
+
+```python
+o += 290 + 290            # 10 frames x 29 joint positions and velocities - SKIPPED
+...
+obs[o:o + 12] = motion["jp"][f, LOWER_CSV]   # only the 12 lower-body joints are written
+```
+
+So in VR mode the observation carries the 12 lower-body reference joints, the anchor, and the
+3 VR poses - and **nothing** of the 29-joint reference. The upper-body override has nothing to
+act on there. It is a motion-tracking channel: `upper_body_position[17]` in NVIDIA's deploy must
+be paired with the motion-reference input type, not with the VR 3-point input.
+
+That also means the `0.77-1.05 s` overshoot we measured is *not* fixable this way. The VR path is
+the only arm channel we have, and it is a position setpoint with no velocity and no horizon.
+
+### On the motion-tracking path the policy does read it - and does not adopt it
+
+mode 0, clip frozen, 17 joints from IK substituted:
+
+| quantity | measured |
+| --- | --- |
+| IK residual on the commanded point | 164 mm (target 235 mm from rest) |
+| policy's joint tracking of the substituted reference | **0.125 rad mean, 0.299 rad max** |
+| hand movement delivered out of 235 mm commanded | **~33 mm** |
+
+So even where the policy can see the joints, it does not follow them: 0.125 rad is 7 deg mean
+error per joint, which is the droop the policy normally corrects for when it is *choosing* its own
+arms, and which it does not correct when the arm joints are handed to it from outside.
+
+This is the same conclusion as `arm_override_c3j` reached at the *ctrl* level (policy 0.0114 m vs
+hard IK 0.1440 m), now reproduced at the *reference* level. The arm is under-powered (PD 14.25
+against the legs' 99.1) and the policy's compensation is part of its own action, not something
+that survives an external joint target.
+
+### The IK itself is fine
+
+Damped Gauss-Newton with Levenberg-Marquardt and backtracking, on the 7 arm joints, aiming the
+reported hand point (`position + R * lever`, with the lever term in the Jacobian):
+
+| target offset from rest | IK residual |
+| --- | --- |
+| +0.05 z | **1.1 mm** |
+| +0.05 x | **0.8 mm** |
+| -0.10 z | **0.3 mm** |
+| +0.10 x, +0.05 z | 50.6 mm |
+| +0.14 x, -0.10 y, +0.16 z | 132.9 mm |
+
+Sub-millimetre where the pose can reach, an honest residual where it cannot. Two bugs worth
+recording because both cost a cycle: `mj_jacBody` reads `cdof`, which `mj_kinematics` does not
+fill, so the Jacobian came back **exactly zero** and the solver reported its starting error
+forever with `dq = 0`; and fixed damping on a near-singular arm Jacobian made the residual
+oscillate 235 -> 147 -> 339 -> 116 mm.
+
+### What this leaves
+
+The reach stays on the wrist-pose channel with a cruise-limited reference (0.13 m/s), which is
+measured at 2.3-2.4 s for 0.31-0.32 m and 65-84 mm after three commands. The remaining error is
+the wrist lever, which turns with an orientation we only request. That is where the next attempt
+belongs, not in joint-space injection.
