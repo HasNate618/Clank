@@ -264,6 +264,22 @@ Two things had to be right, and neither was tuning:
 
 Reach + close is now one command: `reach_vr.py --grab`.
 
+## The fingers close, 2026-11-06
+
+The body used to grab with an open hand: the game saw the squeeze and the 14 hand motors were never
+written. `SonicExecutor._clasp` now ramps the fingers to `g * GRASP_Q` (GR00T's `grasp_qpos` for the
+deployed Dex3 hand) at 0.25 rad/tick. Measured 0.13 rad from target, and photographed in
+`research/evidence/hand-clasp-closed.png` / `-released.png`. Details: `research/hand-clasp.md`.
+
+- **The hand motors are torque units**, `<motor>` with `ctrlrange +-0.7 N m` (`+-2.45` on `thumb_0`),
+  so they take PD (`KP 3.0`, `KD 0.10`), not an angle. `SonicRunner.step_policy` writes `ctrl[:29]`;
+  the hand motors are 29..42.
+- **A clasp test must raise the arm first.** In the rest pose the hand rests against
+  `right_hip_pitch_link` and the thumb is pinned at its limit with full torque applied - measured
+  `thumb_1` at +0.730 while its motor pushed -0.700. That looks exactly like a broken hand.
+- **`BodyState.closure` stays the commanded value.** The game's squeeze button must fire the instant
+  the body is told to grab; making the field measured would delay the button by the 0.1 s clasp.
+
 ## Seeing the object, 2026-11-04
 
 Three measurements change how the reach and the grounding are built. Read them before
