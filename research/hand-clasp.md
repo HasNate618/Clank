@@ -66,3 +66,17 @@ robot.
   honest part now, the field is the fast part.
 - Rendering a close-up from this shell fails (`an OpenGL platform library has not been loaded`), so
   the picture of the clasp has to come from the live body view, not a headless MuJoCo render.
+
+## Verified live (2026-11-06)
+
+Restarted the body so the new executor loaded, then ran the reach with `--grab` at the operator's
+clicked lever point (0.427, -0.358, 0.357; 37.3 mm on the first pass) and photographed the body view.
+
+**`research/evidence/hand-clasp-closed.png`** - the robot's right hand is curled into a claw while the
+left hangs open beside the torso. That is `closure = (0.0, 1.0)` with nothing else driving the hand.
+
+**`research/evidence/hand-clasp-released.png`** - after `release_right`, the same hand is open and the
+fingers are extended. Same arm pose, same camera; only the grip changed.
+
+So the loop closes in both directions: the game's squeeze and the body's fingers are now the same
+event, and releasing opens the hand instead of leaving it frozen shut.
