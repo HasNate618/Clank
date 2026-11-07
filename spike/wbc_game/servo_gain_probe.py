@@ -20,7 +20,11 @@ CLIP_R = _pose_from(pts[3*R_WRIST:3*R_WRIST+3], orns[4*R_WRIST:4*R_WRIST+4])
 for _ in range(SETTLE):
     ex.step(rest(), now_ns=time.monotonic_ns())
 st = ex.last_state
-u0, v0 = project_point(st.head, st.right_hand.p, FOV)
+assert st is not None
+uv0 = project_point(st.head, st.right_hand.p, FOV)
+if uv0 is None:
+    raise SystemExit("the wrist is not in this view")
+u0, v0 = uv0
 depth = _rotate_inverse(st.head.q_xyzw, tuple(np.subtract(st.right_hand.p, st.head.p)))[0]
 print(f"anchor {FRAME}: wrist pixel ({u0:.3f}, {v0:.3f}), depth {depth:.3f} m")
 print(f"{'target':>14} {'gain':>5} {'start':>7} {'min':>7} {'final':>7} {'done':>5} {'ticks':>6}")
@@ -32,6 +36,8 @@ for target in ((0.5, 0.5), (u0 + 0.10, v0)):
         start_err, best, final, done, ticks = None, 9.9, 9.9, False, 0
         for i in range(MAX_TICKS):
             st = ex.last_state
+            if st is None:
+                raise SystemExit("no state yet")
             wp = project_point(st.head, st.right_hand.p, FOV)
             if wp is None:
                 break

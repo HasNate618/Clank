@@ -56,6 +56,8 @@ def sweep(label, axis, values, base):
             tolerance_m=0.02,
         )
         st = run(cmd, REACH)
+        if st is None:
+            continue
         p = st.right_hand.p
         notes = []
         if st.has_flag(FLAG_FALL_RISK):

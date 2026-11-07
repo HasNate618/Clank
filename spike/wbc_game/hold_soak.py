@@ -33,6 +33,8 @@ def measure(label, build, frame=0):
     for _ in range(SETTLE):
         ex.step(rest(), now_ns=time.monotonic_ns())
     snap = ex.last_state
+    if snap is None:
+        raise SystemExit("no state yet")
     rw = []
     for i in range(TICKS):
         rw.append(np.array(ex.step(build(i, snap), now_ns=time.monotonic_ns()).right_hand.p))

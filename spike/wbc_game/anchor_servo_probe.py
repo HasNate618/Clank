@@ -40,6 +40,8 @@ for frame in (332, 95):
         bus.publish_state(st)
         rw.append(np.array(st.right_hand.p))
     net, rms = speeds(rw)
+    if ex.last_state is None:
+        raise SystemExit("no state yet")
     px = project_point(ex.last_state.head, ex.last_state.right_hand.p, FOV)
     print(f"  frame {frame:3d}  net {net:.4f} m  rms_last10 {rms:.6f} m/s  fell {ex.fell}"
           f"  wrist pixel {None if px is None else (round(px[0],2), round(px[1],2))}")
@@ -51,7 +53,11 @@ ex = make(332)
 for _ in range(SETTLE):
     ex.step(rest(), now_ns=time.monotonic_ns())
 st = ex.last_state
-u0, v0 = project_point(st.head, st.right_hand.p, FOV)
+assert st is not None
+uv0 = project_point(st.head, st.right_hand.p, FOV)
+if uv0 is None:
+    raise SystemExit("the wrist is not in this view")
+u0, v0 = uv0
 depth = _rotate_inverse(st.head.q_xyzw, tuple(np.subtract(st.right_hand.p, st.head.p)))[0]
 print(f"  wrist pixel ({u0:.3f}, {v0:.3f}) at depth {depth:.3f} m\n")
 print(f"{'target':>16} {'start':>7} {'min':>7} {'final':>7} {'|cmd-ach|':>10} {'ticks':>6} {'done':>5}")
@@ -62,6 +68,8 @@ for target in ((u0 + 0.10, v0), (u0 - 0.10, v0), (u0, v0 + 0.15), (0.5, 0.5)):
     start_err, best, final, ticks, done, point = None, 9.9, 9.9, 0, False, None
     for i in range(MAX_TICKS):
         st = ex.last_state
+        if st is None:
+            raise SystemExit("no state yet")
         wp = project_point(st.head, st.right_hand.p, FOV)
         if wp is None:
             break
@@ -78,6 +86,7 @@ for target in ((u0 + 0.10, v0), (u0 - 0.10, v0), (u0, v0 + 0.15), (0.5, 0.5)):
         ticks = i + 1
         wp = project_point(st.head, st.right_hand.p, FOV)
         final = pixel_error(target, wp) if wp else 9.9
-    gap = float(np.linalg.norm(np.subtract(point, st.right_hand.p)))
+    gap = (float(np.linalg.norm(np.subtract(point, st.right_hand.p)))
+           if point is not None else float("nan"))
     print(f"({target[0]:.2f},{target[1]:.2f}) {start_err:>7.3f} {best:>7.3f} {final:>7.3f} "
           f"{gap:>10.3f} {ticks:>6} {str(done):>5}")

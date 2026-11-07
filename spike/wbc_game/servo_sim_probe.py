@@ -49,6 +49,8 @@ def main() -> None:
 
     run(hold(), SETTLE)
     st = ex.last_state
+    if st is None:
+        raise SystemExit("no state yet")
     rel = _rotate_inverse(st.head.q_xyzw, tuple(np.subtract(st.right_hand.p, st.head.p)))
     print(f"head  root-relative {tuple(round(v, 3) for v in st.head.p)}")
     print(f"wrist root-relative {tuple(round(v, 3) for v in st.right_hand.p)}")
@@ -67,6 +69,8 @@ def main() -> None:
             start_err, best, final, ticks, done, point = None, 9.9, 9.9, 0, False, None
             for i in range(MAX_TICKS):
                 st = ex.last_state
+                if st is None:
+                    raise SystemExit("no state yet")
                 wp = project_point(st.head, st.right_hand.p, FOV)
                 if wp is None:
                     break
@@ -84,7 +88,8 @@ def main() -> None:
                 ticks = i + 1
                 wp = project_point(st.head, st.right_hand.p, FOV)
                 final = pixel_error(target, wp) if wp else 9.9
-            gap = float(np.linalg.norm(np.subtract(point, st.right_hand.p)))
+            gap = (float(np.linalg.norm(np.subtract(point, st.right_hand.p)))
+           if point is not None else float("nan"))
             print(f"({target[0]:.2f},{target[1]:.2f}) {depth:>6.2f} {start_err:>7.3f} "
                   f"{best:>7.3f} {final:>7.3f} {gap:>10.3f} {ticks:>6} "
                   f"{str(done):>5} {str(ex.fell):>5}")
