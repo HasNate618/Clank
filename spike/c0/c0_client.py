@@ -131,6 +131,17 @@ class RemoteData(C.Structure):
 HEADER = struct.unpack("<Q", b"mndrmt3\0")[0]
 SIZE = C.sizeof(RemoteData)
 
+#: How long a pose client keeps trying to take the driver over, seconds.
+#: The hub serves one client at a time, so a mode switch can connect while the
+#: previous client still owns it: TCP accepts and the handshake never arrives.
+#: Measured 2026-11-06 - a starved client received 0 bytes in 3 s, and a real
+#: switch in a live session needed ~10 attempts before it was let in.
+CONNECT_TIMEOUT_SEC = 20.0
+
+#: How long one handshake attempt may wait for the driver's two reply packets.
+#: Short, so the retry above stays responsive to the previous client leaving.
+HANDSHAKE_ATTEMPT_SEC = 1.0
+
 # ------------------------------------------- measured G1 geometry (E3 / WBC)
 #
 # HMD height 1.221 m is the E3 `stand` measurement. The wrist rest pose comes
@@ -339,6 +350,63 @@ def recv_exact(sock, n):
     return bytes(buf)
 
 
+def read_handshake(sock, tag: str = "[c0]") -> None:
+    """Read the driver's two reply packets, then report that the client is ready.
+
+    The marker comes after both packets on purpose: the orchestrator uses it to
+    decide the mode switch worked, so printing it at TCP connect would report
+    success while the driver was still busy with the client it just replaced.
+    """
+    for name in ("reset", "latest"):
+        packet = recv_exact(sock, SIZE)
+        header = struct.unpack_from("<Q", packet)[0]
+        if header != HEADER:
+            raise ValueError(f"handshake {name} header 0x{header:016x} != expected")
+    print(f"{tag} handshake ok", flush=True)
+
+
+def connect_with_handshake(
+    host: str,
+    port: int,
+    tag: str = "[c0]",
+    timeout: float = CONNECT_TIMEOUT_SEC,
+    attempt_timeout: float = HANDSHAKE_ATTEMPT_SEC,
+) -> socket.socket:
+    """Connect and complete the handshake, retrying the whole attempt.
+
+    A quiet socket is not a failure to report: it means the driver is still
+    serving whoever owned it before us, and it will hand over once that client
+    is gone. Only a wrong header is fatal, because that is a protocol answer
+    rather than a race.
+    """
+    deadline = time.monotonic() + timeout
+    attempt = 0
+    while True:
+        attempt += 1
+        sock = None
+        remaining = deadline - time.monotonic()
+        try:
+            sock = socket.create_connection((host, port), timeout=max(0.05, min(5.0, remaining)))
+            sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+            if attempt == 1:
+                print(f"{tag} connected {host}:{port}", flush=True)
+            sock.settimeout(max(0.05, min(attempt_timeout, remaining)))
+            read_handshake(sock, tag=tag)
+            return sock
+        except ValueError:
+            if sock is not None:
+                sock.close()
+            raise
+        except OSError as exc:
+            if sock is not None:
+                with contextlib.suppress(OSError):
+                    sock.close()
+            if time.monotonic() >= deadline:
+                raise
+            print(f"{tag} driver busy ({exc}); retrying", flush=True)
+            time.sleep(min(0.25, max(0.0, deadline - time.monotonic())))
+
+
 # ------------------------------------------------------------------------ main
 
 
@@ -379,17 +447,7 @@ def main():
     print(f"[c0] wire size {SIZE} B, header 0x{HEADER:016x}, mode={args.mode}", flush=True)
     print(f"[c0] HMD height {HMD_HEIGHT} m, wrist L {WRIST_L} R {WRIST_R}", flush=True)
 
-    s = socket.create_connection((args.host, args.port), timeout=5)
-    s.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-    print(f"[c0] connected {args.host}:{args.port}", flush=True)
-
-    reset = recv_exact(s, SIZE)
-    latest = recv_exact(s, SIZE)
-    for name, pkt in (("reset", reset), ("latest", latest)):
-        h = struct.unpack_from("<Q", pkt)[0]
-        if h != HEADER:
-            sys.exit(f"handshake {name} header 0x{h:016x} != expected")
-    print("[c0] handshake ok", flush=True)
+    s = connect_with_handshake(args.host, args.port)
 
     import os
 

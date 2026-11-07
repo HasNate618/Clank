@@ -37,7 +37,6 @@ import os
 import select
 import signal
 import socket
-import struct
 import sys
 import time
 from pathlib import Path
@@ -415,12 +414,7 @@ def read_handshake(sock) -> None:
     decide the mode switch worked. Printing it at TCP connect would report
     success while the driver was still busy with the client it just replaced.
     """
-    for name in ("reset", "latest"):
-        packet = c0.recv_exact(sock, c0.SIZE)
-        header = struct.unpack_from("<Q", packet)[0]
-        if header != c0.HEADER:
-            raise ValueError(f"handshake {name} header 0x{header:016x} != expected")
-    print("[manual] handshake ok", flush=True)
+    c0.read_handshake(sock, tag="[manual]")
 
 
 def main():
@@ -448,10 +442,10 @@ def main():
     print("[manual]           F punch | LMB/T fire | RMB/G grip | Tab/1/2 hand | R reset | H hand | Esc release")
 
     c0.assert_layout()
-    sock = socket.create_connection((args.host, args.port), timeout=5)
-    sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-    print(f"[manual] connected {args.host}:{args.port}", flush=True)
-    read_handshake(sock)
+    # Retries, because the hub serves one client at a time and a switch can be
+    # waiting for the previous pose client to be let go. A one-shot attempt here
+    # took the whole session down on 2026-11-06 (5 s timeout, no handshake).
+    sock = c0.connect_with_handshake(args.host, args.port, tag="[manual]")
     out = sock.makefile("wb")
 
     m = Manual(args)

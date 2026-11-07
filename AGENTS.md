@@ -308,3 +308,30 @@ that is mostly background at 1.31 m.
 
 **The emulated hands are visible in the game view.** Hold one up in front of the face and it
 appears where the geometry says. An earlier note in this file said otherwise; it was wrong.
+
+## Pose clients and the hub, 2026-11-06
+
+Switching to `manual` used to kill the session: `c0_manual` raised `TimeoutError` in
+`read_handshake`, the orchestrator saw the pose process die, and the whole session (game,
+Weston, monado) was torn down. Three measurements explain it, and two fixes stop it.
+
+- **The remote hub serves one client at a time.** `src/xrt/drivers/remote/r_hub.c` accepts,
+  writes the two handshake packets, then reads that client until EOF. A second client's TCP
+  connect still succeeds (kernel backlog) and it receives **0 bytes for as long as the first
+  client lives** - measured against a live session. So a switch is a race against the previous
+  pose client being let go.
+- **A quiet socket is not a failure, it is a queue.** Every pose client now retries the whole
+  handshake (`c0_client.connect_with_handshake`, 20 s total, 1 s attempts) and prints
+  `driver busy (...); retrying`. `pose_relay.py` always did this; `c0_manual.py` and
+  `c0_client.py` did not. Measured before the fix: a real switch needed ~10 attempts.
+- **The hub's handshake write could kill monado-service.** It used a plain `write()`/`send()`
+  with no `MSG_NOSIGNAL`, so when the hub finally served a socket whose client had already
+  given up, SIGPIPE terminated the service - `monado.log` ends at `Connection received! N` with
+  no `Server exiting`, and every later connect is refused. `flake.nix` now substitutes
+  `send(..., MSG_NOSIGNAL)` in `r_hub.c` (the IPC channel next door already did this). Verified
+  by starving the hub on purpose: the switch retried, handshook in 4.9 s, and both monado and
+  the session stayed up.
+
+`timeouts.pose_handshake_sec` must outlast the client's 20 s retry window; it is 25 now. A
+`state: failed` right after a mode switch, with `monado.log` truncated mid-hub and later
+`Connection refused` in `pose.log`, is this bug's signature.

@@ -260,11 +260,17 @@ class BodyState:
     #: are actuated** (`motor name="right_hand_index_0"` and friends, 14 of the
     #: model's 43 actuators). Measured 2026-11-01 by reading the vendor model.
     #:
-    #: The real reason closure is not achieved is that `SonicExecutor` never writes
-    #: those actuators: it latches the commanded value and relays it in this field,
-    #: which is what the XR layer turns into a controller button. So this is a device
-    #: value passed through, not a measured hand state - and it could become a
-    #: measured one, since the joints exist and are driven.
+    #: As of 2026-11-06 this is still the *commanded* value, but the hand is no longer
+    #: slack: `SonicExecutor._clasp` now writes those 14 motors, ramping the fingers to
+    #: `g * GRASP_Q` (GR00T's `grasp_qpos`) at 0.25 rad per tick. Measured in sim with
+    #: the arm raised clear of the hip: the right hand reaches [0.01, -0.96, -1.22,
+    #: 1.32, 1.33, 1.32, 1.33] against a target of [0, -1.0, -1.25, 1.2, 1.2, 1.2, 1.2]
+    #: - max error 0.13 rad, fingers closed.
+    #:
+    #: The field itself stays commanded rather than measured so the game's squeeze
+    #: button fires the instant the body is told to grab; a measured value would make
+    #: the button wait on the fingers, turning a 0.1 s clasp into a 0.1 s delay before
+    #: a grab the game can miss. `research/hand-clasp.md` has the numbers.
     closure: tuple[float, float] = (0.0, 0.0)
     trigger: tuple[float, float] = (0.0, 0.0)
     residual_head_m: float = 0.0

@@ -80,6 +80,20 @@ FALL_UP_Z = 0.3
 
 #: Ticks a commanded trigger stays pressed. Long enough for a 50 Hz consumer to
 #: sample it, short enough that a second press is a second press.
+#: Full-closure finger angles, in `sonic_runner.HAND_ACT_NAMES` order (thumb_0, thumb_1,
+#: thumb_2, then two joints per finger). These are GR00T's `grasp_qpos` for the deployed
+#: Dex3 hand (`g1_threefinger_hands.py:47,125`), each checked against this XML's joint
+#: ranges - every component is inside them, so no clipping is expected in practice.
+GRASP_Q = {
+    "left": np.array([0.0, 1.0, 1.25, -1.2, -1.2, -1.2, -1.2], dtype=np.float64),
+    "right": np.array([0.0, -1.0, -1.25, 1.2, 1.2, 1.2, 1.2], dtype=np.float64),
+}
+
+#: Radians of finger travel allowed per control tick (50 Hz). GR00T clamps each hand
+#: joint to 0.25 rad per tick in `Dex3Hands::writeOnce`; the same rule keeps a grab a
+#: clasp rather than a snap, and keeps current-limited motors off their stops.
+HAND_SLEW_RAD = 0.25
+
 FIRE_HOLD_TICKS = 3
 
 # Point order in the VR 3-point interface, from `sonic_runner.vr_targets`:
@@ -123,6 +137,10 @@ class SonicExecutor:
         #: it would let the body fire exactly once per session, because nothing but a
         #: `release` verb would ever bring it back down.
         self._fire_ticks = [0, 0]
+        #: Finger angles we are asking for, slewed toward the latched grip each tick.
+        #: Kept here rather than in the runner so a restart of the policy cannot
+        #: silently leave the hand half shut.
+        self._hand_rad = np.zeros(14, dtype=np.float64)
         #: The state `channel_pose` rule 3 is allowed to answer with, and the command
         #: that froze it. See `_fallback`: without this, an unclaimed channel chases
         #: its own measurement.
@@ -277,6 +295,27 @@ class SonicExecutor:
 
     # ---- one tick -------------------------------------------------------
 
+    def _clasp(self, grip: tuple[float, float]) -> None:
+        """Turn the commanded grip into joint motion, so the hand actually closes.
+
+        `grip` is what the XR layer turns into the controller's squeeze button. Until
+        now that was the whole journey: `BodyState.closure` carried the command out to
+        the game, and the 14 hand motors were never written, so the body grabbed with an
+        open hand and the game was the only thing that knew it had happened.
+
+        Target is `g * GRASP_Q` per side, approached at HAND_SLEW_RAD per tick, which
+        makes a grab a 5-tick (0.1 s) clasp and a release the same in reverse.
+        """
+        r = self.runner
+        if not len(getattr(r, "hand_act", ())):
+            return
+        want = np.concatenate(
+            [GRASP_Q["left"] * float(grip[0]), GRASP_Q["right"] * float(grip[1])]
+        )
+        step = np.clip(want - self._hand_rad, -HAND_SLEW_RAD, HAND_SLEW_RAD)
+        self._hand_rad = self._hand_rad + step
+        r.hand_target = self._hand_rad.copy()
+
     def step(self, cmd: BodyCommand, now_ns: int = 0) -> BodyState:
         r = self.runner
         vr_pos, vr_orn = self._targets(cmd)
@@ -338,6 +377,7 @@ class SonicExecutor:
         if (cmd.authority & AUTH_CLOSURE) != 0:
             held_grip = closure
         self._buttons = (held_grip, (0.0, 0.0))
+        self._clasp(held_grip)
         if (cmd.authority & AUTH_TRIGGER) != 0:
             for hand in (0, 1):
                 self._fire_ticks[hand] = FIRE_HOLD_TICKS if trigger[hand] > 0.0 else 0

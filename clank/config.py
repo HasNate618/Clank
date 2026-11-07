@@ -197,7 +197,9 @@ DEFAULTS: dict[str, dict[str, Any]] = {
     "timeouts": {
         "monado_startup_sec": 20.0,
         "weston_startup_sec": 20.0,
-        "pose_handshake_sec": 10.0,
+        # Long enough to outlast a pose client's own handover retries (20 s):
+        # the driver serves one client at a time, so a switch can wait that long.
+        "pose_handshake_sec": 25.0,
         "stop_sec": 60.0,
     },
 }

@@ -50,6 +50,23 @@ UPPER_BODY_ISAACLAB_IDX = (2, 5, 8, 11, 12, 15, 16, 19, 20, 21, 22, 23, 24, 25, 
 UPPER_BODY_MUJOCO_IDX = (12, 13, 14, 15, 22, 16, 23, 17, 24, 18, 25, 19, 26, 20, 27, 21, 28)
 WEIGHTS = os.path.join(HERE, "weights", "sonic")
 
+#: The 14 hand motors, in the model's own declaration order. Looked up by name because
+#: the two hands disagree: the left unit declares thumb/middle/index and the right one
+#: thumb/index/middle (`g1_29dof_with_hand.xml`).
+HAND_ACT_NAMES = (
+    "left_hand_thumb_0", "left_hand_thumb_1", "left_hand_thumb_2",
+    "left_hand_middle_0", "left_hand_middle_1", "left_hand_index_0", "left_hand_index_1",
+    "right_hand_thumb_0", "right_hand_thumb_1", "right_hand_thumb_2",
+    "right_hand_index_0", "right_hand_index_1", "right_hand_middle_0",
+    "right_hand_middle_1",
+)
+
+#: Servo gains for the fingers. These are `<motor>` torque units limited to 0.7 N m
+#: (2.45 on thumb_0), so a stiff gain simply saturates against the limit; these reach
+#: the target without ringing. The legs use ~99 because they are position units.
+HAND_KP = 3.0
+HAND_KD = 0.10
+
 CONTROL_DT = 0.02
 PHYSICS_DT = 0.002
 STEPS_PER_CONTROL = int(round(CONTROL_DT / PHYSICS_DT))
@@ -252,7 +269,38 @@ class SonicRunner:
                 "right_shoulder_yaw_joint", "right_elbow_joint", "right_wrist_roll_joint",
                 "right_wrist_pitch_joint", "right_wrist_yaw_joint"]]
         self.ctrlrange = self.model.actuator_ctrlrange[:29].copy()
+        #: The hand motors. `step_policy` has only ever written `ctrl[:29]`, so these
+        #: 14 torque units sat at zero for every run: the model has fingers and motors
+        #: for them, and nothing drove them. Set `hand_target` (radians, HAND_ACT_NAMES
+        #: order) and the servo below closes the hand.
+        self.hand_act = []
+        self.hand_qadr = []
+        self.hand_dofadr = []
+        self.hand_lo = []
+        self.hand_hi = []
+        for name in HAND_ACT_NAMES:
+            aid = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_ACTUATOR, name)
+            if aid < 0:
+                continue
+            jid = int(self.model.actuator_trnid[aid, 0])
+            self.hand_act.append(aid)
+            self.hand_qadr.append(int(self.model.jnt_qposadr[jid]))
+            self.hand_dofadr.append(int(self.model.jnt_dofadr[jid]))
+            self.hand_lo.append(float(self.model.jnt_range[jid, 0]))
+            self.hand_hi.append(float(self.model.jnt_range[jid, 1]))
+        self.hand_act = np.array(self.hand_act, dtype=int)
+        self.hand_ctrlrange = (
+            self.model.actuator_ctrlrange[self.hand_act].copy()
+            if len(self.hand_act) else np.zeros((0, 2))
+        )
+        self.hand_target: np.ndarray | None = None
         self.hist = []  # (base_ang_vel, q_policy, dq_policy, last_action, gravity)
+
+    def hand_q(self) -> np.ndarray:
+        """Achieved finger angles in HAND_ACT_NAMES order, radians. Empty if no hands."""
+        if not len(self.hand_act):
+            return np.zeros(0)
+        return np.array([self.data.qpos[a] for a in self.hand_qadr])
 
     def reset(self, motion, start=0):
         d = self.data
@@ -447,6 +495,14 @@ class SonicRunner:
             tau = KP * (target - q) - KD * dq
             tau = np.clip(tau, self.ctrlrange[:, 0], self.ctrlrange[:, 1])
             self.data.ctrl[:29] = tau
+            if self.hand_target is not None and len(self.hand_act):
+                want = np.clip(self.hand_target, self.hand_lo, self.hand_hi)
+                hq = self.data.qpos[self.hand_qadr]
+                hdq = self.data.qvel[self.hand_dofadr]
+                htau = HAND_KP * (want - hq) - HAND_KD * hdq
+                self.data.ctrl[self.hand_act] = np.clip(
+                    htau, self.hand_ctrlrange[:, 0], self.hand_ctrlrange[:, 1]
+                )
             mujoco.mj_step(self.model, self.data)
 
     def run(self, motion, seconds=10.0, ramp=0.5, log_path=None, freeze=None, vr_pos=None, vr_orn=None, vr_delta=None, vr_orn_delta=None, start=0,

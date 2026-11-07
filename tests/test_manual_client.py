@@ -254,5 +254,103 @@ class ManualPunchTests(unittest.TestCase):
         self.assertIn("punch=1", m.status())
 
 
+class ConnectWithHandshakeTests(unittest.TestCase):
+    """The hub serves one client at a time; a starved client must retry.
+
+    Measured 2026-11-06: a second client's TCP connect succeeds and it receives
+    zero bytes while the previous client still owns the driver. A one-shot
+    handshake turned that into a dead session.
+    """
+
+    def setUp(self) -> None:
+        self.server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self.server.bind(("127.0.0.1", 0))
+        self.server.listen(8)
+        self.port = self.server.getsockname()[1]
+        self.accepted: list[socket.socket] = []
+        self.addCleanup(self.close_all)
+
+    def close_all(self) -> None:
+        for sock in self.accepted:
+            with contextlib.suppress(OSError):
+                sock.close()
+        with contextlib.suppress(OSError):
+            self.server.close()
+
+    @staticmethod
+    def packet() -> bytes:
+        return manual.c0.HEADER.to_bytes(8, "little") + bytes(manual.c0.SIZE - 8)
+
+    def serve(self, *, starve: int, hold: float, then: str) -> threading.Thread:
+        """Accept `starve` connections silently, then answer the next one.
+
+        `then` is "handshake", "wrong_header" or "silence".
+        """
+
+        def run() -> None:
+            try:
+                for _ in range(starve):
+                    conn, _ = self.server.accept()
+                    self.accepted.append(conn)
+                    time.sleep(hold)
+                    conn.close()
+                conn, _ = self.server.accept()
+            except OSError:
+                return  # the test finished and closed the listener
+            self.accepted.append(conn)
+            if then == "handshake":
+                conn.sendall(self.packet() * 2)
+            elif then == "wrong_header":
+                conn.sendall(bytes(manual.c0.SIZE * 2))
+
+        thread = threading.Thread(target=run, daemon=True)
+        thread.start()
+        return thread
+
+    def connect(self, timeout: float) -> tuple[socket.socket, str]:
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            sock = manual.c0.connect_with_handshake(
+                "127.0.0.1",
+                self.port,
+                tag="[manual]",
+                timeout=timeout,
+                attempt_timeout=0.2,
+            )
+        return sock, output.getvalue()
+
+    def test_retries_until_the_driver_hands_over(self) -> None:
+        self.serve(starve=2, hold=0.3, then="handshake")
+
+        sock, output = self.connect(timeout=10.0)
+        sock.close()
+
+        self.assertGreaterEqual(len(self.accepted), 3)
+        self.assertIn("[manual] handshake ok", output)
+        self.assertIn("driver busy", output)
+
+    def test_reports_a_wrong_header_without_retrying(self) -> None:
+        self.serve(starve=0, hold=0.0, then="wrong_header")
+
+        started = time.monotonic()
+        with self.assertRaisesRegex(ValueError, "header"):
+            self.connect(timeout=10.0)
+
+        self.assertLess(time.monotonic() - started, 2.0)
+        self.assertEqual(len(self.accepted), 1)
+
+    def test_gives_up_at_the_deadline(self) -> None:
+        self.serve(starve=99, hold=0.3, then="silence")
+
+        started = time.monotonic()
+        with self.assertRaises(OSError):
+            self.connect(timeout=0.8)
+        elapsed = time.monotonic() - started
+
+        self.assertGreaterEqual(elapsed, 0.8)
+        self.assertLess(elapsed, 5.0)
+
+
 if __name__ == "__main__":
     unittest.main()

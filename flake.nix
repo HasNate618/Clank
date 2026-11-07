@@ -84,6 +84,17 @@
               --replace-fail 'info.lens_vertical_position_meters = 0.07f / 2.0f;' 'info.lens_vertical_position_meters = 0.0366f / 2.0f;' \
               --replace-fail 'info.fov[0] = 85.0f * (M_PI / 180.0f);' 'info.fov[0] = 140.0f * (M_PI / 180.0f);' \
               --replace-fail 'info.fov[1] = 85.0f * (M_PI / 180.0f);' 'info.fov[1] = 140.0f * (M_PI / 180.0f);'
+            # The remote hub serves one pose client at a time, and it writes the
+            # two-packet handshake immediately after accept(). A mode switch can
+            # leave a queued connection whose client already gave up, so that
+            # write lands on a dead socket: with a plain write() the resulting
+            # SIGPIPE kills the service, and every later connect is refused.
+            # Measured 2026-11-06 - switching to manual took the whole session
+            # down this way, with no shutdown lines in monado.log. The IPC channel
+            # next door already uses MSG_NOSIGNAL; this is the same fix here.
+            substituteInPlace src/xrt/drivers/remote/r_hub.c \
+              --replace-fail 'return write(id, ptr, size - current);' \
+              'return send(id, (const char *)ptr, (int)(size - current), MSG_NOSIGNAL);'
           '';
           # RenderDoc integration makes the OpenXR client call
           # RENDERDOC_GetAPI()/StartFrameCapture()/EndFrameCapture() around every

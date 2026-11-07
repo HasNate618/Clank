@@ -117,7 +117,9 @@ port = 8765
 [timeouts]
 monado_startup_sec = 20
 weston_startup_sec = 20
-pose_handshake_sec = 10
+# Must outlast a pose client's handover retries (20 s): the Monado remote hub
+# serves one client at a time, so a mode switch can wait for the old one.
+pose_handshake_sec = 25
 stop_sec = 60
 
 [body]
