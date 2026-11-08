@@ -55,3 +55,12 @@ spike/e5/build/
 # Intermediate PPM/PGM frames; the PNGs beside them are the evidence
 research/evidence/depth-stream/*.ppm
 research/evidence/depth-stream/*.pgm
+
+# Heavy evidence stays on disk, never in git: a single RenderDoc capture is 400 MB and
+# GitHub refuses files over 100 MB. Derive the PNGs instead and commit those.
+research/evidence/**/*.rdc
+research/evidence/**/*.npy
+research/evidence/**/*.ppm
+research/evidence/**/*.pgm
+*.mp4
+*.mp3
