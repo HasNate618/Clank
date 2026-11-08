@@ -254,6 +254,9 @@ python3 -m clank.brainlog --tail 20
   `next_step()` as the situation, so the calibrated prompts keep working unchanged. Measured on
   JobBot's real audio: `Hello human, welcome to the job simulator. My name is JobBot...`,
   238 ms prefill + 310 ms decode. Silence parses to an empty transcript, not an error.
+- **The diary logs events, not polling.** A quiet window is counted and reported once per run,
+  never written: `listen.py` records a line only when words were heard, transcription failed, or
+  the game was not up. An episode of "nothing happened" rows is a bug in the logger, not news.
 - **The diary is the demo.** Every `heard`/`think`/`act`/`result` line goes to
   `~/.local/state/Clank/brain/messages.jsonl` (JSON per line, `CLANK_BRAIN_LOG` overrides) and to
   stderr as `[brain] 11:27:33 think: I will grab the job cartridge`. Nothing reads it back to make

@@ -26,28 +26,30 @@ from clank import brain, brainlog, ears  # noqa: E402
 MARGIN_S = 3.0
 
 
-def one_turn(config: brain.BrainConfig, pattern: str, max_s: float) -> str:
-    """Record one utterance and return its words, or "" if the game said nothing."""
+def one_turn(config: brain.BrainConfig, pattern: str, max_s: float) -> tuple[str, str]:
+    """Record one utterance. Returns (words, why_not).
+
+    A quiet window is not an event: it returns "" and is counted, never logged. Only
+    something the operator would want to read reaches the diary - a heard line, a
+    transcription failure, or the game not being there at all.
+    """
     try:
         hearing = ears.listen(pattern=pattern, max_s=max_s)
     except ears.EarsError as exc:
-        # The game is not playing yet, or PipeWire is not up. Keep waiting: the caller's
-        # deadline bounds this, and a session start takes a minute.
-        brainlog.log("heard", f"waiting for the game ({exc})")
-        return ""
+        # The game is not playing yet, or PipeWire is not up. The caller's deadline bounds
+        # this, and a session start takes a minute, so say it once and keep waiting.
+        return "", f"waiting: {exc}"
     if not hearing.ok:
-        brainlog.log("heard", f"nothing ({hearing.error})")
-        return ""
+        return "", "quiet"
     heard = brain.transcribe(config, hearing.wav)
     if heard.error:
         brainlog.log("error", f"transcribe failed: {heard.error}")
-        return ""
+        return "", "error"
     if heard.empty:
-        brainlog.log("heard", f"({hearing.seconds:.1f}s of game audio, no words)")
-        return ""
+        return "", "quiet"
     brainlog.log("heard", heard.text, ms=heard.decode_ms, speech_s=hearing.speech_s,
                  peak=hearing.peak, cut=heard.ellipsis)
-    return heard.text
+    return heard.text, ""
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -62,18 +64,32 @@ def main(argv: list[str] | None = None) -> int:
     args = ap.parse_args(argv)
 
     config = brain.BrainConfig()
-    deadline = time.monotonic() + args.duration
+    started = time.monotonic()
+    deadline = started + args.duration
     heard = 0
+    quiet = 0
+    waiting_logged = False
     while True:
         budget = max(1.0, deadline - time.monotonic())
-        text = one_turn(config, args.pattern, min(args.max_s, budget))
+        text, reason = one_turn(config, args.pattern, min(args.max_s, budget))
         if text:
             heard += 1
+            waiting_logged = False
             if args.once:
                 break
+        elif reason.startswith("waiting"):
+            # Once, not every 25 seconds: the game is not up yet.
+            if not waiting_logged:
+                brainlog.log("heard", reason)
+                waiting_logged = True
+            time.sleep(1.0)
+        else:
+            quiet += 1
         if time.monotonic() + MARGIN_S >= deadline:
             break
-    brainlog.log("result", f"{heard} utterance(s) in {args.duration:.0f}s")
+    elapsed = time.monotonic() - started
+    brainlog.log("result", f"{heard} utterance(s), {quiet} quiet window(s), "
+                          f"{elapsed:.0f}s listening")
     return 0 if heard else 1
 
 

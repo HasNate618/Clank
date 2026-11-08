@@ -103,7 +103,11 @@ Silence comes back as an empty transcript, not an error: `(silence)`, `silence`,
 [brain] 11:27:34 result: grab ok (skill=grab, code=0)
 ```
 
-That is the demo, so it is written as it happens rather than reconstructed. The dashboard is
+That is the demo, so it is written as it happens rather than reconstructed. **A quiet
+window is not an event**: `listen.py` counts silence and writes one summary row per run
+(`3 utterance(s), 41 quiet window(s), 1200s listening`), because a diary full of "nothing
+happened" is unreadable and hides the lines that matter. Only a heard line, a transcription
+failure, or the game not being up at all reaches it. The dashboard is
 being rebuilt, so nothing reads the file yet: it is a diary, not state, and
 `CLANK_BRAIN_LOG` redirects it for tests and probes.
 
