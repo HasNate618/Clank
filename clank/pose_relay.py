@@ -157,6 +157,50 @@ class StateSource:
         return self._doc, age
 
 
+#: A file the brain can write to re-aim the robot in the virtual room. The body cannot be
+#: turned - a commanded yaw rate measured +0.2 deg where 69 was asked - so the heading is
+#: the only channel for facing something, and it has to be settable while the session runs.
+#: The orchestrator's `--yaw-offset-deg` stays the default; this overrides it when present.
+DEFAULT_YAW_FILE = "~/.local/state/Clank/relay-yaw.json"
+
+
+class YawFile:
+    """Re-reads the heading whenever the file changes. Silent when the file is absent."""
+
+    def __init__(self, path: str | os.PathLike[str] | None) -> None:
+        self.path = Path(os.path.expanduser(path)) if path else None
+        self._seen: tuple[int, int] | None = None
+        self.rad: float | None = None
+
+    def poll(self) -> float | None:
+        """The heading in radians, or None when the file says nothing useful."""
+        if self.path is None:
+            return None
+        try:
+            stamp = self.path.stat()
+        except OSError:
+            return None
+        key = (stamp.st_mtime_ns, stamp.st_size)
+        if key == self._seen:
+            return self.rad
+        self._seen = key
+        try:
+            raw = json.loads(self.path.read_text())
+        except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+            return self.rad
+        deg = raw.get("yaw_offset_deg") if isinstance(raw, dict) else None
+        if not isinstance(deg, (int, float, str)) or isinstance(deg, bool):
+            return self.rad
+        try:
+            value = float(deg)
+        except (TypeError, ValueError):
+            return self.rad
+        if not math.isfinite(value):
+            return self.rad
+        self.rad = math.radians(value)
+        return self.rad
+
+
 class PacketSource:
     """Turns body states into XR poses, holding through gaps."""
 
@@ -168,8 +212,11 @@ class PacketSource:
         player_scale: float = 1.0,
         player_pivot: tuple[float, float, float] = (0.0, 0.0, 0.0),
         player_scale_head: bool = True,
+        yaw_file: str | os.PathLike[str] | None = None,
     ) -> None:
         self.source = source
+        self.yaw_file = YawFile(yaw_file)
+        self._yaw_note = 0.0
         self.stale_after = stale_after
         # The robot's heading in the virtual room. Rejected here rather than
         # silently producing NaN poses downstream: a nan position would take the
@@ -198,6 +245,13 @@ class PacketSource:
             self.last_state = state
         if state is None:
             return self._last, self._last_note if self._last_note != "live" else "stale", age
+        live_yaw = self.yaw_file.poll()
+        if live_yaw is not None and live_yaw != self.yaw_offset_rad:
+            self.yaw_offset_rad = live_yaw
+            if abs(live_yaw - self._yaw_note) > math.radians(0.5):
+                self._yaw_note = live_yaw
+                print(f"pose_relay: heading now {math.degrees(live_yaw):+.1f} deg "
+                      f"(set by {self.yaw_file.path})", flush=True)
         try:
             poses = wire.body_state_to_xr(
                 state,
@@ -348,12 +402,13 @@ def run(host: str, port: int, state_path: Path, log_path: Path | None,
         fov_rad: tuple[float, float] | None = None,
         player_scale: float = 1.0,
         player_pivot: tuple[float, float, float] = (0.0, 0.0, 0.0),
-        player_scale_head: bool = True) -> int:
+        player_scale_head: bool = True,
+        yaw_file: str | None = DEFAULT_YAW_FILE) -> int:
     wire.assert_layout()
     source = PacketSource(
         StateSource(state_path), yaw_offset_rad=yaw_offset_rad,
         player_scale=player_scale, player_pivot=player_pivot,
-        player_scale_head=player_scale_head,
+        player_scale_head=player_scale_head, yaw_file=yaw_file or None,
     )
     sock = connect(host, port)
     print(f"pose_relay: connected {host}:{port}", flush=True)
@@ -500,6 +555,10 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--yaw-offset-deg", type=float, default=0.0, dest="yaw_offset_deg",
                     help="the robot's heading in the virtual room, degrees, positive "
                          "toward its left; chooses the facing rather than walking it")
+    ap.add_argument("--yaw-file", default=DEFAULT_YAW_FILE, dest="yaw_file",
+                    help="a JSON file whose yaw_offset_deg overrides the flag while the "
+                         "session runs, so the brain can aim the robot without a restart; "
+                         "pass an empty string to ignore it")
     ap.add_argument("--fov-h-deg", type=float, default=None, dest="fov_h_deg",
                     help="full horizontal field of view to declare, degrees")
     ap.add_argument("--fov-v-deg", type=float, default=None, dest="fov_v_deg",
