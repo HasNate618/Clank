@@ -83,7 +83,7 @@ Stale Weston/monado/websockify processes block a restart and leave a black
 preview. Kill them and free the ports before retrying. State, logs, the stream
 and the injected layer manifests live under `~/.local/state/Clank/`:
 
-```
+```text
 session-root/sessions/<timestamp>-<id>/   # per-session logs, pose CSV
 depth-stream.bin / depth-stream.log       # live stream (spike/e5)
 depth-layer/vulkan/implicit_layer.d/      # e5 manifest
@@ -232,11 +232,15 @@ spike/e3/.venv/bin/python spike/wbc_game/do_task.py --listen --dry-run
 python3 -m clank.brainlog --tail 20
 ```
 
-- **Capture is by PipeWire node, not by device.** The game is `Stream/Output/Audio` with
-  `application.name = JobSimulator.exe` (`pw-dump`; id 150 or 161 depending on the launch), so
-  `pw-record --target <id> --raw ...` gets the game and nothing else - no desktop audio, no mic.
-  The id changes every launch, so it is resolved per capture by name and `EarsError` is raised
-  rather than guessing.
+- **Capture is a null sink the game alone feeds, recorded with `parecord`.** `pw-record
+  --target <node>` **silently records the muted default source** on this machine - peak 0,
+  exit 0, no stderr - which cost an hour of blaming the game. Proved with a positive control:
+  a 440 Hz tone to a sink reads peak 0 through `pw-record` and peak 9000 through
+  `parecord --device=<sink>.monitor`. Monitor sources also only exist for the PulseAudio API;
+  `pw-dump` lists none. The route is
+  `module-null-sink sink_name=clank-game` + `module-loopback` from its monitor to the
+  operator's sink (so the game stays audible) + `move-sink-input`, then `parecord`. `ears.route()`
+  is idempotent and `python3 -m clank.ears --route-only` applies it by hand.
 - **Two ways the node goes silent, both seen.** `module-stream-restore` had remembered
   `Mute: yes` for `JobSimulator.exe`, so every sample was zero with the recorder working
   perfectly - check `pactl list sink-inputs | grep -A2 JobSimulator` first. And the game is

@@ -7,34 +7,52 @@ The artifact sentence is "hears JobBot, does the task", and until now nothing in
 recorded audio. This is the ear: `clank/ears.py` for capture, `clank/brain.transcribe()` for
 words, `clank/brainlog.py` for the sentences the brain says about itself.
 
-## Capture by node, not by device
+## Capture by node, not by device - and the tool matters
 
-The game is a PipeWire client, so its output is a node of its own. While a session runs,
-`pw-dump` lists it as
+The first design tapped the game's own PipeWire node:
 
 ```text
-150  Stream/Output/Audio  application.name = JobSimulator.exe
+59  Stream/Output/Audio  application.name = JobSimulator.exe
 ```
 
-and `pw-record --target 150 --raw --rate 16000 --channels 1 --format s16 -` streams that
-node's PCM. Recording the node means a notification, a video, or the operator talking on
-the microphone can never be mistaken for the game - the desktop is not in the graph path.
+with `pw-record --target 59 ...`. **That does not work on this machine, and it fails
+silently.** Every capture was digital silence - peak 0, exit status 0, no stderr - while the
+game was audible. Two positive controls proved it was the tool and not the game:
 
-The node id changes on every launch (161 before a restart, 150 after), so `game_node()`
-resolves it per capture by matching `application.name`. It refuses rather than guessing:
-`no playback stream matching 'JobSimulator' (playing: Zen)`.
+| control | recorded |
+| --- | --- |
+| `pw-record --target <bluez monitor>` while a 440 Hz tone played to that sink | peak **0** |
+| `pw-record --target <node of the pw-play stream>` while that tone played | peak **0** |
+| `parecord --device=<sink>.monitor` while the same tone played | peak **9000** |
 
-## Two reasons the node is silent, both real
+So `pw-record --target` links to nothing here and quietly records the default *source*, which
+is a muted microphone. `parecord` - the PulseAudio-compatible front end - links properly.
+Monitor sources also exist only for the PulseAudio API: `pactl list short sinks` shows them,
+`pw-dump` lists none of them, which is why they look absent.
+
+The route that works, and is what `clank/ears.py` does:
+
+1. `pactl load-module module-null-sink sink_name=clank-game` - a sink nothing else feeds.
+2. `pactl load-module module-loopback source=clank-game.monitor sink=<the operator's sink>` -
+   so moving the game does not silence it for the human watching.
+3. `pactl move-sink-input <game> clank-game` - only the game's stream moves.
+4. `parecord --device=clank-game.monitor --rate=16000 --channels=1 --format=s16le <file>`.
+
+Measured after routing: a 5 s capture of the game at rest is `peak 2374, rms 529` - real
+audio, where every earlier attempt was zeros. The desktop mix never enters the capture, so a
+notification, a video, or the operator talking cannot be mistaken for JobBot.
+
+`parecord` writes a WAV file and there is no piped mode here, so `TailReader` tails the file
+and finds the `data` chunk while the writer is still appending to it.
+
+## Two more ways the samples are silent, both real
 
 1. **The sink-input was muted.** `pactl` showed `Sink Input #7076 ... Mute: yes` for
-   `JobSimulator.exe` - PipeWire's `module-stream-restore` had remembered a muted state for
-   that application. Every capture was `peak 0`. This is worth knowing because it looks
-   exactly like a broken recorder: the node exists, `pw-record` connects, and the samples
-   are all zero. Check `pactl list sink-inputs | grep -A2 JobSimulator` before believing
-   anything about the gate.
+   `JobSimulator.exe` - `module-stream-restore` had remembered a muted state for that
+   application. Worth checking first: `pactl list sink-inputs | grep -A2 JobSimulator`.
 2. **The game is silent at the menu.** After a session restart the game sits on
-   `PULL LEVER TO JOB` with no speech at all. JobBot's first lines come *after* the job
-   starts, so a restart alone does not produce audio.
+   `PULL LEVER TO JOB` with no speech. JobBot's first lines come *after* the job starts, so a
+   restart alone does not produce speech.
 
 Digital silence is therefore the normal state between lines, and it broke the first gate
 design: gating on `floor > 0` made the ear deaf to a digitally silent room, which is

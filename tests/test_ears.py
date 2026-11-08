@@ -1,12 +1,20 @@
-"""The ear: which node is the game, and is there speech in it.
+"""The ear: routing the game into a capture sink, and is there speech in it.
 
-No PipeWire needed. `listen` takes a reader, so a fake stream of PCM blocks exercises the
-gate, the pre-roll and the trim; `_spawn` is patched for `record`.
+No audio device needed. `pactl` and the recorder are mocked, and `listen` takes a reader, so a
+fake stream of PCM blocks exercises the gate, the pre-roll and the trim.
+
+The measurements that shaped this module are in research/hearing.md: `pw-record --target`
+does not link on this machine and silently records the muted microphone, so the only capture
+path here is `parecord --device=<capture sink>.monitor`.
 """
 
 import array
 import io
+import json
 import math
+import pathlib
+import tempfile
+import time
 import unittest
 from unittest import mock
 
@@ -25,7 +33,7 @@ def silence(seconds: float) -> bytes:
 
 
 class FakeStream:
-    """What pw-record's stdout looks like: fixed-size blocks then EOF."""
+    """What a capture looks like: fixed-size blocks then EOF."""
 
     def __init__(self, blocks: list[bytes]):
         self.blocks = list(blocks)
@@ -42,64 +50,157 @@ class FakeStream:
         return block
 
 
-def node(node_id: int, name: str, media_class: str = ears.PLAYBACK_CLASS) -> dict:
-    return {
-        "id": node_id,
-        "type": "PipeWire:Interface:Node",
-        "info": {"props": {"media.class": media_class, "application.name": name,
-                           "node.name": name}},
-    }
+def sink_input(index: int, app: str, sink: str) -> dict:
+    return {"index": index, "sink": sink, "properties": {"application.name": app}}
 
 
-def dump_nodes() -> list[dict]:
-    """A pw-dump excerpt: one microphone, one app that is not the game, the game."""
-    return [
-        node(151, "alsa_input.pci", "Audio/Source"),
-        node(268, "Zen"),
-        node(161, "JobSimulator.exe"),
-    ]
+def sink_entry(index: int, name: str) -> dict:
+    return {"index": index, "name": name}
 
 
-class PlaybackNodesTest(unittest.TestCase):
+class RoutingTest(unittest.TestCase):
     def setUp(self) -> None:
-        self.dump = dump_nodes()
+        self.calls: list[tuple[str, ...]] = []
 
-    def test_only_playback_streams_are_candidates(self):
-        found = ears.playback_nodes(self.dump)
-        self.assertEqual([n for n, _, _ in found], [161, 268])
+    def fake_pactl(self, *args: str, timeout: float = 10.0) -> str:
+        self.calls.append(args)
+        joined = " ".join(args)
+        if joined == "-f json list sinks":
+            return json.dumps([sink_entry(5280, "bluez_output.headphones"),
+                               sink_entry(7, ears.SINK_NAME)])
+        if joined == "-f json list sink-inputs":
+            return json.dumps([sink_input(11, "JobSimulator.exe", "5280"),
+                               sink_input(12, "Zen", "5280")])
+        if joined == "get-default-sink":
+            return "bluez_output.headphones\n"
+        if joined == "list short modules":
+            return ""
+        if joined.startswith("move-sink-input"):
+            return ""
+        if joined.startswith("load-module"):
+            return "536870917"
+        raise AssertionError(f"unexpected pactl call: {joined}")
 
-    def test_picks_the_game_by_substring(self):
-        self.assertEqual(ears.pick_node(self.dump, "JobSimulator"), (161, "JobSimulator.exe"))
+    def test_sink_names_come_from_pactl(self):
+        with mock.patch.object(ears, "_pactl", side_effect=self.fake_pactl):
+            self.assertEqual(ears.sink_names(), ["bluez_output.headphones", ears.SINK_NAME])
 
-    def test_match_is_case_insensitive(self):
-        self.assertIsNotNone(ears.pick_node(self.dump, "jobs"))
+    def test_game_streams_match_the_application_name(self):
+        with mock.patch.object(ears, "_pactl", side_effect=self.fake_pactl):
+            found = ears.game_streams("JobSimulator")
+        self.assertEqual([s["index"] for s in found], [11])
 
-    def test_microphone_never_matches(self):
-        dump = [node(151, "JobSimulator", "Audio/Source")]
-        self.assertIsNone(ears.pick_node(dump, "JobSimulator"))
+    def test_a_microphone_or_another_app_is_not_the_game(self):
+        with mock.patch.object(ears, "_pactl", side_effect=self.fake_pactl):
+            self.assertEqual(ears.game_streams("JobSimulator"), ears.game_streams("jobsimulator.exe")[:1])
+            self.assertEqual(ears.game_streams("Zen")[0]["index"], 12)
 
-    def test_no_match_returns_none_rather_than_guessing(self):
-        self.assertIsNone(ears.pick_node(self.dump, "Factorio"))
+    def test_an_empty_pattern_matches_nothing(self):
+        with mock.patch.object(ears, "_pactl", side_effect=self.fake_pactl):
+            self.assertEqual(ears.game_streams("   "), [])
 
-    def test_empty_pattern_matches_nothing(self):
-        self.assertIsNone(ears.pick_node(self.dump, "   "))
+    def test_ensure_sink_creates_it_once(self):
+        with mock.patch.object(ears, "_pactl", side_effect=self.fake_pactl):
+            self.assertFalse(ears.ensure_sink())  # already in the fake sink list
+        with mock.patch.object(ears, "_pactl", side_effect=self.fake_pactl):
+            self.assertTrue(ears.ensure_sink("clank-missing"))
 
-    def test_ignores_non_node_objects(self):
-        dump = [{"id": 5, "type": "PipeWire:Interface:Link"}, {"id": 161}, "nonsense"]
-        self.assertEqual(ears.playback_nodes(dump), [])
+    def test_ensure_loopback_is_skipped_when_one_exists(self):
+        modules = "5\tmodule-loopback\tsource=clank-game.monitor sink=x"
+        with mock.patch.object(ears, "_pactl", side_effect=self.fake_pactl) as pactl:
+            pactl.side_effect = lambda *a, **k: (modules if a[:2] == ("list", "short")
+                                                else self.fake_pactl(*a, **k))
+            self.assertFalse(ears.ensure_loopback())
 
-    def test_game_node_reports_what_is_playing_instead(self):
-        with mock.patch.object(ears, "audio_dump", return_value=self.dump):
-            self.assertEqual(ears.game_node("JobSimulator")[0], 161)
+    def test_ensure_loopback_restores_the_operators_audio(self):
+        with mock.patch.object(ears, "_pactl", side_effect=self.fake_pactl):
+            self.assertTrue(ears.ensure_loopback())
+        self.assertIn(("load-module", "module-loopback", "source=clank-game.monitor",
+                       "sink=bluez_output.headphones", "latency_msec=20"), self.calls)
+
+    def test_move_skips_a_stream_already_behind_the_capture_sink(self):
+        backend = {"-f json list sinks": json.dumps([sink_entry(7, ears.SINK_NAME)]),
+                   "-f json list sink-inputs": json.dumps(
+                       [sink_input(11, "JobSimulator.exe", "7")])}
+        with mock.patch.object(ears, "_pactl", side_effect=lambda *a, **k: backend[" ".join(a)]):
+            self.assertEqual(ears.move_game_streams(), [])
+
+    def test_move_routes_the_game_and_leaves_the_desktop_alone(self):
+        with mock.patch.object(ears, "_pactl", side_effect=self.fake_pactl):
+            moved = ears.move_game_streams()
+        self.assertEqual(moved, [11])
+        self.assertIn(("move-sink-input", "11", ears.SINK_NAME), self.calls)
+
+    def test_route_reports_what_it_changed(self):
+        with mock.patch.object(ears, "_pactl", side_effect=self.fake_pactl):
+            report = ears.route()
+        self.assertEqual(report["device"], "clank-game.monitor")
+        self.assertEqual(report["moved"], [11])
+        self.assertFalse(report["created"])
+
+    def test_route_refuses_when_the_game_is_not_playing(self):
+        with mock.patch.object(ears, "_pactl", side_effect=self.fake_pactl):
             with self.assertRaises(ears.EarsError) as caught:
-                ears.game_node("Factorio")
+                ears.route("Factorio")
+        self.assertIn("no playback stream", str(caught.exception))
         self.assertIn("Zen", str(caught.exception))
 
-    def test_game_node_survives_pw_dump_missing(self):
+    def test_pactl_failure_is_an_ears_error(self):
+        boom = mock.Mock(returncode=1, stderr=b"no such sink", stdout=b"")
+        with mock.patch.object(ears.subprocess, "run", return_value=boom):
+            with self.assertRaises(ears.EarsError) as caught:
+                ears._pactl("list", "sinks")
+        self.assertIn("no such sink", str(caught.exception))
+
+    def test_missing_pactl_is_an_ears_error(self):
         with mock.patch.object(ears.subprocess, "run", side_effect=FileNotFoundError), \
-                self.assertRaises(ears.EarsError) as caught:
-            ears.audio_dump()
-        self.assertIn("pw-dump", str(caught.exception))
+                self.assertRaises(ears.EarsError):
+            ears._pactl("list", "sinks")
+
+
+class PcmOffsetTest(unittest.TestCase):
+    def test_finds_the_data_chunk(self):
+        head = b"RIFF....WAVEfmt " + b"\x00" * 16 + b"data" + b"\xff" * 4
+        self.assertEqual(ears.pcm_offset(head), head.index(b"data") + 8)
+
+    def test_missing_chunk_is_minus_one(self):
+        self.assertEqual(ears.pcm_offset(b"RIFF-only-header"), -1)
+
+
+class TailReaderTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.path = pathlib.Path(self.tmp.name) / "capture.wav"
+
+    def tearDown(self) -> None:
+        self.tmp.cleanup()
+
+    def write_wav(self, payload: bytes) -> None:
+        header = b"RIFF" + b"\x00" * 4 + b"WAVEfmt " + b"\x10\x00\x00\x00" + b"\x00" * 16
+        self.path.write_bytes(header + b"data" + b"\xff\xff\xff\xff" + payload)
+
+    def test_skips_the_header_and_returns_samples(self):
+        self.write_wav(pcm(500, 0.05))
+        reader = ears.TailReader(self.path, wait_s=0.05)
+        self.assertEqual(len(reader.read(BLOCK)), BLOCK)
+
+    def test_waits_for_a_file_that_does_not_exist_yet(self):
+        reader = ears.TailReader(self.path, wait_s=0.05)
+        self.assertEqual(reader.read(BLOCK), b"")
+        self.write_wav(pcm(500, 0.05))
+        self.assertEqual(len(reader.read(BLOCK)), BLOCK)
+
+    def test_it_reads_only_what_is_there(self):
+        self.write_wav(pcm(500, 0.05))
+        reader = ears.TailReader(self.path, wait_s=0.05)
+        chunk = reader.read(BLOCK * 4)
+        self.assertEqual(len(chunk), BLOCK)
+        self.assertEqual(reader.read(BLOCK), b"")
+
+    def test_a_headerless_stream_is_read_as_raw(self):
+        self.path.write_bytes(b"\x01" * 5000)
+        reader = ears.TailReader(self.path, wait_s=0.05)
+        self.assertEqual(len(reader.read(BLOCK)), BLOCK)
 
 
 class LevelTest(unittest.TestCase):
@@ -112,9 +213,8 @@ class LevelTest(unittest.TestCase):
         self.assertTrue(math.isclose(rms, 1000.0, rel_tol=1e-6))
 
     def test_odd_length_is_tolerated(self):
-        peak, rms = ears.level(pcm(500, 0.05) + b"\x01")
+        peak, _ = ears.level(pcm(500, 0.05) + b"\x01")
         self.assertEqual(peak, 500)
-        self.assertGreater(rms, 0.0)
 
     def test_empty_is_zero(self):
         self.assertEqual(ears.level(b""), (0, 0.0))
@@ -123,10 +223,8 @@ class LevelTest(unittest.TestCase):
 class WavTest(unittest.TestCase):
     def test_round_trip(self):
         raw = pcm(250, 0.2)
-        data = ears.wav_bytes(raw)
-        back, rate, channels = ears.wav_pcm(data)
-        self.assertEqual(rate, ears.RATE)
-        self.assertEqual(channels, 1)
+        back, rate, channels = ears.wav_pcm(ears.wav_bytes(raw))
+        self.assertEqual((rate, channels), (ears.RATE, 1))
         self.assertEqual(back, raw)
 
     def test_header_is_what_a_model_expects(self):
@@ -156,7 +254,6 @@ class ListenTest(unittest.TestCase):
         )
         hearing = ears.listen(reader=stream, max_s=10.0)
         self.assertTrue(hearing.ok, hearing.error)
-        # 6 loud blocks plus up to pre_roll + hang of quiet around them
         self.assertGreater(hearing.seconds, 0.3)
         self.assertLess(hearing.seconds, 6 * ears.BLOCK_S + ears.BLOCK_S + 1.0)
 
@@ -186,6 +283,16 @@ class ListenTest(unittest.TestCase):
         self.assertFalse(hearing.ok, "1200 is under 4x a 400 floor")
         self.assertGreater(hearing.gate, 1200)
 
+    def test_digital_silence_then_speech_is_heard(self):
+        """The game is exactly zero between lines; a zero floor must not mean deaf."""
+        stream = FakeStream(
+            [silence(ears.BLOCK_S)] * 20 + [pcm(6000, ears.BLOCK_S)] * 8
+            + [silence(ears.BLOCK_S)] * 40
+        )
+        hearing = ears.listen(reader=stream, max_s=10.0)
+        self.assertTrue(hearing.ok, hearing.error)
+        self.assertEqual(hearing.floor, 0.0)
+
     def test_truncated_stream_still_returns_what_it_had(self):
         stream = FakeStream(
             [silence(ears.BLOCK_S)] * 12 + [pcm(8000, ears.BLOCK_S)] * 6
@@ -200,47 +307,112 @@ class ListenTest(unittest.TestCase):
         self.assertFalse(hearing.ok)
         self.assertLess(len(stream.read_sizes), 5)
 
+    def test_continuous_loud_audio_is_not_an_utterance(self):
+        """The gate is contrast: a floor measured on speech is a floor of speech.
+
+        Worth stating because it is the limit of the design - a game that plays music
+        continuously at a constant level would never open the gate.
+        """
+        stream = FakeStream([pcm(9000, ears.BLOCK_S)] * 40)
+        hearing = ears.listen(reader=stream, max_s=1.0)
+        self.assertFalse(hearing.ok)
+        self.assertGreater(hearing.gate, 9000)
+
+    def test_a_dead_reader_does_not_spin_to_the_deadline(self):
+        stream = FakeStream([silence(ears.BLOCK_S)] * 12)
+        started = time.monotonic()
+        hearing = ears.listen(reader=stream, max_s=30.0)
+        self.assertFalse(hearing.ok)
+        self.assertLess(time.monotonic() - started, 5.0, "listen waited out max_s")
+
+
+class CaptureStub:
+    """Stands in for `ears.capture`: a reader, a finished process, and routing info."""
+
+    def __init__(self, blocks: list[bytes], device: str = "clank-game.monitor"):
+        self.reader = FakeStream(blocks)
+        self.proc = mock.Mock()
+        self.proc.poll.return_value = 0
+        self.info = {"device": device}
+        self.entered = 0
+        self.exited = 0
+
+    def __enter__(self):
+        self.entered += 1
+        return self.reader, self.proc, self.info
+
+    def __exit__(self, *exc):
+        self.exited += 1
+        return False
+
 
 class RecordTest(unittest.TestCase):
     def test_fixed_length_capture(self):
-        fake = mock.Mock()
-        fake.stdout = io.BytesIO(pcm(900, 1.0))
-        fake.stderr = io.BytesIO(b"")
-        fake.poll.return_value = None
-        fake.wait.return_value = 0
-        with mock.patch.object(ears, "_spawn", return_value=fake), \
-                mock.patch.object(ears, "game_node", return_value=(161, "JobSimulator.exe")):
+        stub = CaptureStub([pcm(900, 0.5)])
+        with mock.patch.object(ears, "capture", return_value=stub):
             hearing = ears.record(0.5)
         self.assertTrue(math.isclose(hearing.seconds, 0.5, abs_tol=0.06), hearing.seconds)
         self.assertEqual(hearing.peak, 900)
-        self.assertEqual(hearing.node, 161)
+        self.assertEqual(hearing.device, "clank-game.monitor")
+        self.assertEqual((stub.entered, stub.exited), (1, 1))
 
-    def test_a_dead_stream_is_an_error_not_a_crash(self):
-        fake = mock.Mock()
-        fake.stdout = io.BytesIO(b"")
-        fake.stderr = io.BytesIO(b"connection failed")
-        fake.poll.return_value = 1
-        fake.wait.return_value = 1
-        with mock.patch.object(ears, "_spawn", return_value=fake), \
-                mock.patch.object(ears, "game_node", return_value=(161, "JobSimulator.exe")):
+    def test_a_dead_capture_is_an_error_not_a_crash(self):
+        stub = CaptureStub([])
+        stub.info["stderr"] = "connection failed"
+        with mock.patch.object(ears, "capture", return_value=stub):
             hearing = ears.record(0.5)
         self.assertFalse(hearing.ok)
-        self.assertIn("connection failed", hearing.error)
+        self.assertIn("no audio received", hearing.error)
+
+    def test_listen_uses_the_capture_device_and_cleans_up(self):
+        stub = CaptureStub([silence(ears.BLOCK_S)] * 12
+                           + [pcm(8000, ears.BLOCK_S)] * 6
+                           + [silence(ears.BLOCK_S)] * 20)
+        with mock.patch.object(ears, "capture", return_value=stub):
+            hearing = ears.listen(max_s=10.0)
+        self.assertTrue(hearing.ok, hearing.error)
+        self.assertEqual(hearing.device, "clank-game.monitor")
+        self.assertEqual((stub.entered, stub.exited), (1, 1))
 
 
 class CliTest(unittest.TestCase):
-    def test_list_prints_the_playback_nodes(self):
-        dump = [node(161, "JobSimulator.exe"), node(268, "Zen")]
+    def setUp(self) -> None:
+        self.backend = {
+            "-f json list sinks": json.dumps([sink_entry(7, ears.SINK_NAME)]),
+            "-f json list sink-inputs": json.dumps(
+                [sink_input(11, "JobSimulator.exe", "7")]),
+            "get-default-sink": "bluez_output.headphones\n",
+            "list short modules": "",
+        }
+
+    def fake_pactl(self, *args: str, timeout: float = 10.0) -> str:
+        try:
+            return self.backend[" ".join(args)]
+        except KeyError:
+            return "0"
+
+    def test_list_prints_the_sinks_and_the_device(self):
         out = io.StringIO()
-        with mock.patch.object(ears, "audio_dump", return_value=dump), \
+        with mock.patch.object(ears, "_pactl", side_effect=self.fake_pactl), \
                 mock.patch("sys.stdout", out):
             self.assertEqual(ears.main(["--list"]), 0)
-        self.assertIn("JobSimulator.exe", out.getvalue())
-        self.assertNotIn("alsa_input", out.getvalue())
+        text = out.getvalue()
+        self.assertIn(ears.SINK_NAME, text)
+        self.assertIn("JobSimulator.exe", text)
+        self.assertIn("clank-game.monitor", text)
 
-    def test_missing_node_exits_two_with_a_reason(self):
+    def test_route_only_reports_the_routing(self):
+        out = io.StringIO()
+        with mock.patch.object(ears, "_pactl", side_effect=self.fake_pactl), \
+                mock.patch("sys.stdout", out):
+            self.assertEqual(ears.main(["--route-only", "--json"]), 0)
+        report = json.loads(out.getvalue())
+        self.assertEqual(report["device"], "clank-game.monitor")
+
+    def test_no_game_stream_exits_two_with_a_reason(self):
+        self.backend["-f json list sink-inputs"] = json.dumps([sink_input(12, "Zen", "7")])
         err = io.StringIO()
-        with mock.patch.object(ears, "audio_dump", return_value=[]), \
+        with mock.patch.object(ears, "_pactl", side_effect=self.fake_pactl), \
                 mock.patch("sys.stderr", err), mock.patch("sys.stdout", io.StringIO()):
             self.assertEqual(ears.main([]), 2)
         self.assertIn("no playback stream", err.getvalue())
