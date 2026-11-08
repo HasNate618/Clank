@@ -80,3 +80,14 @@ fingers are extended. Same arm pose, same camera; only the grip changed.
 
 So the loop closes in both directions: the game's squeeze and the body's fingers are now the same
 event, and releasing opens the hand instead of leaving it frozen shut.
+
+## What it looks like up close
+
+`research/evidence/hand-clasp-open-closed-open.png` is three live body-view frames from one fixed
+camera, only the grip changing: **open, closed, released**.
+
+The clasp is a **pinch, not a fist**. Open, the index and middle fingers splay apart in a V; closed,
+they come parallel with the tips converged toward the opposing thumb; released, they splay again.
+That is what a 7-DoF two-finger-plus-thumb hand does with `grasp_qpos`, and it is why the mid-frame
+of that sheet looks straighter rather than shorter - the fingers converge, they do not curl over.
+Anyone expecting a human fist will read the closed frame as "still open" from a distance.
