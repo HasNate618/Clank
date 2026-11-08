@@ -59,7 +59,7 @@ sys.path.insert(0, str(REPO))
 
 from clank.body import Pose  # noqa: E402
 from clank.depth_stream import Stream  # noqa: E402
-from clank.workspace import clamp_wrist
+from clank.workspace import clamp_wrist  # noqa: E402
 from clank.pixel3d import point_from_pixel  # noqa: E402
 from clank.projection import Fov, project_point  # noqa: E402
 
@@ -124,6 +124,11 @@ STEP_GUARD_M = 0.15
 #: reached for. The arm's whole envelope is ~0.70 m; 1.0 m leaves room for a stretched pose
 #: while refusing a stale pixel.
 MAX_PLAUSIBLE_M = 1.0
+
+#: Nothing nearer than this is the object: the robot's own hand and forearm sit in the frame
+#: at about 0.2 m, and "nearest surface" without a floor answered "your own arm" - a goal at
+#: z = -0.816, below the floor of the room.
+MIN_SURFACE_M = 0.28
 
 #: `VR_OFFSETS[1]`: the lever between the physical wrist link and the point the game
 #: draws the hand at. Measured today: the policy drives the link onto `vr_pos` to within
@@ -287,6 +292,10 @@ def main() -> int:
     ap.add_argument("px", type=float, nargs="?", default=None)
     ap.add_argument("py", type=float, nargs="?", default=None)
     ap.add_argument("--side", choices=("left", "right"), default="right")
+    ap.add_argument("--camera", type=float, nargs=7, default=None,
+                    metavar=("PX", "PY", "PZ", "QX", "QY", "QZ", "QW"),
+                    help="the head pose the pixel was marked from; without it the pixel is "
+                         "unprojected through the head as it is now, which drifts")
     ap.add_argument(
         "--target",
         type=float,
@@ -392,6 +401,13 @@ def main() -> int:
     head = Pose(p=tuple(st["head"]["p"]), q_xyzw=tuple(st["head"]["q_xyzw"]))
 
     camera = head
+    if args.camera is not None:
+        # The pose the pixel was marked from. A marked pixel is only meaningful through the
+        # camera that saw it, and the head does not hold: a head pin expires, the relay takes
+        # the head back, and the same pixel then points somewhere else. Measured 2026-11-08:
+        # the caller grounded the card at 0.59 m and this process, sampling the same pixel
+        # after the pin had lapsed, computed 1.44 m and refused it.
+        camera = Pose(p=tuple(args.camera[:3]), q_xyzw=tuple(args.camera[3:]))
     if args.world is not None:
         goal_world = tuple(args.world)
         goal = to_rel(goal_world, st)
@@ -420,7 +436,6 @@ def main() -> int:
         # (y = +0.33, 0.94 m from the left hand, 0.44 m from the right hand mirrored) when it
         # is at y = -0.52, i.e. **0.44 m from the right hand** and 0.94 m from the left.
         # The raw head is the correct camera: R^-1(R(head) + R(q) d n) = head + q d n.
-        camera = head
         points = []
         with Stream() as stream:
             for _ in range(3):
@@ -432,7 +447,7 @@ def main() -> int:
                 # the median put the same card at 0.635 m (arm asked for 120 mm it has not
                 # got) where the nearest surface is 0.50 m and inside the envelope.
                 p3 = point_from_pixel(f, args.px / cw, args.py / ch, camera, FOV,
-                                      nearest=True)
+                                      nearest=True, min_m=MIN_SURFACE_M)
                 if p3 is not None:
                     points.append(p3)
                 time.sleep(0.15)

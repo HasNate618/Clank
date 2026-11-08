@@ -164,13 +164,20 @@ def mark(png: bytes, pixel: tuple[float, float], out: pathlib.Path) -> None:
     image.save(out)
 
 
-def grab_pixel(x: float, y: float, side: str) -> int:
-    """Reach the pixel and close, in one process with no gap."""
-    return subprocess.call([
+def grab_pixel(x: float, y: float, side: str, camera: Pose | None = None) -> int:
+    """Reach the pixel and close, in one process with no gap.
+
+    `camera` is the pose the pixel was marked from. Without it the reach unprojects through
+    whatever the head has drifted to by then, and the same pixel means a different ray.
+    """
+    argv = [
         VENV, str(HERE / "reach_vr.py"), f"{x:.1f}", f"{y:.1f}", "--side", side,
         "--no-rest", "--no-clamp", "--tol", "0.02", "--corrections", "4",
         "--gain", "0.6", "--guard", "0.25", "--grab",
-    ])
+    ]
+    if camera is not None:
+        argv += ["--camera", *[f"{v:.5f}" for v in (*camera.p, *camera.q_xyzw)]]
+    return subprocess.call(argv)
 
 
 def one_turn(say: str = "", pattern: str = ears.DEFAULT_PATTERN,
@@ -275,7 +282,8 @@ def one_turn(say: str = "", pattern: str = ears.DEFAULT_PATTERN,
                     metres = min(math.dist(centre, rest_left),
                                  math.dist(centre, rest_right))
                 point = point_from_pixel(depth_frame, pixel[0] / size[0],
-                                         pixel[1] / size[1], camera, FOV, nearest=True)
+                                         pixel[1] / size[1], camera, FOV, nearest=True,
+                                         min_m=reach_vr.MIN_SURFACE_M)
                 if point is not None:
                     side = "left" if point[1] > 0.0 else "right"
             brainlog.log(
@@ -284,7 +292,7 @@ def one_turn(say: str = "", pattern: str = ears.DEFAULT_PATTERN,
                 quadrant=found.get("quadrant"), error=found.get("error") or "",
             )
             if pixel and MIN_OBJ_M <= metres <= MAX_OBJ_M:
-                seen = (pixel, png)
+                seen = (pixel, png, camera)
                 brainlog.log("think", f"the {target} is {metres:.2f} m from my hand; "
                                       f"reaching with the {side}", side=side)
                 break
@@ -294,10 +302,10 @@ def one_turn(say: str = "", pattern: str = ears.DEFAULT_PATTERN,
         if seen is None:
             brainlog.log("result", f"cannot see {target} within reach", ok=False)
             break
-        pixel, png = seen
+        pixel, png, camera = seen
         mark(png, pixel, STATE / f"marked-{stamp}.png")
         started = time.monotonic()
-        code = grab_pixel(pixel[0], pixel[1], side)
+        code = grab_pixel(pixel[0], pixel[1], side, camera)
         seconds = round(time.monotonic() - started, 1)
         brainlog.log(
             "result", f"grab({target}) {'reached' if code == 0 else 'failed'}",

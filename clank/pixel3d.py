@@ -36,6 +36,7 @@ def sample_depth(
     patch: int = DEFAULT_PATCH,
     tol_m: float = DEFAULT_TOL_M,
     nearest: bool = False,
+    min_m: float = 0.0,
 ) -> float | None:
     """Depth at normalised `(u, v)`, or None when there is no usable surface there.
 
@@ -52,6 +53,10 @@ def sample_depth(
     2026-11-08: the same card pixel unprojected to 0.635 m with the median (beyond the arm)
     and 0.50 m with the nearest (inside it), while a reach at the median saturated 120 mm
     short. The card is nearer than the wall; take the near thing.
+
+    `min_m` is what keeps that honest: the robot's own hand and forearm are in the frame at
+    about 0.2 m, so "nearest" without a floor answers "your own arm" - measured, a goal at
+    z = -0.816, below the floor of the room. Surfaces nearer than `min_m` are skipped.
 
     Returns None for the stream's "nothing there" (0.0), for non-finite values, and for a
     pixel outside the unit square. None is a real answer and callers must not substitute
@@ -76,12 +81,12 @@ def sample_depth(
 
     radius = max(0, patch // 2)
     if nearest:
-        nearest_value = ref
+        nearest_value = ref if ref > min_m else math.inf
         for y in range(max(0, cy - radius), min(height, cy + radius + 1)):
             base = y * width
             for x in range(max(0, cx - radius), min(width, cx + radius + 1)):
                 value = float(depth[base + x])
-                if math.isfinite(value) and 0.0 < value < nearest_value:
+                if math.isfinite(value) and min_m < value < nearest_value:
                     nearest_value = value
         return nearest_value
 
@@ -108,6 +113,7 @@ def point_from_pixel(
     tol_m: float = DEFAULT_TOL_M,
     head_scale: float = 1.0,
     nearest: bool = False,
+    min_m: float = 0.0,
 ) -> tuple[float, float, float] | None:
     """The root-relative point under normalised `(u, v)`, or None.
 
@@ -135,8 +141,9 @@ def point_from_pixel(
     width = int(frame["width"])
     height = int(frame["height"])
     depth = sample_depth(
-        frame["depth"], width, height, u, v, patch=patch, tol_m=tol_m, nearest=nearest
+        frame["depth"], width, height, u, v, patch=patch, tol_m=tol_m, nearest=nearest,
+        min_m=min_m,
     )
-    if depth is None:
+    if depth is None or not math.isfinite(depth):
         return None
     return unproject((float(u), float(v)), head, fov, depth / head_scale)
