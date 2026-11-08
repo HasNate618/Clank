@@ -44,6 +44,7 @@
   --src-proxy: #a78bfa;
   --src-steam: #4ade80;
   --src-pose: #ff7ab6;
+  --src-brain: #f0e68c;
 }
 
 * { box-sizing: border-box; }
@@ -656,6 +657,7 @@ button.active:hover:not(:disabled) {
 .chip[data-source="proxy"] { border-color: var(--src-proxy); color: var(--src-proxy); }
 .chip[data-source="steam"] { border-color: var(--src-steam); color: var(--src-steam); }
 .chip[data-source="pose"] { border-color: var(--src-pose); color: var(--src-pose); }
+.chip[data-source="brain"] { border-color: var(--src-brain); color: var(--src-brain); }
 .chip.off { opacity: 0.28; text-decoration: line-through; }
 
 /* one stream, every source, tagged and coloured */
@@ -691,6 +693,7 @@ button.active:hover:not(:disabled) {
 .log-line.src-proxy .log-src { color: var(--src-proxy); }
 .log-line.src-steam .log-src { color: var(--src-steam); }
 .log-line.src-pose .log-src { color: var(--src-pose); }
+.log-line.src-brain .log-src { color: var(--src-brain); }
 
 /* ---------- narrow screens: stack the deck ---------- */
 

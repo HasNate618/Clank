@@ -12,6 +12,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import unquote, urlparse
 
+from . import brainlog
 from .body_preview import BODY_VERBS, BODY_VIEWS, BodyPreview, send_control
 from .config import Config
 from .depth_stream import bmp, latest
@@ -285,7 +286,24 @@ class DashboardHandler(BaseHTTPRequestHandler):
             except OSError:
                 continue
             streams[name] = text.splitlines()
+        brain = self._brain_lines()
+        if brain:
+            # Same panel, same chips: the brain is just another source, so the operator
+            # reads "I will grab the card" next to the pose log without a second view.
+            streams["brain"] = brain
         self._json({"logs": streams})
+
+    def _brain_lines(self) -> list[str]:
+        """The brain's diary as log lines. Never raises: a diary must not break the UI."""
+        try:
+            rows = brainlog.tail(LOG_TAIL_LINES)
+        except Exception:  # noqa: BLE001 - a broken diary must not take out /api/logs
+            return []
+        lines: list[str] = []
+        for row in rows:
+            rendered = brainlog.render(row)
+            lines.append(rendered.removeprefix("[brain] "))
+        return lines
 
     def _font(self, name: str) -> None:
         # Only the vendored font directory is served, and never a traversal.

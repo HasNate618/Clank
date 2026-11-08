@@ -387,6 +387,35 @@ class DashboardTests(unittest.TestCase):
         status, _ = self.request("GET", "/api/logs/nope")
         self.assertEqual(status, 404)
 
+    def test_logs_carry_the_brain_diary(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp, \
+                patch.dict(os.environ, {"CLANK_BRAIN_LOG": str(Path(tmp) / "m.jsonl")}):
+            from clank import brainlog
+
+            brainlog.log("think", "I will pick up the card", echo=False,
+                         path=Path(tmp) / "m.jsonl")
+            status, body = self.request("GET", "/api/logs")
+        self.assertEqual(status, 200)
+        logs = json.loads(body)["logs"]
+        self.assertIn("brain", logs)
+        self.assertTrue(any("I will pick up the card" in line for line in logs["brain"]))
+
+    def test_logs_omit_the_brain_source_when_the_diary_is_empty(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp, \
+                patch.dict(os.environ, {"CLANK_BRAIN_LOG": str(Path(tmp) / "none.jsonl")}):
+            status, body = self.request("GET", "/api/logs")
+        self.assertEqual(status, 200)
+        self.assertNotIn("brain", json.loads(body)["logs"])
+
+    def test_an_unreadable_diary_does_not_break_the_log_panel(self) -> None:
+        blocked = Path(self.temp.name) / "blocked"
+        blocked.mkdir()
+        with patch.dict(os.environ, {"CLANK_BRAIN_LOG": str(blocked)}), \
+                patch("clank.brainlog.tail", side_effect=OSError("nope")):
+            status, body = self.request("GET", "/api/logs")
+        self.assertEqual(status, 200)
+        self.assertIn("logs", json.loads(body))
+
     def test_logs_weston_stdout_is_not_public(self) -> None:
         (self.base / "weston-stdout.log").write_text("internal weston stdout")
         status, body = self.request("GET", "/api/logs/weston-stdout")
@@ -422,12 +451,27 @@ class DashboardTests(unittest.TestCase):
     def test_merged_log_stream_carries_every_source(self) -> None:
         self.manager.logs["monado"].write_text("monado says hi\nsecond line")
         self.manager.logs["weston"].write_text("weston says hi")
-        status, body = self.request("GET", "/api/logs")
+        with tempfile.TemporaryDirectory() as tmp, \
+                patch.dict(os.environ, {"CLANK_BRAIN_LOG": str(Path(tmp) / "none.jsonl")}):
+            status, body = self.request("GET", "/api/logs")
         self.assertEqual(status, 200)
         logs = json.loads(body)["logs"]
         self.assertEqual(set(logs), set(FakeManager.LOG_FILES))
         self.assertEqual(logs["monado"], ["monado says hi", "second line"])
         self.assertEqual(logs["weston"], ["weston says hi"])
+
+    def test_the_brain_is_an_extra_source_beyond_the_log_files(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            diary = Path(tmp) / "m.jsonl"
+            from clank import brainlog
+
+            brainlog.log("think", "I will pick up the card", echo=False, path=diary)
+            with patch.dict(os.environ, {"CLANK_BRAIN_LOG": str(diary)}):
+                status, body = self.request("GET", "/api/logs")
+        self.assertEqual(status, 200)
+        logs = json.loads(body)["logs"]
+        self.assertLessEqual(set(FakeManager.LOG_FILES), set(logs))
+        self.assertEqual(set(logs) - set(FakeManager.LOG_FILES), {"brain"})
 
     def test_merged_log_stream_skips_missing_files(self) -> None:
         self.manager.logs["steam"].unlink()
