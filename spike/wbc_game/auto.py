@@ -60,6 +60,11 @@ STATE = pathlib.Path.home() / ".local/state/Clank/auto"
 #: A session start takes about a minute; stop this long before the deadline.
 MARGIN_S = 25.0
 
+#: How long to ask for the rest pose, and how often. The clip answers in under a second and
+#: the command's TTL is short, so it has to be asked for repeatedly.
+REST_TICKS = 8
+REST_PERIOD_S = 0.25
+
 #: How many frames to try before saying the thing is not there. `reach_vr` exits 1 when
 #: the marked point is more than `MAX_PLAUSIBLE_M` from the resting hand - measured
 #: 2026-11-08, locate("card") answered the JOB SIMULATOR sign at 4.9 m - so a fresh frame
@@ -105,6 +110,12 @@ def ready(mode: str = "body") -> bool:
             brainlog.log("error", f"body {command}: {out['error']}")
             return False
         time.sleep(2.0 if command == "stop" else 1.0)
+    # A restart alone leaves the body in whatever pose the last command pinned: measured
+    # 2026-11-08, arms straight out in the hold clip's T-pose. `rest` is the only command
+    # that means "back to the clip", so send it until the body is actually standing.
+    for _ in range(REST_TICKS):
+        reach_vr.send(verb="rest")
+        time.sleep(REST_PERIOD_S)
     return True
 
 
@@ -272,17 +283,20 @@ def one_turn(say: str = "", pattern: str = ears.DEFAULT_PATTERN,
         if skill != "grab":
             brainlog.log("think", f"skipping {skill}({target}) - only grab is wired")
             continue
-        # Look before reaching. The robot cannot turn its body, so the head is swept until
-        # the noun grounds to a point the arm could actually get to; a pixel that unprojects
-        # to metres away is signage, not the card (measured: locate answered the JOB
-        # SIMULATOR sign at 4.9 m).
-        seen = None
-        # The hand nearest the object reaches for it. The model's `side` is a guess from a
-        # still and it guessed left for a card on the right, which crosses the body and
-        # saturates; the grounded point's own y says which hand has it.
+        # Look before reaching, and reach inside the sweep. The robot cannot turn its body,
+        # so the head is swept until the noun grounds somewhere the arm could get to; a pixel
+        # that unprojects to metres away is signage, not the card (measured: locate answered
+        # the JOB SIMULATOR sign at 4.9 m). The reach belongs inside the loop because it can
+        # refuse for a reason the sweep cannot see: `code 1` means there was no surface above
+        # the arm's own radius at that pixel, i.e. the robot's glove was in front of the
+        # camera. Measured: the gate approved a pixel at 0.43 m and the reach found nothing
+        # there. A different head yaw looks around the arm.
         rest_left = reach_vr.wrist("left")
         rest_right = reach_vr.wrist("right")
-        for dyaw in LOOK_DEG:
+        code = -1
+        pixel = None
+        seconds = 0.0
+        for attempt, dyaw in enumerate(LOOK_DEG, start=1):
             if dyaw:
                 for _ in range(4):
                     look(dyaw, side)
@@ -311,25 +325,35 @@ def one_turn(say: str = "", pattern: str = ears.DEFAULT_PATTERN,
                     side = "left" if point[1] > 0.0 else "right"
             brainlog.log(
                 "act", f"locate({target})", pixel=pixel, present=found.get("present"),
-                metres=round(metres, 2), head_yaw_off=dyaw,
+                metres=round(metres, 2), head_yaw_off=dyaw, attempt=attempt,
                 quadrant=found.get("quadrant"), error=found.get("error") or "",
             )
-            if pixel and MIN_OBJ_M <= metres <= MAX_OBJ_M:
-                seen = (pixel, png, camera)
-                brainlog.log("think", f"the {target} is {metres:.2f} m from my hand; "
-                                      f"reaching with the {side}", side=side)
-                break
-            if pixel:
+            if not pixel:
+                continue
+            if metres < reach_vr.MIN_SURFACE_M:
+                # The robot's own glove sits in frame at about 0.2 m. Nothing that close is
+                # the object; reaching there closes the hand on itself.
+                brainlog.log("think", f"that is {metres:.2f} m from my hand - that is my own "
+                                      "arm, not the card; looking elsewhere")
+                continue
+            if metres > MAX_OBJ_M:
                 brainlog.log("think", f"that pixel is {metres:.2f} m away - not the "
                                       f"{target}; looking elsewhere")
-        if seen is None:
+                continue
+            brainlog.log("think", f"the {target} is {metres:.2f} m from my hand; "
+                                  f"reaching with the {side}", side=side)
+            mark(png, pixel, STATE / f"marked-{stamp}.png")
+            started = time.monotonic()
+            code = grab_pixel(pixel[0], pixel[1], side, camera)
+            seconds = round(time.monotonic() - started, 1)
+            if code == 1 and attempt < len(LOOK_DEG):
+                brainlog.log("think", "nothing at that pixel the hand could reach - "
+                                      "something of mine is in the way; looking from elsewhere")
+                continue
+            break
+        if pixel is None or code < 0:
             brainlog.log("result", f"cannot see {target} within reach", ok=False)
             break
-        pixel, png, camera = seen
-        mark(png, pixel, STATE / f"marked-{stamp}.png")
-        started = time.monotonic()
-        code = grab_pixel(pixel[0], pixel[1], side, camera)
-        seconds = round(time.monotonic() - started, 1)
         brainlog.log(
             "result", f"grab({target}) {'reached' if code == 0 else 'failed'}",
             ok=code == 0, code=code, seconds=seconds, pixel=pixel,

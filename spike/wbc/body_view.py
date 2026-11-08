@@ -410,6 +410,11 @@ def verb_command(
         )
 
     verbs = {
+        # The clip's own equilibrium: the only command that means "go back to standing".
+        # `hold` freezes wherever the body is, which is why a restart after a failed reach
+        # put it back in the T-pose the last command left it in - measured 2026-11-08, arms
+        # straight out and knees bent, and the operator noticed before any log did.
+        "rest": rest,
         "hold": hold,
         "look_left": head_left,
         "look_right": head_right,
