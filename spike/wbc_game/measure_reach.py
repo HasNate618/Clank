@@ -31,6 +31,14 @@ def main() -> int:
     ap.add_argument("--settle", type=float, default=1.2)
     ap.add_argument("--no-clamp", action="store_true")
     ap.add_argument("--no-rest", action="store_true")
+    ap.add_argument(
+        "--z-gain",
+        type=float,
+        default=1.0,
+        help="scale the aim in height about the resting hand, to cancel the plant's vertical "
+        "gain. 1.0 aims at the target; 1.58 divides the climb by the measured gain, so "
+        "aim_z = rest_z + (goal_z - rest_z) / gain",
+    )
     ap.add_argument("--json", action="store_true")
     args = ap.parse_args()
 
@@ -41,6 +49,11 @@ def main() -> int:
 
     st0 = rv.state()
     start = tuple(st0[f"{args.side}_hand"]["p"])
+    goal = target
+    if args.z_gain != 1.0:
+        aim = (goal[0], goal[1], start[2] + (goal[2] - start[2]) / args.z_gain)
+    else:
+        aim = goal
     head0 = look(st0)
     root0 = tuple(st0["root_p"])
     dt = 0.05
@@ -48,7 +61,7 @@ def main() -> int:
     t0 = time.monotonic()
     ticks = 0
     for _ in range(200):
-        err = [target[k] - ref[k] for k in range(3)]
+        err = [aim[k] - ref[k] for k in range(3)]
         left = math.sqrt(sum(e * e for e in err))
         if left <= 0.03:
             break
@@ -59,7 +72,7 @@ def main() -> int:
         ticks += 1
         time.sleep(dt)
     for _ in range(int(args.settle / dt)):
-        cmd = target if args.no_clamp else rv.clamp_wrist(target)
+        cmd = aim if args.no_clamp else rv.clamp_wrist(aim)
         rv.command(cmd, 0.0, args.side)
         ticks += 1
         time.sleep(dt)
@@ -69,7 +82,8 @@ def main() -> int:
     root1 = tuple(st1["root_p"])
     gap = math.dist(hand, target)
     res = {
-        "target": [round(v, 3) for v in target],
+        "target": [round(v, 3) for v in goal],
+        "aim": [round(v, 3) for v in aim],
         "hand": [round(v, 3) for v in hand],
         "gap_mm": round(gap * 1000, 1),
         "dx": [round(target[k] - hand[k], 3) for k in range(3)],
