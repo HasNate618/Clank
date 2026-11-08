@@ -265,12 +265,18 @@ def one_turn(say: str = "", pattern: str = ears.DEFAULT_PATTERN,
             metres = 0.0
             point = None
             if pixel:
+                # Two different questions, two different samples. The *median* surface
+                # around the pixel says whether this is an object at all - a sign on a far
+                # wall measures metres and is refused - while the *nearest* surface is the
+                # card itself, which is a thin plane in front of that wall.
+                centre = point_from_pixel(depth_frame, pixel[0] / size[0],
+                                          pixel[1] / size[1], camera, FOV)
+                if centre is not None:
+                    metres = min(math.dist(centre, rest_left),
+                                 math.dist(centre, rest_right))
                 point = point_from_pixel(depth_frame, pixel[0] / size[0],
-                                         pixel[1] / size[1], camera, FOV)
+                                         pixel[1] / size[1], camera, FOV, nearest=True)
                 if point is not None:
-                    nearest = min(math.dist(point, rest_left),
-                                  math.dist(point, rest_right))
-                    metres = nearest
                     side = "left" if point[1] > 0.0 else "right"
             brainlog.log(
                 "act", f"locate({target})", pixel=pixel, present=found.get("present"),

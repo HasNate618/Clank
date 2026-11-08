@@ -35,6 +35,7 @@ def sample_depth(
     v: float,
     patch: int = DEFAULT_PATCH,
     tol_m: float = DEFAULT_TOL_M,
+    nearest: bool = False,
 ) -> float | None:
     """Depth at normalised `(u, v)`, or None when there is no usable surface there.
 
@@ -43,6 +44,14 @@ def sample_depth(
     `tol_m` of it are collected and the median returned. Neighbours further away are a
     different surface - typically the background behind a thin object - and are dropped
     rather than averaged in.
+
+    With `nearest=True` the **closest** surface in the patch wins instead of the median
+    around the centre texel, and the tolerance does not filter anything out. That is the
+    right question for a thin object: the JobBot card is a plane a few millimetres thick, so
+    its pixel's centre texel lands on the wall behind it as often as on the card. Measured
+    2026-11-08: the same card pixel unprojected to 0.635 m with the median (beyond the arm)
+    and 0.50 m with the nearest (inside it), while a reach at the median saturated 120 mm
+    short. The card is nearer than the wall; take the near thing.
 
     Returns None for the stream's "nothing there" (0.0), for non-finite values, and for a
     pixel outside the unit square. None is a real answer and callers must not substitute
@@ -66,6 +75,16 @@ def sample_depth(
         return None
 
     radius = max(0, patch // 2)
+    if nearest:
+        nearest_value = ref
+        for y in range(max(0, cy - radius), min(height, cy + radius + 1)):
+            base = y * width
+            for x in range(max(0, cx - radius), min(width, cx + radius + 1)):
+                value = float(depth[base + x])
+                if math.isfinite(value) and 0.0 < value < nearest_value:
+                    nearest_value = value
+        return nearest_value
+
     near: list[float] = []
     for y in range(max(0, cy - radius), min(height, cy + radius + 1)):
         base = y * width
@@ -88,6 +107,7 @@ def point_from_pixel(
     patch: int = DEFAULT_PATCH,
     tol_m: float = DEFAULT_TOL_M,
     head_scale: float = 1.0,
+    nearest: bool = False,
 ) -> tuple[float, float, float] | None:
     """The root-relative point under normalised `(u, v)`, or None.
 
@@ -115,7 +135,7 @@ def point_from_pixel(
     width = int(frame["width"])
     height = int(frame["height"])
     depth = sample_depth(
-        frame["depth"], width, height, u, v, patch=patch, tol_m=tol_m
+        frame["depth"], width, height, u, v, patch=patch, tol_m=tol_m, nearest=nearest
     )
     if depth is None:
         return None

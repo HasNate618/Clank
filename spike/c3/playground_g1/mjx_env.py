@@ -1,3 +1,7 @@
+# This MJX port needs jax, flax and ml_collections, none of which are installed in
+# this environment, so every symbol from them is unresolvable here. Nothing in clank/
+# imports this file; it is kept as an experiment.
+#
 # Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -11,6 +15,9 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+# pyright: reportMissingImports=false, reportAttributeAccessIssue=false
+# pyright: reportOptionalMemberAccess=false, reportReturnType=false
+# pyright: reportAssignmentType=false
 
 """Core classes for MuJoCo Playground."""
 

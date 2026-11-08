@@ -427,7 +427,12 @@ def main() -> int:
                 f = stream.read(timeout=2.0)
                 if f is None:
                     continue
-                p3 = point_from_pixel(f, args.px / cw, args.py / ch, camera, FOV)
+                # `nearest=True`: the card is a thin plane, so its pixel's centre texel
+                # lands on the wall behind it as often as on the card. Measured 2026-11-08:
+                # the median put the same card at 0.635 m (arm asked for 120 mm it has not
+                # got) where the nearest surface is 0.50 m and inside the envelope.
+                p3 = point_from_pixel(f, args.px / cw, args.py / ch, camera, FOV,
+                                      nearest=True)
                 if p3 is not None:
                     points.append(p3)
                 time.sleep(0.15)
