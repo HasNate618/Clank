@@ -91,3 +91,53 @@ they come parallel with the tips converged toward the opposing thumb; released, 
 That is what a 7-DoF two-finger-plus-thumb hand does with `grasp_qpos`, and it is why the mid-frame
 of that sheet looks straighter rather than shorter - the fingers converge, they do not curl over.
 Anyone expecting a human fist will read the closed frame as "still open" from a distance.
+
+## The other half: the game's glove, and the channel it listens on
+
+The body closing was only half of it. In the game view the glove stayed open, and the operator's
+reference was **manual override mode**, where a left click visibly turns the VR hand into a fist.
+
+That is the comparison that found the answer. `spike/c0/c0_manual.py:365-374`, the path where the
+click fisted the hand, sets three things together:
+
+```python
+st.squeeze = 1.0 if self.grip else 0.0
+side.squeeze_force.x = 1.0 if self.grip else 0.0
+for i in ...:
+    side.hand_curl[i] = 1.0 if self.grip else 0.0
+```
+
+`clank/pose_relay.py` had `--grab-mode squeeze` as its **default**, which sends `squeeze_value` and
+`squeeze_force` and leaves `hand_curl` at zero. Squeeze is enough to *grab* - that is why the card
+lifted weeks ago - but it is `hand_curl` the game draws the fist from.
+
+Measured 2026-11-08, hand held 0.42 m in front of the head so the glove fills the view:
+
+| relay mode | wire carries | glove |
+| --- | --- | --- |
+| `squeeze` (old default) | squeeze 1.0, curl 0.0 | **open** - open and closed frames pixel-identical |
+| `both` (new default) | squeeze 1.0, curl 1.0 | **fist** |
+
+`research/evidence/hand-game-open-vs-fist.png` is that pair: left frame the splayed glove, right
+frame the fist, same pose, same camera, only the grip changed.
+
+The default is now `both`, so a session gets the fist without a flag. One wrong comparison cost an
+hour: the first A/B ran open-vs-closed with `curl` already following the grip in *both* frames, so it
+measured curl=1 against curl=1 and "proved" the game ignored it. The relay's own packet log
+(`sessions/<id>/body_pose.csv`, columns `grip_l,grip_r,curl_l,curl_r`) is the record of what was
+actually sent, and it disagreed with what I had assumed the process was running.
+
+## Sequential test, both hands
+
+Both hands raised 0.44 m in front of the head, then closed and opened one after the other. The
+packet log is the whole story:
+
+```
+t=174.14s  grip L/R=1.0/0.0  curl L/R=1.0/0.0     left closed
+t=177.14s  grip L/R=0.0/0.0  curl L/R=0.0/0.0     left open
+t=180.14s  grip L/R=0.0/1.0  curl L/R=0.0/1.0     right closed
+t=183.12s  grip L/R=0.0/0.0  curl L/R=0.0/0.0     right open
+```
+
+Three seconds each, one hand at a time, `curl` mirroring `grip` on both edges, and the body and the
+glove both following. Run 2026-11-08, watched live on the body view and in the game.

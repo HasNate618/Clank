@@ -279,6 +279,10 @@ deployed Dex3 hand) at 0.25 rad/tick. Measured 0.13 rad from target, and photogr
   `thumb_1` at +0.730 while its motor pushed -0.700. That looks exactly like a broken hand.
 - **`BodyState.closure` stays the commanded value.** The game's squeeze button must fire the instant
   the body is told to grab; making the field measured would delay the button by the 0.1 s clasp.
+- **The game draws the fist from `hand_curl`, not from squeeze.** `clank/pose_relay.py` therefore
+  defaults to `--grab-mode both`: squeeze alone registers the grab with a visibly open glove. If a
+  grab works but the glove stays open, check `sessions/<id>/body_pose.csv` - the `curl_l,curl_r`
+  columns say what was actually sent, which is not always what you think is running.
 
 ## Seeing the object, 2026-11-04
 

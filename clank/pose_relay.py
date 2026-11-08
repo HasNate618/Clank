@@ -45,8 +45,13 @@ STALE_AFTER_SEC = 0.30
 #: Ways to force a button without the body cooperating, for the hub A/B.
 FORCE_MODES = ("none", "left", "right", "both")
 
-#: Which wire field a hand closure drives. The game decides which one it reads,
-#: so this is a switch rather than a decision baked into the relay.
+#: Which wire field a hand closure drives. The game decides which one it reads, so this
+#: is a switch - but the default is now `both`, measured: Job Simulator grabs on squeeze
+#: and *draws the fist* from `hand_curl`, so squeeze alone registers a grab with the
+#: glove still open. `spike/c0/c0_manual.py:365-374`, which is the path where a click
+#: visibly fisted the hand, sets squeeze_value, squeeze_force and all five hand_curl
+#: slots together. Measured 2026-11-08: with `both` the glove closes into a fist;
+#: with `squeeze` the open and closed frames are pixel-identical.
 GRAB_MODES = ("squeeze", "curl", "both")
 
 #: The driver closes the connection if it is not reading; a few seconds of retry
@@ -338,7 +343,7 @@ def deadline_state(elapsed: float, duration: float) -> str:
 
 def run(host: str, port: int, state_path: Path, log_path: Path | None,
         duration: float, hz: float, force_grab: str = "none",
-        force_trigger: str = "none", grab_mode: str = "squeeze",
+        force_trigger: str = "none", grab_mode: str = "both",
         yaw_offset_rad: float = 0.0,
         fov_rad: tuple[float, float] | None = None,
         player_scale: float = 1.0,
@@ -487,9 +492,11 @@ def main(argv: list[str] | None = None) -> int:
                     help="hold one hand closed regardless of the body, for the hub A/B")
     ap.add_argument("--force-trigger", choices=FORCE_MODES, default="none",
                     help="hold one trigger pressed regardless of the body")
-    ap.add_argument("--grab-mode", choices=GRAB_MODES, default="squeeze",
-                    help="which wire field a closure drives; squeeze is the controller "
-                         "button (curl only feeds Monado's hand-tracking skeleton)")
+    ap.add_argument("--grab-mode", choices=GRAB_MODES, default="both",
+                    help="which wire field a closure drives. `squeeze` is the controller "
+                         "button and registers the grab; `curl` is hand_curl, which is what "
+                         "the game draws the fist from. Default `both`: squeeze alone grabs "
+                         "with a visibly open glove")
     ap.add_argument("--yaw-offset-deg", type=float, default=0.0, dest="yaw_offset_deg",
                     help="the robot's heading in the virtual room, degrees, positive "
                          "toward its left; chooses the facing rather than walking it")
