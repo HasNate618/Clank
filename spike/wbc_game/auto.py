@@ -164,6 +164,29 @@ def mark(png: bytes, pixel: tuple[float, float], out: pathlib.Path) -> None:
     image.save(out)
 
 
+def confirm(pattern: str, max_s: float = 20.0) -> str:
+    """The game is the oracle, and it is free: when the player takes the card, JobBot stops
+    asking for it and tells you to take a cartridge. Exit codes cannot say that - the reach
+    closed 82 mm short today and reported SATURATED either way - but the script can.
+    """
+    try:
+        hearing = ears.listen(pattern=pattern, max_s=max_s)
+    except ears.EarsError as exc:
+        brainlog.log("error", f"could not listen for the answer: {exc}")
+        return ""
+    if not hearing.ok:
+        return ""
+    heard = brain.transcribe(BrainConfig(), hearing.wav)
+    if heard.error:
+        brainlog.log("error", f"transcribe failed: {heard.error}")
+        return ""
+    if heard.empty:
+        return ""
+    brainlog.log("heard", heard.text, ms=heard.decode_ms, speech_s=hearing.speech_s,
+                 cut=heard.ellipsis)
+    return heard.text
+
+
 def grab_pixel(x: float, y: float, side: str, camera: Pose | None = None) -> int:
     """Reach the pixel and close, in one process with no gap.
 
@@ -312,6 +335,21 @@ def one_turn(say: str = "", pattern: str = ears.DEFAULT_PATTERN,
             ok=code == 0, code=code, seconds=seconds, pixel=pixel,
             marked=f"marked-{stamp}.png",
         )
+        # The game says whether it worked. JobBot moves on to the cartridges once the card
+        # is taken, and repeats himself if it is not.
+        if not say:
+            spoken_after = confirm(pattern)
+            if spoken_after:
+                moved_on = "cartridge" in spoken_after.lower()
+                brainlog.log(
+                    "result",
+                    "the card is in my hand - JobBot moved on to the cartridges"
+                    if moved_on else f"JobBot said something else: {spoken_after[:90]}",
+                    ok=moved_on,
+                )
+            else:
+                brainlog.log("result", f"no word from JobBot after the grab; reach said "
+                                      f"code {code}", ok=False)
         if code == 2:
             brainlog.log("think", f"the {target} is out of reach - the body cannot turn")
         break
