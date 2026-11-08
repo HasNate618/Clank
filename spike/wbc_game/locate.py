@@ -191,12 +191,13 @@ def locate(
         return out
     u = box[0] + uv[0] * (box[2] - box[0])
     v = box[1] + uv[1] * (box[3] - box[1])
-    out["pixel_px"] = [round(u * width, 1), round(v * height, 1)]
+    pixel = (round(u * width, 1), round(v * height, 1))
+    out["pixel_px"] = list(pixel)
     if not verify:
         out["verify_raw"] = "skipped"
         out["present"] = None
         return out
-    present, raw3 = verify_present(config, frame, noun, out["pixel_px"], size)
+    present, raw3 = verify_present(config, frame, noun, pixel, size)
     out["verify_raw"] = raw3.strip()
     out["present"] = present
     if present is False:
@@ -206,7 +207,7 @@ def locate(
 
 
 def main(argv: list[str] | None = None) -> int:
-    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    ap = argparse.ArgumentParser(description=(__doc__ or "").splitlines()[0])
     ap.add_argument("--image", type=pathlib.Path, required=True)
     ap.add_argument("--noun", default="JobBot ID card")
     ap.add_argument("--truth", nargs=2, type=float, metavar=("X", "Y"))

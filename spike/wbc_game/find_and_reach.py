@@ -37,18 +37,20 @@ def capture(width: int = 960) -> tuple[bytes, tuple[int, int]]:
 
     with Stream() as stream:
         f = stream.read(timeout=2.0)
+    if f is None:
+        raise SystemExit("no frame from the depth stream")
     image = Image.frombytes(
         "RGBA", (f["color_width"], f["color_height"]), bytes(f["color"])
     ).convert("RGB")
     height = round(width * image.height / image.width)
-    image = image.resize((width, height), Image.LANCZOS)
+    image = image.resize((width, height), Image.Resampling.LANCZOS)
     buf = io.BytesIO()
     image.save(buf, format="JPEG", quality=90)
     return buf.getvalue(), (width, height)
 
 
 def main(argv: list[str] | None = None) -> int:
-    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    ap = argparse.ArgumentParser(description=(__doc__ or "").splitlines()[0])
     ap.add_argument("--noun", default="JobBot ID card")
     ap.add_argument("--side", default="right", choices=("left", "right"))
     ap.add_argument("--grab", action="store_true")

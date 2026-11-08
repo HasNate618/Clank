@@ -39,7 +39,7 @@ import urllib.request
 from dataclasses import dataclass, field, replace
 from typing import Any
 
-from .body import (
+from .body import (  # noqa: F401  (re-exported: outcome_from_flags and callers use these)
     FLAG_FALL_RISK,
     FLAG_SATURATED,
     FLAG_TTL_EXPIRED,
@@ -217,7 +217,8 @@ def _chat(
         "stream": False,
     }
     data = json.dumps(payload).encode("utf-8")
-    request = urllib.request.Request(
+    # The endpoint is the operator's local server, never a URL from a frame or a model.
+    request = urllib.request.Request(  # noqa: S310
         f"{config.base_url.rstrip('/')}/v1/chat/completions",
         data=data,
         headers={"Content-Type": "application/json"},
@@ -225,7 +226,7 @@ def _chat(
     )
     started = time.monotonic()
     try:
-        with urllib.request.urlopen(request, timeout=config.timeout_s) as response:
+        with urllib.request.urlopen(request, timeout=config.timeout_s) as response:  # noqa: S310
             body = json.loads(response.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode("utf-8", "replace")[:300]
@@ -256,6 +257,94 @@ def _image_part(frame: Frame) -> dict[str, Any]:
 def _audio_part(wav: bytes) -> dict[str, Any]:
     encoded = base64.b64encode(wav).decode("ascii")
     return {"type": "input_audio", "input_audio": {"data": encoded, "format": "wav"}}
+
+
+# --------------------------------------------------------------------------- #
+# TRANSCRIBE
+# --------------------------------------------------------------------------- #
+
+#: The audio path asks for words, not a decision. Measured 2026-11-04: asking one call to
+#: both transcribe and choose produced a goal that ignored what was said. The calibrated
+#: prompts take a `situation` string, so hear first and decide second.
+TRANSCRIBE_PROMPT = (
+    "You are listening to a video game character through the game's own audio. "
+    "Write down what they say, verbatim, as one line of plain text. No quotes, no speaker "
+    "name, no commentary. If you hear no speech, reply with exactly: (silence)"
+)
+
+#: What the model says when the clip was silence, in the shapes it has actually used.
+_SILENCE_REPLIES = frozenset({
+    "", "silence", "(silence)", "no speech", "(no speech)", "no speech detected",
+    "(no speech detected)", "[silence]", "...",
+})
+
+
+@dataclass(frozen=True)
+class Transcript:
+    """One utterance, as heard by the model."""
+
+    text: str = ""
+    raw: str = ""
+    prompt_ms: float = 0.0
+    decode_ms: float = 0.0
+    error: str = ""
+    ellipsis: bool = False
+
+    @property
+    def ok(self) -> bool:
+        return not self.error
+
+    @property
+    def empty(self) -> bool:
+        return not self.text
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "text": self.text,
+            "raw": self.raw,
+            "ellipsis": self.ellipsis,
+            "error": self.error,
+            "prompt_ms": round(self.prompt_ms, 1),
+            "decode_ms": round(self.decode_ms, 1),
+        }
+
+
+def clean_transcript(text: str) -> str:
+    """One line of speech from whatever the model wrapped it in.
+
+    A live capture tends to come back as a quoted sentence, and an unfinished one as a
+    trailing ellipsis or a bare dash - both are kept, because a half-heard instruction is
+    still the instruction and the caller can see it was cut.
+    """
+    line = " ".join(text.strip().split())
+    for opener, closer in (('"', '"'), ("'", "'"), ("`", "`"), ("\u201c", "\u201d")):
+        if len(line) > 1 and line.startswith(opener) and line.endswith(closer):
+            line = line[len(opener) : len(line) - len(closer)].strip()
+    if line.lower().rstrip(".!").strip() in _SILENCE_REPLIES:
+        return ""
+    return line
+
+
+def transcribe(config: BrainConfig, wav: bytes) -> Transcript:
+    """Hear one clip. Never raises; an error is a field."""
+    if not wav:
+        return Transcript(error="no audio")
+    reply = _chat(config, [
+        {"role": "user", "content": [
+            _audio_part(wav),
+            {"type": "text", "text": TRANSCRIBE_PROMPT},
+        ]},
+    ])
+    if reply.error:
+        return Transcript(raw=reply.text, error=reply.error)
+    cleaned = clean_transcript(reply.text)
+    return Transcript(
+        text=cleaned,
+        raw=reply.text.strip(),
+        prompt_ms=reply.prompt_ms,
+        decode_ms=reply.decode_ms,
+        ellipsis=cleaned.endswith(("...", "\u2026", "-")),
+    )
 
 
 # --------------------------------------------------------------------------- #

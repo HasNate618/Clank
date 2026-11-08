@@ -219,6 +219,42 @@ chromium --headless=new --no-sandbox --disable-gpu \
 | `docs/` | Design docs; some are historical (the PNG preview predates VNC) |
 | `README.md`, `RESEARCH.md` | Broad design and original feasibility study |
 
+## Hearing the game, 2026-11-08
+
+`clank/ears.py` records the game's own audio and nothing else; `clank/brain.transcribe()` turns a
+clip into words; `clank/brainlog.py` writes the brain's sentences as it produces them.
+
+```bash
+python3 -m clank.ears --list                 # candidate playback streams
+python3 -m clank.ears --transcribe           # one utterance, then the words
+spike/e3/.venv/bin/python spike/wbc_game/listen.py --for 120
+spike/e3/.venv/bin/python spike/wbc_game/do_task.py --listen --dry-run
+python3 -m clank.brainlog --tail 20
+```
+
+- **Capture is by PipeWire node, not by device.** The game is `Stream/Output/Audio` with
+  `application.name = JobSimulator.exe` (`pw-dump`; id 150 or 161 depending on the launch), so
+  `pw-record --target <id> --raw ...` gets the game and nothing else - no desktop audio, no mic.
+  The id changes every launch, so it is resolved per capture by name and `EarsError` is raised
+  rather than guessing.
+- **Two ways the node goes silent, both seen.** `module-stream-restore` had remembered
+  `Mute: yes` for `JobSimulator.exe`, so every sample was zero with the recorder working
+  perfectly - check `pactl list sink-inputs | grep -A2 JobSimulator` first. And the game is
+  silent at the `PULL LEVER TO JOB` menu: JobBot's first lines come after the job starts, so a
+  restart alone does not produce speech.
+- **Digital silence is the normal state between lines.** The gate is RMS on 50 ms blocks,
+  floor = median of the first 0.5 s, gate = `max(4 x floor, 250)`, and it keys on `floor_known`
+  - gating on `floor > 0` made the ear deaf to exactly this game.
+- **Transcribe first, decide second.** One call asking for both words and a decision produced a
+  goal that ignored what was said. `transcribe()` returns the line and the caller feeds it to
+  `next_step()` as the situation, so the calibrated prompts keep working unchanged. Measured on
+  JobBot's real audio: `Hello human, welcome to the job simulator. My name is JobBot...`,
+  238 ms prefill + 310 ms decode. Silence parses to an empty transcript, not an error.
+- **The diary is the demo.** Every `heard`/`think`/`act`/`result` line goes to
+  `~/.local/state/Clank/brain/messages.jsonl` (JSON per line, `CLANK_BRAIN_LOG` overrides) and to
+  stderr as `[brain] 11:27:33 think: I will grab the job cartridge`. Nothing reads it back to make
+  a decision - the dashboard is being rebuilt, so it is a diary, not state.
+
 ## Locating without a human, 2026-11-04
 
 `spike/wbc_game/locate.py` - quadrant, then one pixel call on that crop, then a YES/NO on a tight
