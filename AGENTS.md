@@ -264,6 +264,35 @@ Two things had to be right, and neither was tuning:
 
 Reach + close is now one command: `reach_vr.py --grab`.
 
+## Pointing at things, 2026-11-06
+
+The agent cannot see the game, so every "find the lever" attempt guessed a pixel and every guess was
+wrong: a depth local-minimum scan found the console's corner, the vision model found a card 0.81 m
+away, and projecting candidates onto the handle found a queue stanchion. Ask the operator instead.
+
+```bash
+spike/e3/.venv/bin/python spike/wbc_game/pick_pixel.py        # resets the body, serves one frame
+# operator opens http://127.0.0.1:8771/ and clicks the object
+cat ~/.local/state/Clank/pick-pixel/pixel.json                # {"x":652,"y":299,...}
+```
+
+The page draws a labelled 100 px grid and a centre crosshair. Unproject the pixel with
+`clank.pixel3d.point_from_pixel`, then reach it.
+
+`spike/wbc_game/measure_reach.py X Y Z` does **one** reach and one measurement - no correction
+passes, no head pin - and prints the gap, plus how far the head and root moved on their own.
+
+- **The hand ends ~0.25 m too high, and it is a gain, not a bias.** Ask for z = 0.10 and the hand goes
+  to 0.33; ask 0.357 and it goes to 0.43-0.60. `reach_vr.Z_GAIN = 1.58` divides the climb about the
+  resting hand: one shot went 143/197/229 mm -> **60/79/78 mm** at three heights, with dz collapsing
+  to ~0 at all three. End to end with one correction, the operator's clicked lever point lands
+  **37 mm** in 4.3 s.
+- **`WRIST_BOX` is a steering limit, not the arm's reach.** It caps y at -0.31; unclamped the arm holds
+  y = -0.389. `reach_vr.py --no-clamp` bypasses it, and that is what let the lever be reached at all.
+- **A reach moves the body even when you ask it not to**: measured 25-55 mm of head and 62-87 mm of
+  root drift inside a single 3.8 s reach. A pixel marked once goes stale, and re-pinning the head at
+  20 Hz is what twisted the torso earlier.
+
 ## The fingers close, 2026-11-06
 
 The body used to grab with an open hand: the game saw the squeeze and the 14 hand motors were never
