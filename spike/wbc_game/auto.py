@@ -73,9 +73,11 @@ FOV = Fov.from_degrees(70.0, 70.0, 57.11, 57.11)
 #: commanded yaw RATE does not turn the body (+0.2 deg where 69 was asked), but the head is
 #: pinned by every reach command, so the *look* is the one aimable part of the robot.
 LOOK_DEG = (0.0, 25.0, -25.0, 45.0, -45.0)
-#: A grounded point outside this distance from the camera is not the object being reached
-#: for: the guard in reach_vr refuses past 1.0 m, and nothing is grabbable behind you.
-MIN_OBJ_M = 0.12
+#: A grounded point outside this distance from the *resting hand* is not the object being
+#: reached for. The bound is reach_vr's own: it refuses past MAX_PLAUSIBLE_M from the hand,
+#: and measuring from the camera instead let a 0.9 m-away pixel pass here and be refused
+#: there. Nothing is grabbable behind you either.
+MIN_OBJ_M = 0.10
 MAX_OBJ_M = 1.0
 
 
@@ -245,6 +247,11 @@ def one_turn(say: str = "", pattern: str = ears.DEFAULT_PATTERN,
         # to metres away is signage, not the card (measured: locate answered the JOB
         # SIMULATOR sign at 4.9 m).
         seen = None
+        # The hand nearest the object reaches for it. The model's `side` is a guess from a
+        # still and it guessed left for a card on the right, which crosses the body and
+        # saturates; the grounded point's own y says which hand has it.
+        rest_left = reach_vr.wrist("left")
+        rest_right = reach_vr.wrist("right")
         for dyaw in LOOK_DEG:
             if dyaw:
                 for _ in range(4):
@@ -256,11 +263,15 @@ def one_turn(say: str = "", pattern: str = ears.DEFAULT_PATTERN,
             found = locate.locate(BrainConfig(), Frame(0, 0.0, jpeg, "live"), target, size)
             pixel = found.get("pixel_px")
             metres = 0.0
+            point = None
             if pixel:
                 point = point_from_pixel(depth_frame, pixel[0] / size[0],
                                          pixel[1] / size[1], camera, FOV)
                 if point is not None:
-                    metres = math.dist(point, camera.p)
+                    nearest = min(math.dist(point, rest_left),
+                                  math.dist(point, rest_right))
+                    metres = nearest
+                    side = "left" if point[1] > 0.0 else "right"
             brainlog.log(
                 "act", f"locate({target})", pixel=pixel, present=found.get("present"),
                 metres=round(metres, 2), head_yaw_off=dyaw,
@@ -268,6 +279,8 @@ def one_turn(say: str = "", pattern: str = ears.DEFAULT_PATTERN,
             )
             if pixel and MIN_OBJ_M <= metres <= MAX_OBJ_M:
                 seen = (pixel, png)
+                brainlog.log("think", f"the {target} is {metres:.2f} m from my hand; "
+                                      f"reaching with the {side}", side=side)
                 break
             if pixel:
                 brainlog.log("think", f"that pixel is {metres:.2f} m away - not the "

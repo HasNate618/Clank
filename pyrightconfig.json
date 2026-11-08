@@ -1,15 +1,29 @@
 {
-  "include": ["clank", "tests", "spike"],
-  "exclude": ["**/vendor/**", "**/__pycache__/**", "spike/e2/frames/**"],
+  "include": [
+    "clank",
+    "tests",
+    "spike"
+  ],
+  "exclude": [
+    "**/vendor/**",
+    "**/__pycache__/**",
+    "spike/e2/frames/**",
+    "spike/c3/playground_g1/**"
+  ],
   "venvPath": "spike/e3",
   "venv": ".venv",
   "pythonVersion": "3.13",
   "typeCheckingMode": "basic",
   "reportMissingImports": "error",
-  "extraPaths": ["."],
+  "extraPaths": [
+    "."
+  ],
   "overrides": [
     {
-      "include": ["spike/wbc/**", "spike/c0/**"],
+      "include": [
+        "spike/wbc/**",
+        "spike/c0/**"
+      ],
       "reportAttributeAccessIssue": "none",
       "reportArgumentType": "none"
     }
