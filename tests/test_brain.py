@@ -12,6 +12,12 @@ def fake_frame(index: int = 0) -> Frame:
     return Frame(index=index, t_s=float(index), jpeg=b"\xff\xd8\xff\xd9", source="test")
 
 
+def not_none(value, message: str = ""):
+    """Narrow an Optional for the type checker. `assertIsNotNone` does not narrow."""
+    assert value is not None, message
+    return value
+
+
 class ChatPatchMixin:
     reply: str = ""
     reply_error: str = ""
@@ -361,6 +367,16 @@ class RunTurnCrop(ScriptedChat, unittest.TestCase):
                 **kwargs,
             )
 
+    def ground_of(self, record):
+        """The ground of a completed turn, narrowed.
+
+        `TurnRecord.ground` is optional - a turn that never grounded has none - so every
+        assertion here would otherwise be a possible-None access.
+        """
+        self.assertIsNotNone(record.ground)
+        assert record.ground is not None
+        return record.ground
+
     def cropped_url(self) -> str:
         jpeg = fake_frame().jpeg + b"cropped"
         return "data:image/jpeg;base64," + base64.b64encode(jpeg).decode("ascii")
@@ -369,9 +385,9 @@ class RunTurnCrop(ScriptedChat, unittest.TestCase):
         record = self.run_turn([self.reach, "TOP-RIGHT"], box=self.box)
         self.crop_mock.assert_called_once_with(fake_frame().jpeg, self.box)
         self.assertEqual(self.image_sent(1), self.cropped_url())
-        self.assertEqual(record.ground.box, self.box)
-        self.assertAlmostEqual(record.ground.pixel[0], 0.270 + 0.278 * 0.75)
-        self.assertAlmostEqual(record.ground.pixel[1], 0.325 + 0.241 * 0.25)
+        self.assertEqual(self.ground_of(record).box, self.box)
+        self.assertAlmostEqual(not_none(self.ground_of(record).pixel)[0], 0.270 + 0.278 * 0.75)
+        self.assertAlmostEqual(not_none(self.ground_of(record).pixel)[1], 0.325 + 0.241 * 0.25)
         self.assertEqual(record.self_state["box"], list(self.box))
         self.assertEqual(record.self_state["crop_error"], "")
 
@@ -379,7 +395,7 @@ class RunTurnCrop(ScriptedChat, unittest.TestCase):
         record = self.run_turn([self.reach, "TOP-RIGHT"])
         self.crop_mock.assert_not_called()
         self.assertEqual(self.image_sent(1), fake_frame().data_url())
-        self.assertEqual(record.ground.box, (0.0, 0.0, 1.0, 1.0))
+        self.assertEqual(self.ground_of(record).box, (0.0, 0.0, 1.0, 1.0))
         self.assertIsNone(record.self_state["box"])
 
     def test_a_failed_crop_grounds_the_whole_frame_instead_of_raising(self) -> None:
@@ -391,8 +407,8 @@ class RunTurnCrop(ScriptedChat, unittest.TestCase):
                 heard="grab the store clerk", history=[], box=self.box,
             )
         self.assertEqual(self.image_sent(1), fake_frame().data_url())
-        self.assertEqual(record.ground.box, (0.0, 0.0, 1.0, 1.0))
-        self.assertEqual(record.ground.pixel, (0.25, 0.25))
+        self.assertEqual(self.ground_of(record).box, (0.0, 0.0, 1.0, 1.0))
+        self.assertEqual(self.ground_of(record).pixel, (0.25, 0.25))
         self.assertEqual(record.decision.intent.skill, "reach")
         self.assertIn("not found", record.self_state["crop_error"])
 
@@ -413,16 +429,16 @@ class RunTurnCrop(ScriptedChat, unittest.TestCase):
         record = self.run_turn([self.grab, "TOP-RIGHT", "GOURMET CHEF"],
                                glow="yes", box=self.box)
         self.assertEqual(len(self.chat_calls), 3)
-        self.assertIn("verify mismatch", record.ground.error)
-        self.assertIsNone(record.ground.pixel)
+        self.assertIn("verify mismatch", self.ground_of(record).error)
+        self.assertIsNone(self.ground_of(record).pixel)
         # The real ground survives the mismatch - only its pixel goes. Without
         # these, a fabricated `heard`-based ground passes this test again.
-        self.assertEqual(record.ground.quadrant, "TOP-RIGHT")
-        self.assertEqual(record.ground.raw, "TOP-RIGHT")
-        self.assertEqual(record.ground.box, self.box)
+        self.assertEqual(self.ground_of(record).quadrant, "TOP-RIGHT")
+        self.assertEqual(self.ground_of(record).raw, "TOP-RIGHT")
+        self.assertEqual(self.ground_of(record).box, self.box)
         self.assertFalse(record.to_dict()["verify"]["match"])
         self.assertIsNotNone(record.verify)
-        self.assertFalse(record.verify.match)
+        self.assertFalse(not_none(record.verify).match)
         self.assertEqual(record.decision.intent.skill, "hold")
         self.assertIn("not visible", record.decision.reason)
 
@@ -435,18 +451,18 @@ class RunTurnCrop(ScriptedChat, unittest.TestCase):
             brain.ModelReply(text="", error="transport: timed out"),
         ]):
             record = self.run_turn([self.grab], glow="yes", box=self.box)
-        self.assertIn("verify mismatch: ", record.ground.error)
-        self.assertIn("transport: timed out", record.ground.error)
-        self.assertTrue(record.verify.error)
+        self.assertIn("verify mismatch: ", self.ground_of(record).error)
+        self.assertIn("transport: timed out", self.ground_of(record).error)
+        self.assertTrue(not_none(record.verify).error)
         # The quadrant still came from the real ground, not a fabricated one.
-        self.assertEqual(record.ground.quadrant, "TOP-RIGHT")
-        self.assertEqual(record.ground.box, self.box)
+        self.assertEqual(self.ground_of(record).quadrant, "TOP-RIGHT")
+        self.assertEqual(self.ground_of(record).box, self.box)
 
     def test_a_matching_verify_is_recorded_on_the_turn(self) -> None:
         record = self.run_turn([self.grab, "TOP-RIGHT", "the store clerk cartridge"],
                                glow="yes", box=self.box)
         self.assertIsNotNone(record.verify)
-        self.assertTrue(record.verify.match)
+        self.assertTrue(not_none(record.verify).match)
         self.assertTrue(record.to_dict()["verify"]["match"])
 
     def test_a_reach_at_glow_yes_is_never_verified(self) -> None:
@@ -503,8 +519,8 @@ class GroundQuad(ChatPatchMixin, unittest.TestCase):
         self.assertEqual(g.quadrant, "TOP-RIGHT")
         self.assertEqual(g.methods, "quad")
         self.assertIsNotNone(g.pixel)
-        self.assertAlmostEqual(g.pixel[0], 0.270 + (0.548 - 0.270) * 0.75)
-        self.assertAlmostEqual(g.pixel[1], 0.325 + (0.566 - 0.325) * 0.25)
+        self.assertAlmostEqual(not_none(g.pixel)[0], 0.270 + (0.548 - 0.270) * 0.75)
+        self.assertAlmostEqual(not_none(g.pixel)[1], 0.325 + (0.566 - 0.325) * 0.25)
 
     def test_one_call_asking_the_bare_question(self) -> None:
         self.reply = "TOP-LEFT"
@@ -572,7 +588,7 @@ class GroundQuad(ChatPatchMixin, unittest.TestCase):
         self.assertEqual(as_dict["quadrant"], "BOTTOM-LEFT")
         self.assertEqual(as_dict["cell"], "BOTTOM-LEFT")
         self.assertEqual(as_dict["box"], list(self.box))
-        self.assertEqual(as_dict["pixel"], list(g.pixel))
+        self.assertEqual(as_dict["pixel"], list(not_none(g.pixel)))
         self.assertEqual(as_dict["error"], "")
 
 
@@ -860,3 +876,40 @@ class ReachOutcomeInThePrompt(ChatPatchMixin, unittest.TestCase):
             state_flags=brain.FLAG_SATURATED, glow="yes",
         )
         self.assertIn("look none target=null → saturated", record.live)
+
+
+class TaskIntent(unittest.TestCase):
+    """The instruction names the verb and the object. The model was measured not to.
+
+    JobBot's real line is "Hey human, take my card." Given that and one still, the model
+    answered {"goal": "insert the card into the machine", "object": "INSERT CARTRIDGE
+    machine"} - a later step, with an object it invented. So the words are read here.
+    """
+
+    def test_take_my_card(self):
+        self.assertEqual(brain.task_intent("Hey human, take my card."), ("grab", "card"))
+
+    def test_an_offer_is_a_grab(self):
+        self.assertEqual(brain.task_intent("Here's my card."), ("grab", "card"))
+
+    def test_the_walkthrough_line_names_a_cartridge(self):
+        line = ("Alright. Why don't you grab one of the job cartridges off the table "
+                "and let's get started.")
+        self.assertEqual(brain.task_intent(line), ("grab", "job cartridge"))
+
+    def test_a_place_keeps_its_noun(self):
+        self.assertEqual(brain.task_intent("put the cartridge into the slot"),
+                         ("place", "cartridge"))
+
+    def test_two_word_verb(self):
+        self.assertEqual(brain.task_intent("pick up the card from the table"),
+                         ("grab", "card"))
+
+    def test_a_participle_is_not_an_object(self):
+        self.assertEqual(brain.task_intent("let's get started."), ("grab", ""))
+
+    def test_no_verb_is_no_intent(self):
+        self.assertEqual(brain.task_intent("Your hands are empty."), ("", ""))
+
+    def test_nothing_is_not_an_object(self):
+        self.assertEqual(brain.task_intent(""), ("", ""))

@@ -551,6 +551,71 @@ NEXT_STEP_PROMPT = (
 )
 
 
+#: Words that name the act, and the filler that sits between the verb and the noun. The
+#: line JobBot says is an instruction, so the verb and the object are both in it; asking the
+#: model for them is what produced "insert the card into the machine" from "take my card".
+_TASK_VERBS = (
+    ("pick up", "grab"), ("hand me", "grab"), ("take", "grab"), ("grab", "grab"),
+    ("get", "grab"), ("lift", "grab"),
+    ("insert", "place"), ("put", "place"), ("place", "place"), ("slot", "place"),
+)
+_TASK_FILLER = {
+    "a", "an", "the", "my", "your", "that", "this", "one", "some", "of", "off", "from",
+    "here", "there", "me", "it", "please", "now",
+}
+_TASK_STOP = {
+    "on", "in", "into", "onto", "to", "and", "then", "for", "with", "at", "so", "which",
+    "before", "after", "off", "from", "that",
+}
+#: "let's get started" is not an object. A thing the game names rarely ends in -ed or -ing.
+_TASK_PARTICIPLE = re.compile(r"^[a-z]{3,}(?:ed|ing)$")
+#: JobBot does not only give orders - he holds the thing out and says what it is.
+_TASK_OFFER = re.compile(r"\bhere'?s my ([a-z][a-z'-]*)")
+
+
+def _singular(word: str) -> str:
+    if len(word) > 3 and word.endswith("s") and not word.endswith("ss"):
+        return word[:-1]
+    return word
+
+
+def task_intent(text: str) -> tuple[str, str]:
+    """The skill and the object noun the instruction itself names - not the model's guess.
+
+    "take my card" -> ("grab", "card"); "grab one of the job cartridges off the table" ->
+    ("grab", "job cartridge"); "here's my card" -> ("grab", "card"), because that is an
+    offer, not a statement.
+
+    Measured 2026-11-08: handed that first sentence and one still, the model answered
+    `{"goal": "insert the card into the machine", "object": "INSERT CARTRIDGE machine"}` -
+    a later step, with an invented object. Every word needed was in the instruction, so the
+    verb and the noun are read here and the model is left the part it is good at: naming the
+    destination when the task needs one.
+    """
+    tokens = re.findall(r"[a-z][a-z'\-]*", text.lower())
+    for i in range(len(tokens)):
+        for key, skill in _TASK_VERBS:
+            parts = key.split()
+            if tokens[i:i + len(parts)] != parts:
+                continue
+            noun: list[str] = []
+            for word in tokens[i + len(parts):]:
+                if word in _TASK_STOP:
+                    break
+                if word in _TASK_FILLER or _TASK_PARTICIPLE.match(word):
+                    continue
+                noun.append(word)
+                if len(noun) >= 3:
+                    break
+            if not noun:
+                return skill, ""
+            return skill, " ".join(noun[:-1] + [_singular(noun[-1])])
+    offer = _TASK_OFFER.search(text.lower())
+    if offer:
+        return "grab", _singular(offer.group(1))
+    return "", ""
+
+
 def skill_from_goal(goal: str) -> str:
     """The intent skill a goal in words implies. `reach` when nothing matches."""
     words = goal.lower()
