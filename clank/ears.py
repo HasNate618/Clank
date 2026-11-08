@@ -36,6 +36,7 @@ import os
 import pathlib
 import subprocess
 import sys
+import tempfile
 import time
 import wave
 from collections.abc import Iterable
@@ -58,8 +59,12 @@ GATE_MIN_RMS = 250.0
 PACTL = "pactl"
 PARECORD = "parecord"
 CAPTURE_TIMEOUT_S = 10.0
-#: How long a capture may produce nothing before it is treated as gone.
-EOF_GRACE_S = 1.0
+#: How long a capture may produce nothing before it is treated as gone, once it has
+#: started. Opening a Bluetooth sink or a loopback can take a second or two on the first
+#: read, so startup gets its own, longer allowance.
+#: `parecord` flushes its WAV in bursts of a second or more, so a short gap is not death.
+EOF_GRACE_S = 4.0
+STARTUP_GRACE_S = 6.0
 
 
 class EarsError(RuntimeError):
@@ -473,8 +478,13 @@ def capture(
             info = route(pattern, sink)
         device = capture_device(pattern, sink)
         info.setdefault("device", device)
-    path = _state_dir() / "capture.wav"
-    path.parent.mkdir(parents=True, exist_ok=True)
+    # One file per capture: a shared name lets two recorders (a listener and a probe)
+    # truncate each other's file, which reads as "no audio" with everything working.
+    state = _state_dir()
+    state.mkdir(parents=True, exist_ok=True)
+    fd, name = tempfile.mkstemp(prefix="capture-", suffix=".wav", dir=state)
+    os.close(fd)
+    path = pathlib.Path(name)
     proc = _spawn(device, rate, path)
     reader = TailReader(path)
     try:
@@ -497,10 +507,12 @@ def record(
     """Fixed-length capture, no gate. For tests and for grabbing a known cue."""
     chunks: list[bytes] = []
     error = ""
+    tolerance = max(seconds, 1.0) + STARTUP_GRACE_S
+    deadline = time.monotonic() + tolerance
     with capture(pattern, sink, rate, device) as (reader, proc, yield_info):
         want = int(seconds * rate) * 2
         got = 0
-        while got < want:
+        while got < want and time.monotonic() < deadline:
             block = reader.read(min(int(BLOCK_S * rate) * 2, want - got))
             if not block:
                 if proc.poll() is not None:
@@ -567,17 +579,20 @@ def listen(
 
     deadline = time.monotonic() + max_s
     last_data = time.monotonic()
+    seen_audio = False
     try:
         while time.monotonic() < deadline:
             chunk = source.read(block)
             if chunk:
                 last_data = time.monotonic()
+                seen_audio = True
             if not chunk:
                 if proc is not None and proc.poll() is not None:
                     if not keep:
                         error = "capture ended"
                     break
-                if time.monotonic() - last_data > EOF_GRACE_S:
+                grace = EOF_GRACE_S if seen_audio else STARTUP_GRACE_S
+                if time.monotonic() - last_data > grace:
                     # Nothing for a second from a capture that has not ended: it is not
                     # coming. Without this the gate spins to `max_s` on a dead reader. A
                     # stream that ends after speech began is not an error, it is the end
