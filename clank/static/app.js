@@ -77,6 +77,77 @@ async function post(path, body) {
   });
 }
 
+// Theme: the inline script in index.html paints the first theme from
+// localStorage or the OS preference; this owns every change after that. The
+// button's glyph is constant; its label names the destination, like the mode
+// toggle's label does.
+const THEME_KEY = "clank-theme";
+
+function currentTheme() {
+  return document.documentElement.dataset.theme === "light" ? "light" : "dark";
+}
+
+function syncThemeButton() {
+  const button = $("theme-toggle");
+  const light = currentTheme() === "light";
+  // The sun/moon swap is CSS, keyed on [data-theme]; only the label changes.
+  const label = light ? "Switch to dark theme" : "Switch to light theme";
+  button.setAttribute("aria-label", label);
+  button.title = label;
+}
+
+// Stage layouts: one data-layout attribute on the deck, one CSS block per
+// layout. Only "side" ships; a layout switcher later is a registry entry here
+// plus a `[data-layout="..."]` block in style.css, no markup changes.
+const LAYOUTS = {
+  side: "preview centre, controls left, brain and logs right",
+};
+
+function setLayout(name) {
+  if (!LAYOUTS[name]) return false;
+  $("deck").dataset.layout = name;
+  return true;
+}
+// Console hook until a switcher UI exists: clankLayout("side").
+window.clankLayout = setLayout;
+
+// Shape, not size: a 16:9 screen cannot fill a near-square window, so the thing
+// that absorbs the leftover height changes. Tall puts the robot panel under the
+// screen, where its tiles get the whole width; wide fills the height with the
+// screen and moves the robot into the rail. Brain, logs and telemetry are
+// vertical by nature and stay in the rail either way.
+const WIDE = matchMedia("(min-aspect-ratio: 3/2)");
+
+function syncAspect() {
+  const deck = $("deck");
+  const wide = WIDE.matches;
+  deck.dataset.aspect = wide ? "wide" : "tall";
+  const robot = $("body-box");
+  const stage = document.querySelector(".stage");
+  const rail = document.querySelector(".col-rail");
+  if (!robot || !stage || !rail) return;
+  if (wide) {
+    if (robot.parentElement !== rail) rail.prepend(robot);
+  } else if (robot.parentElement !== stage) {
+    stage.append(robot);
+  }
+}
+
+WIDE.addEventListener("change", syncAspect);
+syncAspect();
+
+// The overlay canvas is where future visual debugging (grounding boxes, glow
+// patches) draws, in game-pixel coordinates: it matches the live frame when
+// the depth layer publishes, else the VNC framebuffer's 1920x1080.
+function syncPreviewOverlay() {
+  const overlay = $("preview-overlay");
+  const live = $("preview-live");
+  const width = liveAvailable && live.width ? live.width : 1920;
+  const height = liveAvailable && live.height ? live.height : 1080;
+  if (overlay.width !== width) overlay.width = width;
+  if (overlay.height !== height) overlay.height = height;
+}
+
 function showError(message) {
   $("error").textContent = message || "";
   $("error").style.display = message ? "block" : "none";
@@ -190,11 +261,12 @@ async function liveTick() {
     canvas.getContext("2d").putImageData(new ImageData(data, width, height), 0, 0);
     canvas.hidden = false;
     liveAvailable = true;
+    syncPreviewOverlay();
     liveFailures = 0;
     hidePreviewAuth();
     $("preview-wait").style.display = "none";
     liveTimer = setTimeout(liveTick, LIVE_PREVIEW_MS);
-  } catch (error) {
+  } catch {
     if (!liveActive) return;
     liveFailures += 1;
     if (liveFailures < 10) {
@@ -370,7 +442,7 @@ function updatePreviewWait(state) {
   }[state.state];
   if (stateText) {
     wait.textContent = stateText;
-    wait.style.display = "block";
+    wait.style.display = "";
     return;
   }
   if (liveActive) {
@@ -378,7 +450,7 @@ function updatePreviewWait(state) {
       wait.style.display = "none";
     } else {
       wait.textContent = "waiting for live capture…";
-      wait.style.display = "block";
+      wait.style.display = "";
     }
     return;
   }
@@ -388,12 +460,12 @@ function updatePreviewWait(state) {
     wait.style.display = "none";
   } else if (!transportAlive) {
     wait.textContent = "waiting for VNC transport…";
-    wait.style.display = "block";
+    wait.style.display = "";
   } else if (previewAuthVisible()) {
     wait.style.display = "none";
   } else {
     wait.textContent = "authenticate to view the preview";
-    wait.style.display = "block";
+    wait.style.display = "";
   }
 }
 
@@ -401,17 +473,24 @@ function applyControls(state) {
   const running = state.state === "running";
   $("start").disabled = actionInFlight || !["stopped", "failed"].includes(state.state);
   $("stop").disabled = actionInFlight || state.state === "stopped";
-  document.querySelectorAll("#modes button").forEach((button) => {
-    const active = button.dataset.mode === state.mode;
-    button.classList.toggle("active", active);
-    button.setAttribute("aria-pressed", active ? "true" : "false");
-    button.disabled = actionInFlight || !running;
-  });
-  $("kill-game").disabled = actionInFlight || !running;
-  $("kill-steam").disabled = actionInFlight || !running;
+  const modeButton = $("mode-toggle");
+  const manual = state.mode === "manual";
+  // The label names where a press takes you, so it is the destination, not the
+  // current mode. `manual` is one side of the switch; every other mode - the
+  // `hold` fallback on a body-less checkout included - is the other.
+  modeButton.textContent = manual ? "Switch to robot controller" : "Switch to manual override";
+  modeButton.setAttribute("aria-pressed", manual ? "true" : "false");
+  modeButton.classList.toggle("active", manual);
+  modeButton.disabled = actionInFlight || !running;
   const audio = state.audio || {};
   const audioButton = $("mute-audio");
-  audioButton.textContent = audio.muted ? "Unmute game audio" : "Mute game audio";
+  // The button is an icon, not a label: its own glyph reports the state, so
+  // only the accessibility name changes here. Writing textContent would eat
+  // the SVGs.
+  const audioLabel = audio.muted ? "Unmute game audio" : "Mute game audio";
+  audioButton.setAttribute("aria-label", audioLabel);
+  audioButton.title = audioLabel;
+  audioButton.classList.toggle("muted", Boolean(audio.muted));
   audioButton.disabled = actionInFlight || !running || !audio.available;
   const body = state.body || null;
   const bodyRunning = Boolean(body && body.running);
@@ -617,6 +696,7 @@ function render(state) {
   applyControls(state);
   syncPreview(state);
   updatePreviewWait(state);
+  syncPreviewOverlay();
   updateManualUi(state);
   applyServerError(state.last_error);
 
@@ -693,25 +773,83 @@ $("start").onclick = () => runAction(() => post("/api/session/start"));
 
 $("stop").onclick = () => runAction(() => post("/api/session/stop"));
 
-document.querySelectorAll("#modes button").forEach((button) => {
-  button.onclick = () => runAction(() => post("/api/session/mode", { mode: button.dataset.mode }));
-});
-
-$("kill-game").onclick = () => {
-  if (!confirm("Kill the game process?")) return;
-  runAction(() => post("/api/session/kill", { target: "game" }));
-};
-
-$("kill-steam").onclick = () => {
-  if (!confirm("Shut down the hidden Steam client?")) return;
-  runAction(() => post("/api/session/kill", { target: "steam" }));
+$("mode-toggle").onclick = () => {
+  const mode = lastState?.mode === "manual" ? "body" : "manual";
+  runAction(() => post("/api/session/mode", { mode }));
 };
 
 $("mute-audio").onclick = () => runAction(() => post("/api/audio/mute", { muted: !(lastState?.audio?.muted) }));
 
+$("theme-toggle").onclick = () => {
+  const next = currentTheme() === "light" ? "dark" : "light";
+  document.documentElement.dataset.theme = next;
+  try {
+    localStorage.setItem(THEME_KEY, next);
+  } catch {
+    // Private mode: the toggle still works for this page load.
+  }
+  syncThemeButton();
+};
+syncThemeButton();
+
 $("body-start").onclick = () => runAction(() => post("/api/body/start"));
 
 $("body-stop").onclick = () => runAction(() => post("/api/body/stop"));
+
+// Brain: the diary from /api/brain/messages as a conversation - JobBot on the
+// left, Clank on the right, actions as chips, outcomes as one-liners. It is a
+// view of the diary, not a log console: sentences, timestamps only on hover.
+const BRAIN_POLL_MS = 2000;
+const BRAIN_KINDS = new Set(["heard", "think", "act", "result", "error"]);
+let brainSignature = "";
+
+function brainRow(row) {
+  const kind = BRAIN_KINDS.has(row.kind) ? row.kind : "think";
+  const bubble = document.createElement("div");
+  bubble.className = `brain-row kind-${kind}`;
+  if (row.iso) bubble.title = row.iso;
+  const tagText = { heard: "JobBot", think: "Clank" }[kind];
+  if (tagText) {
+    const tag = document.createElement("span");
+    tag.className = "tag";
+    tag.textContent = tagText;
+    bubble.appendChild(tag);
+  }
+  const prefix = { act: "▸ ", result: "✓ ", error: "✕ " }[kind] || "";
+  bubble.appendChild(document.createTextNode(prefix + (row.text || "")));
+  return bubble;
+}
+
+function renderBrain(messages) {
+  const box = $("brain-messages");
+  const stick = box.scrollTop + box.clientHeight >= box.scrollHeight - 24;
+  if (!messages.length) {
+    const empty = document.createElement("div");
+    empty.className = "brain-empty";
+    empty.textContent = "Nothing heard yet — JobBot speaks once a job starts.";
+    box.replaceChildren(empty);
+    return;
+  }
+  box.replaceChildren(...messages.map(brainRow));
+  if (stick) box.scrollTop = box.scrollHeight;
+}
+
+async function loadBrain() {
+  try {
+    const doc = await api("/api/brain/messages");
+    const messages = doc.messages || [];
+    const last = messages[messages.length - 1] || {};
+    const signature = `${messages.length}:${last.t ?? ""}`;
+    if (signature === brainSignature) return;
+    brainSignature = signature;
+    renderBrain(messages);
+  } catch {
+    // The diary is a nicety; it never earns an error banner.
+  }
+}
+
+loadBrain();
+setInterval(loadBrain, BRAIN_POLL_MS);
 
 // Logs: every session log in one colour-coded stream. The chips filter sources;
 // the console sticks to the bottom unless you scroll up to read history.
@@ -774,6 +912,9 @@ async function loadLog() {
     if (!response.ok) throw new Error(`failed: ${response.status}`);
     const doc = await response.json();
     logData = doc.logs || {};
+    // The brain diary has its own panel as a conversation; it stays in
+    // /api/logs for other consumers, just not rendered twice here.
+    delete logData.brain;
     logSources = Object.keys(logData).sort((a, b) => {
       const rank = (name) => (LOG_SOURCES.includes(name) ? LOG_SOURCES.indexOf(name) : 99);
       return rank(a) - rank(b);
@@ -973,13 +1114,16 @@ function bodySync() {
 async function bodyVerb(verb, button) {
   const status = $("verb-status");
   if (button) button.disabled = true;
+  // Success is visible in the game. The sequence number and authority were
+  // debugging detail sitting in the middle of the controls, so a good press
+  // says nothing and only a failure speaks.
   try {
     const reply = await post("/api/body/command", { verb });
     status.textContent = reply.ok
-      ? `${verb} → seq ${reply.seq ?? "?"}, authority ${reply.authority ?? 0}`
-      : `${verb} rejected: ${reply.error || "unknown error"}`;
+      ? ""
+      : `${verb.replace(/_/g, " ")} rejected: ${reply.error || "unknown error"}`;
   } catch (error) {
-    status.textContent = `${verb} failed: ${error.message}`;
+    status.textContent = `${verb.replace(/_/g, " ")} failed: ${error.message}`;
   } finally {
     if (button) button.disabled = false;
   }

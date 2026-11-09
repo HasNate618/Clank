@@ -154,4 +154,4 @@ fov_v_deg = 0.0
 render = true
 # Camera angles rendered together as tiles; the first is the primary tile.
 # The angle buttons retarget the primary tile. One of: three_quarter, front, side, back.
-views = ["three_quarter", "side"]
+views = ["three_quarter", "front", "side"]

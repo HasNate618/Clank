@@ -1,37 +1,91 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-theme="dark">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>CLANK // C0</title>
+  <title>Clank</title>
+  <script>
+    // Paint the first theme before CSS loads, so there is no flash. app.js owns
+    // every change after this; the storage key is shared.
+    (function () {
+      var saved = null;
+      try { saved = localStorage.getItem("clank-theme"); } catch (e) { /* private mode */ }
+      var theme = saved ||
+        (matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark");
+      document.documentElement.dataset.theme = theme;
+    })();
+  </script>
   <link rel="stylesheet" href="/style.css">
 </head>
 <body>
   <div class="frame">
     <header class="topbar">
       <div class="brand">
-        <span class="brand-mark">CLANK</span>
-        <span class="brand-tag">C0</span>
+        <!-- A worker unit, not a word: the head is a tiny SVG so it stays
+             crisp, and the eyes blink on their own schedule. -->
+        <svg class="brand-face" viewBox="0 0 32 32" aria-hidden="true">
+          <path class="antenna" d="M16 3.2v4.4"/>
+          <circle class="antenna-tip" cx="16" cy="2.8" r="1.9"/>
+          <rect class="head" x="5.5" y="7.6" width="21" height="17" rx="5.5"/>
+          <g class="eyes">
+            <rect class="eye" x="11" y="12.8" width="3.2" height="4.6" rx="1.6"/>
+            <rect class="eye" x="17.8" y="12.8" width="3.2" height="4.6" rx="1.6"/>
+          </g>
+          <path class="grille" d="M12 20.4h8"/>
+        </svg>
+        <span class="brand-lockup">
+          <span class="brand-mark">CLANK</span>
+          <span class="brand-plate">probationary unit</span>
+        </span>
       </div>
       <div class="status-cluster">
-        <span id="state" class="badge">stopped</span>
         <span id="session-id"></span>
         <span id="uptime"></span>
       </div>
       <div class="top-actions">
-        <button id="start" class="btn btn-go" disabled>▶ Start</button>
-        <button id="stop" class="btn btn-halt" disabled>■ Stop</button>
-        <button id="mute-audio" class="btn" disabled>Mute game audio</button>
+        <!-- The badge sits with the buttons that change it. -->
+        <span id="state" class="badge">stopped</span>
+        <button id="start" class="btn btn-go" disabled>Start</button>
+        <button id="stop" class="btn btn-halt" disabled>Stop</button>
+        <button id="mute-audio" class="btn btn-icon btn-audio" type="button" aria-label="Mute game audio" disabled>
+          <svg class="icon icon-on" viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M4 9.5h3.2L12 5.6v12.8L7.2 14.5H4z"/>
+            <path class="wave" d="M15.4 8.7a4.6 4.6 0 0 1 0 6.6"/>
+            <path class="wave" d="M18.1 6.2a8.2 8.2 0 0 1 0 11.6"/>
+          </svg>
+          <svg class="icon icon-off" viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M4 9.5h3.2L12 5.6v12.8L7.2 14.5H4z"/>
+            <path d="M16 9.5l5 5m0-5l-5 5"/>
+          </svg>
+        </button>
+        <button id="theme-toggle" class="btn btn-icon" type="button" aria-label="Switch theme">
+          <!-- Sun shows in the dark theme (the way out), moon in the light one. -->
+          <svg class="icon icon-sun" viewBox="0 0 24 24" aria-hidden="true">
+            <circle cx="12" cy="12" r="4.4"/>
+            <path class="ray" d="M12 2.6v2.4M12 19v2.4M2.6 12h2.4M19 12h2.4M5.4 5.4l1.7 1.7M16.9 16.9l1.7 1.7M18.6 5.4l-1.7 1.7M7.1 16.9l-1.7 1.7"/>
+          </svg>
+          <svg class="icon icon-moon" viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M20 14.6A8.6 8.6 0 0 1 9.4 4a8.6 8.6 0 1 0 10.6 10.6z"/>
+          </svg>
+        </button>
       </div>
     </header>
 
-    <main class="deck">
+    <main class="deck" id="deck" data-layout="side">
+      <!-- The stage is the game, the control strip under it, and - on a
+           near-square window - the brain feed, which is the one thing that can
+           absorb arbitrary height. app.js moves that panel into the rail when
+           the window is wide, because then the game fills the height and the
+           rail is where a tall feed belongs. -->
       <section class="stage">
-        <div class="stage-views">
-          <section class="preview" id="preview-box">
+        <div class="screen">
+          <section class="preview" id="preview-box" aria-label="Game preview">
             <div class="preview-clip" id="preview-clip">
               <div id="preview" tabindex="-1"></div>
               <canvas id="preview-live" hidden></canvas>
+              <!-- Future visual debugging (grounding boxes, glow patches) draws
+                   here in game-pixel coordinates. It never handles input. -->
+              <canvas id="preview-overlay"></canvas>
             </div>
             <div id="preview-wait">session stopped</div>
             <div id="manual-overlay" class="manual-overlay">
@@ -41,82 +95,69 @@
               </div>
             </div>
             <form id="vnc-auth" class="vnc-auth">
-              <label>Username <input id="vnc-user" autocomplete="username" required></label>
-              <label>Password <input id="vnc-pass" type="password" autocomplete="current-password" aria-describedby="vnc-error" required></label>
-              <button type="submit">Connect preview</button>
-              <p id="vnc-error" role="alert"></p>
+              <div class="vnc-card">
+                <h2>Preview login</h2>
+                <label>Username <input id="vnc-user" autocomplete="username" required></label>
+                <label>Password <input id="vnc-pass" type="password" autocomplete="current-password" aria-describedby="vnc-error" required></label>
+                <button type="submit" class="btn btn-go">Connect preview</button>
+                <p id="vnc-error" role="alert"></p>
+              </div>
             </form>
           </section>
-          <aside id="body-box">
-            <div class="body-head">
-              <span class="body-title">Robot</span>
+          <p id="error" class="error" role="alert"></p>
+        </div>
+
+        <!-- The robot panel holds everything that steers the body: the views
+             themselves, the look pads, and the manual/robot switch. -->
+        <aside id="body-box">
+          <div class="body-head">
+            <span class="body-title">Robot</span>
+          </div>
+          <div id="body-tiles"></div>
+          <div id="body-wait">body view off</div>
+          <div class="body-controls">
+            <div class="verbs">
+              <button type="button" data-verb="look_left" class="look look-left" aria-label="Look left">
+                <span class="look-arrow" aria-hidden="true"></span>
+                <span class="look-label">Look left</span>
+              </button>
+              <button type="button" data-verb="look_right" class="look look-right" aria-label="Look right">
+                <span class="look-arrow" aria-hidden="true"></span>
+                <span class="look-label">Look right</span>
+              </button>
+            </div>
+            <button id="mode-toggle" class="mode-toggle" type="button" aria-pressed="false" disabled>
+              Switch to manual override
+            </button>
+            <div class="body-actions">
               <button id="body-start" type="button" disabled>Start</button>
               <button id="body-stop" type="button" disabled>Stop</button>
             </div>
-            <div id="body-tiles"></div>
-            <div id="body-wait">body view off</div>
-          </aside>
-        </div>
-        <p id="error" class="error" role="alert"></p>
+            <div id="verb-status" class="verb-status"></div>
+          </div>
+        </aside>
       </section>
 
-      <aside class="col col-right">
-        <section class="panel">
+      <aside class="col col-rail">
+        <section class="panel panel-brain">
+          <h2>Brain</h2>
+          <div id="brain-messages" class="brain-messages"></div>
+        </section>
+
+        <section class="panel panel-logs">
+          <div class="logs-head">
+            <h2>Logs</h2>
+            <div id="log-filters" class="log-filters"></div>
+          </div>
+          <div id="log-tail" class="log-tail"></div>
+        </section>
+
+        <section class="panel panel-telemetry">
           <h2>Telemetry</h2>
           <div id="health"></div>
         </section>
-
-        <section class="panel">
-          <h2>Pose mode</h2>
-          <div id="modes">
-            <button data-mode="hold" aria-pressed="false" disabled>hold</button>
-            <button data-mode="yaw" aria-pressed="false" disabled>yaw</button>
-            <button data-mode="trigger" aria-pressed="false" disabled>trigger</button>
-            <button data-mode="dodge" aria-pressed="false" disabled>dodge</button>
-            <button data-mode="walk" aria-pressed="false" disabled>walk</button>
-            <button data-mode="clock" aria-pressed="false" disabled>clock</button>
-            <button data-mode="manual" aria-pressed="false" disabled>manual</button>
-            <button data-mode="body" aria-pressed="false" disabled>body</button>
-          </div>
-        </section>
-
-        <section class="panel">
-          <h2>Verbs</h2>
-          <div class="verbs">
-            <button type="button" data-verb="look_left">look left</button>
-            <button type="button" data-verb="look_right">look right</button>
-            <button type="button" data-verb="aim">aim</button>
-            <button type="button" data-verb="punch">punch</button>
-            <button type="button" data-verb="dodge_left">dodge left</button>
-            <button type="button" data-verb="hold">hold</button>
-          </div>
-          <h3>Buttons</h3>
-          <div class="verbs">
-            <button type="button" data-verb="grab_right">grab R</button>
-            <button type="button" data-verb="release_right">release R</button>
-            <button type="button" data-verb="grab_left">grab L</button>
-            <button type="button" data-verb="release_left">release L</button>
-            <button type="button" data-verb="fire_right">fire R</button>
-            <button type="button" data-verb="fire_left">fire L</button>
-          </div>
-          <div id="verb-status" class="verb-status"></div>
-        </section>
-
-        <section class="panel danger">
-          <h2>Danger zone</h2>
-          <button id="kill-game" disabled>Kill game</button>
-          <button id="kill-steam" disabled>Shutdown Steam</button>
-        </section>
       </aside>
     </main>
-
-    <footer class="console">
-      <div class="console-head">
-        <h2>Logs</h2>
-        <div id="log-filters" class="log-filters"></div>
-      </div>
-      <div id="log-tail" class="log-tail"></div>
-    </footer>
   </div>
   <script src="/app.js"></script>
 </body>

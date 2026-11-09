@@ -1,7 +1,11 @@
-/* CLANK C0 — brutalist cockpit. Flat black, white, one red. No glow,
-   no gradients, no rounded corners. The frame is the interface.
-   Fonts are vendored and served by the dashboard, so they cannot be
-   overridden by whatever the desktop defaults to. */
+/* CLANK — friendly operator console, in the spirit of the game it plays:
+   chunky rounded cards, hard offset shadows, and ten retro swatches doing all
+   the colour work (#001219 near-black through #005f73 and #0a9396 teal,
+   #94d2bd mint, #e9d8a6 sand, #ee9b00 amber, #ca6702 / #bb3e03 rust,
+   #ae2012 / #9b2226 brick).
+   Two themes, chosen by [data-theme] on <html>; every colour is a variable
+   so a theme is a palette and nothing else. Fonts are vendored and served
+   by the dashboard, so the desktop cannot substitute them. */
 
 @font-face {
   font-family: "Clank Sans";
@@ -24,27 +28,92 @@
   font-style: normal;
   font-display: swap;
 }
+/* Fredoka: rounded and chunky, for the wordmark and the headings. It is the
+   one voice that is not Inter, and it is what stops the page reading as a
+   sysadmin tool. */
+@font-face {
+  font-family: "Clank Display";
+  src: url("/fonts/fredoka-600.woff2") format("woff2");
+  font-weight: 600;
+  font-style: normal;
+  font-display: swap;
+}
 
 :root {
-  color-scheme: dark;
-  --bg: #000;
-  --panel: #0d0d0d;
-  --edge: #2b2b2b;
-  --text: #f2f2f2;
-  --muted: #8f8f8f;
-  --red: #ff1e2d;
-  --red-dark: #8f0f18;
   --sans: "Clank Sans", "Inter", "Liberation Sans", "DejaVu Sans", sans-serif;
-  --display: var(--sans);
-  --ui: var(--sans);
   --mono: "Clank Mono", "IBM Plex Mono", "DejaVu Sans Mono", monospace;
-  --src-session: #ff1e2d;
-  --src-monado: #ffb020;
-  --src-weston: #35d6ff;
-  --src-proxy: #a78bfa;
-  --src-steam: #4ade80;
-  --src-pose: #ff7ab6;
-  --src-brain: #f0e68c;
+  --display: "Clank Display", "Clank Sans", "Inter", sans-serif;
+  --r-lg: 18px;
+  --r-md: 12px;
+  --r-sm: 8px;
+}
+
+[data-theme="dark"] {
+  color-scheme: dark;
+  /* #001219 -> #9b2226. The room is the darkest swatch, the mint is the light
+     on it, amber and rust carry the warm states. Every surface is a lift of
+     the base, so nothing drifts off-palette. */
+  --bg: #0b1113;
+  --panel: #131b1d;
+  --card: #1a2325;
+  --edge: #283436;
+  --text: #e9d8a6;
+  --muted: #8fb8ab;
+  --accent: #94d2bd;
+  --accent-ink: #00212a;
+  --warm: #ee9b00;
+  --warm-ink: #2b1500;
+  --go: #94d2bd;
+  --go-ink: #001219;
+  --halt: #ae2012;
+  --halt-ink: #ffe9e4;
+  --shadow: 0 2px 10px rgb(0 0 0 / 0.34);
+  /* Solid, not blurred: the panel sits on a hard edge. */
+  --drop: 0 3px 0 var(--edge);
+  --screen: #000508;
+  --heard-bg: rgb(10 147 150 / 0.24);
+  --heard-text: #b7ece6;
+  --think-bg: rgb(202 103 2 / 0.22);
+  --think-text: #f7cf9a;
+  --src-session: #ae2012;
+  --src-monado: #ee9b00;
+  --src-weston: #0a9396;
+  --src-proxy: #94d2bd;
+  --src-steam: #005f73;
+  --src-pose: #ca6702;
+}
+
+[data-theme="light"] {
+  color-scheme: light;
+  /* Sand paper, deep teal, burnt orange: the same ten swatches read as a 70s
+     catalogue spread instead of a night room. */
+  --bg: #efe3bd;
+  --panel: #f8f2de;
+  --card: #e9d8a6;
+  --edge: #cdb884;
+  --text: #001219;
+  --muted: #4a6a6a;
+  --accent: #0a9396;
+  --accent-ink: #f2fbf8;
+  --warm: #ca6702;
+  --warm-ink: #fff3e0;
+  --go: #0a9396;
+  --go-ink: #eafffb;
+  --halt: #ae2012;
+  --halt-ink: #fff2ee;
+  --shadow: 0 1px 3px rgb(90 74 44 / 0.12), 0 6px 18px rgb(90 74 44 / 0.09);
+  --drop: 0 3px 0 var(--edge);
+  --screen: #001014;
+  --heard-bg: #cfe9df;
+  --heard-text: #004d4f;
+  --think-bg: #f7ddb8;
+  --think-text: #7a3d00;
+  --src-session: #ae2012;
+  --src-monado: #ca6702;
+  --src-weston: #0a9396;
+  --src-proxy: #005f73;
+  --src-steam: #0a7a7d;
+  --src-pose: #9b2226;
 }
 
 * { box-sizing: border-box; }
@@ -53,375 +122,560 @@ html, body { height: 100%; }
 
 body {
   margin: 0;
-  background: var(--bg);
+  background-color: var(--bg);
+  /* a faint dot grid, like graph paper under the desk toys */
+  background-image: radial-gradient(
+    color-mix(in srgb, var(--muted) 13%, transparent) 1.2px,
+    transparent 1.3px
+  );
+  background-size: 24px 24px;
   color: var(--text);
-  font: 14px/1.4 var(--ui);
+  font: 14px/1.45 var(--sans);
   overflow: hidden;
+  transition: background 0.2s ease, color 0.2s ease;
 }
 
-/* ---------- cockpit frame: the viewport sits inside a bezel ---------- */
+/* Candy buttons: a glossy face on a thicker "lip", so a press has somewhere
+   to go. --face/--lip per variant; the press sinks the face onto the lip. */
+button {
+  --face: var(--card);
+  --lip: var(--edge);
+  font: inherit;
+  font-weight: 700;
+  color: var(--text);
+  background: var(--face);
+  border: none;
+  border-radius: 14px;
+  padding: 9px 16px;
+  cursor: pointer;
+  box-shadow:
+    inset 0 0 0 1.5px var(--lip),
+    0 3px 0 var(--lip);
+  transition:
+    transform 0.1s cubic-bezier(0.34, 1.56, 0.64, 1),
+    box-shadow 0.1s ease,
+    filter 0.15s ease,
+    opacity 0.15s ease;
+}
+button:hover:not(:disabled) { filter: brightness(1.07); }
+button:active:not(:disabled) {
+  transform: translateY(2px);
+  box-shadow:
+    inset 0 0 0 1.5px var(--lip),
+    0 1px 0 var(--lip);
+}
+button:disabled { opacity: 0.45; cursor: default; }
+button:focus-visible { outline: 2.5px solid var(--accent); outline-offset: 2px; }
+
+input {
+  font: inherit;
+  color: var(--text);
+  background: var(--card);
+  border: 1.5px solid var(--edge);
+  border-radius: var(--r-md);
+  padding: 8px 12px;
+}
+input:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+h2 {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  color: var(--muted);
+}
+
+/* ---------- frame: top bar + three columns ---------- */
 
 .frame {
   height: 100vh;
   display: grid;
-  grid-template-rows: auto minmax(0, 1fr) auto;
-  gap: 8px;
-  padding: 8px;
-  border: 2px solid var(--edge);
-  outline: 2px solid #111;
-  outline-offset: 4px;
-  margin: 4px;
+  grid-template-rows: auto minmax(0, 1fr);
+  gap: 12px;
+  padding: 14px;
 }
-
-h2 {
-  margin: 0 0 10px;
-  font-family: var(--display);
-  font-size: 11px;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.1em;
-  color: var(--muted);
-}
-h2::after {
-  content: "";
-  display: block;
-  margin-top: 6px;
-  border-bottom: 2px solid var(--edge);
-}
-
-/* ---------- top bar ---------- */
 
 .topbar {
   display: flex;
-  align-items: stretch;
+  align-items: center;
   gap: 16px;
   background: var(--panel);
-  border: 2px solid var(--edge);
+  border: 1px solid var(--edge);
+  border-radius: var(--r-lg);
+  box-shadow: var(--shadow);
+  padding: 10px 16px;
 }
 
-.brand {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 10px 16px;
-  border-right: 2px solid var(--edge);
+.brand { display: flex; align-items: center; gap: 10px; }
+/* A worker unit, not a word: a small robot head with a blinking pair of eyes,
+   a nameplate, and a unit number under it. The plate is identity, not status,
+   so it never changes - which is what the old 'temp worker' tag got wrong. */
+.brand-face {
+  width: 34px;
+  height: 34px;
+  flex: none;
+  overflow: visible;
+  transform: rotate(-2deg);
+  transition: transform 0.25s cubic-bezier(0.34, 1.56, 0.64, 1);
 }
+.brand:hover .brand-face { transform: rotate(3deg) translateY(-1px); }
+.brand-face .head {
+  fill: var(--card);
+  stroke: var(--accent);
+  stroke-width: 2;
+}
+.brand-face .antenna { stroke: var(--accent); stroke-width: 2; stroke-linecap: round; }
+.brand-face .antenna-tip { fill: var(--warm); }
+.brand-face .eye { fill: var(--accent); transform-origin: center; animation: blink 6.5s infinite; }
+.brand-face .grille { stroke: var(--accent); stroke-width: 2; stroke-linecap: round; opacity: 0.65; }
+@keyframes blink {
+  0%, 92%, 100% { transform: scaleY(1); }
+  95% { transform: scaleY(0.1); }
+}
+.brand-lockup { display: grid; justify-items: start; gap: 0; }
+/* The wordmark is the one place the display face shouts. A slight tilt and a
+   solid shadow make it read as a logo on a toy box rather than a label. */
 .brand-mark {
   font-family: var(--display);
-  font-size: 19px;
-  font-weight: 700;
-  letter-spacing: 0.08em;
-  color: var(--text);
-}
-.brand-tag {
-  font-family: var(--display);
-  font-size: 11px;
+  font-size: 25px;
   font-weight: 600;
-  letter-spacing: 0.06em;
-  color: #000;
-  background: var(--red);
-  padding: 2px 7px;
+  letter-spacing: 0.02em;
+  line-height: 1;
+  color: var(--accent);
+  text-shadow: 0 2px 0 color-mix(in srgb, var(--accent) 35%, black);
+  transform: rotate(-1.5deg);
+  transition: transform 0.25s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+.brand:hover .brand-mark { transform: rotate(1.5deg) scale(1.03); }
+/* A rivetted nameplate under the word. Sized to sit inside the wordmark's
+   width: at 9px with wide tracking it ran past the end of CLANK and read as a
+   badge stuck on afterwards. */
+.brand-plate {
+  font: 600 8px var(--mono);
+  letter-spacing: 0.11em;
+  text-transform: uppercase;
+  color: var(--muted);
+  padding: 1px 5px;
+  border-radius: 3px;
+  background: var(--card);
+  box-shadow: inset 0 0 0 1px var(--edge);
+  white-space: nowrap;
 }
 
 .status-cluster {
   display: flex;
   align-items: center;
-  gap: 14px;
+  gap: 10px;
   flex: 1;
   min-width: 0;
 }
-
 #session-id, #uptime {
-  font-family: var(--mono);
-  font-size: 11px;
-  letter-spacing: 0.04em;
+  font: 11px var(--mono);
   color: var(--muted);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
-#uptime { color: var(--text); }
-
-.top-actions {
-  display: flex;
-  align-items: stretch;
-  border-left: 2px solid var(--edge);
-}
-.top-actions .btn {
-  border: 0;
-  padding: 0 26px;
-  font-size: 13px;
-}
-.top-actions .btn + .btn { border-left: 2px solid var(--edge); }
-
-/* ---------- buttons: hard blocks, invert on hover ---------- */
-
-button, select {
-  background: #141414;
-  color: var(--text);
-  border: 2px solid var(--edge);
-  border-radius: 0;
-  padding: 8px 12px;
-  font-family: var(--display);
-  font-size: 12px;
-  font-weight: 600;
-  letter-spacing: 0.03em;
-  text-transform: uppercase;
-  cursor: pointer;
-}
-
-button:hover:not(:disabled) {
-  background: var(--text);
-  color: #000;
-  border-color: var(--text);
-}
-button:disabled { opacity: 0.45; cursor: default; }
-button.active {
-  background: var(--red);
-  border-color: var(--red);
-  color: #000;
-}
-button.active:hover:not(:disabled) {
-  background: var(--red);
-  color: #000;
-}
-
-.btn { font-weight: 700; }
-.btn-go:not(:disabled) { background: var(--text); color: #000; border-color: var(--text); }
-.btn-go:hover:not(:disabled) { background: var(--red); border-color: var(--red); }
-.btn-halt:not(:disabled) { background: var(--red-dark); color: var(--text); border-color: var(--red-dark); }
-.btn-halt:hover:not(:disabled) { background: var(--red); border-color: var(--red); color: #000; }
-
-/* ---------- state badge: a solid status plate ---------- */
 
 .badge {
+  border-radius: 999px;
   padding: 4px 14px;
-  border: 2px solid var(--edge);
-  background: #141414;
-  color: var(--muted);
-  font-family: var(--display);
-  font-size: 11px;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.1em;
+  font-size: 12px;
+  font-weight: 700;
+  background: var(--card);
+  color: var(--text);
+  transition: background 0.2s ease, color 0.2s ease, box-shadow 0.2s ease;
 }
 .badge.running {
-  border-color: var(--red);
-  background: var(--red);
-  color: #000;
+  background: var(--go);
+  color: var(--go-ink);
+  animation: breathe 2.6s ease-in-out infinite;
 }
 .badge.starting, .badge.stopping {
-  border-color: var(--red);
-  color: var(--red);
+  background: var(--warm);
+  color: var(--warm-ink);
+  animation: breathe 1.6s ease-in-out infinite;
 }
-.badge.failed {
-  border-color: var(--red);
-  background: var(--red-dark);
-  color: var(--text);
+.badge.failed { background: var(--halt); color: var(--halt-ink); }
+
+@keyframes breathe {
+  0%, 100% { box-shadow: 0 0 0 2px color-mix(in srgb, currentColor 0%, transparent); }
+  50% { box-shadow: 0 0 0 5px color-mix(in srgb, currentColor 14%, transparent); }
 }
 
-/* ---------- main deck: stage | telemetry + controls ---------- */
+.top-actions { display: flex; gap: 8px; align-items: center; }
+.btn-go {
+  --face: var(--go);
+  --lip: color-mix(in srgb, var(--go) 60%, black);
+  color: var(--go-ink);
+  background: linear-gradient(180deg, color-mix(in srgb, var(--go) 82%, white), var(--go));
+}
+.btn-halt {
+  --face: var(--halt);
+  --lip: color-mix(in srgb, var(--halt) 60%, black);
+  color: var(--halt-ink);
+  background: linear-gradient(180deg, color-mix(in srgb, var(--halt) 82%, white), var(--halt));
+}
+#start::before { content: "▶ "; font-size: 10px; }
+#stop::before { content: "■ "; font-size: 10px; }
 
-.deck {
+/* Icon-only controls: the audio button is one speaker glyph whose state is a
+   stroke through it, so its own shape reports mute instead of a label. */
+.btn-icon {
+  width: 40px;
+  height: 40px;
+  padding: 0;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 300px;
-  gap: 8px;
-  min-height: 0;
+  place-items: center;
+  border-radius: 50%;
+}
+.icon { width: 20px; height: 20px; display: block; }
+.icon path { fill: currentColor; stroke: none; }
+.icon .wave, .icon-off path + path, .icon .ray, .icon-sun circle {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+}
+.icon-sun circle { fill: currentColor; }
+/* One glyph at a time: the button reports its state by shape. */
+.btn-audio .icon-off { display: none; }
+.btn-audio.muted .icon-on { display: none; }
+.btn-audio.muted .icon-off { display: block; }
+/* The theme button shows the theme you would switch TO. */
+[data-theme="dark"] .icon-moon { display: none; }
+[data-theme="light"] .icon-sun { display: none; }
+
+/* ---------- deck: the layout hook ---------- */
+/* Exactly one [data-layout] block is active. Future viewing modes (stacked,
+   game-focus, robot-focus) are new blocks here plus a LAYOUTS entry in app.js;
+   the markup does not change. */
+
+.deck { display: grid; gap: 12px; min-height: 0; }
+
+/* Two layouts, chosen by the window's shape (app.js sets data-aspect from a
+   min-aspect-ratio query). A 16:9 screen cannot fill a near-square window, so
+   what absorbs the leftover height changes with the shape instead of being
+   stretched into a hole. */
+.deck[data-layout="side"] {
+  grid-template-columns: minmax(0, 1fr) 360px;
 }
 
-.col {
-  display: grid;
-  gap: 8px;
+.col { display: grid; gap: 12px; align-content: start; min-height: 0; }
+/* Robot strip is content-sized and the feeds share the rest; min-height:0 is
+   what lets a flex child actually shrink. */
+.col-rail {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
   min-height: 0;
-  align-content: start;
-  grid-template-rows: none;
-  overflow: hidden auto;
+  overflow: hidden;
+}
+.col-rail .panel-brain { flex: 1 1 0; min-height: 0; }
+.col-rail #body-box { flex: 0 0 auto; }
+.col-rail .panel-logs { flex: 1 1 0; min-height: 0; }
+.col-rail .panel-telemetry { flex: 0 0 auto; }
+
+/* Tall / near-square: the screen takes the height, the robot panel is sized by
+   its tiles. The old arrangement gave the panel the leftover height, so the
+   tiles grew and shrank with the window and stopped matching the 4:3 render. */
+.deck[data-aspect="tall"] .stage {
+  grid-template-rows: minmax(0, 1fr) auto;
+}
+.deck[data-aspect="tall"] .preview {
+  width: 100%;
+  height: 100%;
+  aspect-ratio: auto;
+}
+
+/* Wide: the screen fills the height it is given, so it loses no room to page
+   background at its sides; the robot moves into the rail. */
+.deck[data-aspect="wide"] {
+  grid-template-columns: minmax(0, 1fr) 460px;
+}
+/* Three views stacked in a narrow rail would own the whole column, so at this
+   width the tiles pair up instead. */
+.deck[data-aspect="wide"] .col-rail #body-tiles {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+.deck[data-aspect="wide"] .stage {
+  grid-template-rows: minmax(0, 1fr);
+}
+.deck[data-aspect="wide"] .preview {
+  width: 100%;
+  height: 100%;
+  aspect-ratio: auto;
 }
 
 .panel {
   background: var(--panel);
-  border: 2px solid var(--edge);
-  padding: 12px;
-  min-height: 0;
-  overflow: auto;
-}
-
-/* pose modes: vertical command list */
-#modes { display: grid; gap: 6px; }
-#modes button {
-  text-align: left;
-  padding: 10px 12px;
-}
-#modes button::before {
-  content: "▸ ";
-  color: var(--muted);
-}
-#modes button.active::before { content: "▹ "; color: #000; }
-
-/* telemetry readouts */
-#health { display: grid; gap: 6px; }
-.card {
-  border: 2px solid var(--edge);
-  background: #0a0a0a;
-  padding: 8px 10px;
+  border: 1px solid var(--edge);
+  border-radius: var(--r-lg);
+  /* Solid offset shadow, the same trick as the buttons' lip: a hard edge
+     under the card rather than a soft blur. It is the retro part of the
+     palette, and it prints the panel as a physical card. */
+  box-shadow: var(--drop);
+  padding: 14px;
   display: grid;
-  grid-template-columns: 1fr auto;
-  gap: 1px 8px;
-  align-items: baseline;
+  gap: 10px;
+  align-content: start;
+  min-height: 0;
+  transition: transform 0.18s ease, box-shadow 0.18s ease;
+  animation: rise 0.34s cubic-bezier(0.22, 1, 0.36, 1) both;
 }
-.card strong {
+.panel:hover { transform: translateY(-1px); box-shadow: var(--drop), 0 10px 0 -6px var(--edge); }
+
+@keyframes rise {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+/* each panel gets its own gumdrop dot */
+.panel h2 {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   font-family: var(--display);
+  font-size: 15px;
+  letter-spacing: 0.01em;
+}
+.panel h2::before {
+  content: "";
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--panel-dot, var(--accent));
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--panel-dot, var(--accent)) 20%, transparent);
+  flex: 0 0 auto;
+}
+.panel-telemetry { --panel-dot: var(--go); }
+.panel-brain { --panel-dot: var(--src-proxy); }
+.panel-logs { --panel-dot: var(--muted); }
+
+/* ---------- robot control row ---------- */
+
+/* Every body control on one line, each sized by its own content: the pads are
+   capped, the switch takes a fixed slice, Start/Stop sit at the far end. A
+   flex:1 pad grew to half the panel and stranded its label at the edge. */
+.body-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: stretch;
+  justify-content: center;
+  gap: 8px;
+}
+.verbs { display: flex; gap: 8px; flex: 0 0 auto; }
+.mode-toggle::before {
+  content: "";
+  display: inline-block;
+  width: 9px;
+  height: 9px;
+  margin-right: 9px;
+  border-radius: 3px;
+  background: currentColor;
+  vertical-align: baseline;
+  opacity: 0.85;
+}
+.mode-toggle.active {
+  --face: var(--warm);
+  --lip: color-mix(in srgb, var(--warm) 55%, black);
+  color: var(--warm-ink);
+  background: linear-gradient(180deg, color-mix(in srgb, var(--warm) 82%, white), var(--warm));
+}
+
+.verbs { display: flex; gap: 8px; }
+/* The look pads: an arcade chevron beside its caption, tinted per side, with
+   the pair centred in the button so a wide pad still reads as a pair. The
+   chevron is drawn with borders, so it scales past what glyphs can. */
+.look {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  flex: 0 1 210px;
+  min-width: 148px;
+  padding: 10px 18px;
+  border-radius: 16px;
+  transition:
+    transform 0.15s cubic-bezier(0.34, 1.56, 0.64, 1),
+    box-shadow 0.1s ease,
+    filter 0.15s ease,
+    opacity 0.15s ease;
+}
+.look-left {
+  --lip: color-mix(in srgb, var(--accent) 55%, black);
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--accent) 16%, var(--card)),
+    color-mix(in srgb, var(--accent) 26%, var(--card))
+  );
+}
+.look-right {
+  --lip: color-mix(in srgb, var(--warm) 55%, black);
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--warm) 16%, var(--card)),
+    color-mix(in srgb, var(--warm) 26%, var(--card))
+  );
+}
+.look-arrow {
+  position: relative;
+  display: block;
+  width: 26px;
+  height: 26px;
+  flex: none;
+  color: var(--accent);
+  transition: transform 0.15s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+.look-right .look-arrow { color: var(--warm); }
+.look-arrow::before {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 12px;
+  height: 12px;
+  border-top: 5px solid currentColor;
+  border-right: 5px solid currentColor;
+  border-radius: 3px;
+}
+.look-left .look-arrow::before { transform: translate(-35%, -50%) rotate(-135deg); }
+.look-right .look-arrow::before { transform: translate(-65%, -50%) rotate(45deg); }
+/* The chevron sits on the outside of the pair:  < look left | look right > */
+.look-right .look-arrow { order: 2; }
+.look-left { padding: 10px 20px 10px 14px; }
+.look-right { padding: 10px 14px 10px 20px; }
+.look-label {
   font-size: 10px;
-  font-weight: 600;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.09em;
+  color: var(--muted);
+  white-space: nowrap;
+}
+.look:active:not(:disabled) { transform: translateY(2px); }
+.verb-status {
+  min-height: 1.2em;
+  font: 11px var(--mono);
+  color: var(--halt);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  align-self: center;
+  text-align: right;
+}
+
+/* Telemetry is a compact checklist, two columns where there is room: nine
+   full-width rows cost a third of the rail to say 'down'. */
+#health {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 2px 10px;
+}
+.card {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  padding: 2px 6px;
+  border-radius: 6px;
+  min-width: 0;
+}
+.card:hover { background: var(--card); }
+.card strong {
+  font-size: 9px;
+  font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.06em;
   color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
-.card span { font-family: var(--mono); font-size: 12px; font-weight: 600; }
+.card span { font: 600 10px var(--mono); margin-left: auto; white-space: nowrap; }
 .card small {
-  grid-column: 1 / -1;
+  font: 9px var(--mono);
   color: var(--muted);
-  font-family: var(--mono);
-  font-size: 11px;
-}
-.ok { color: var(--text); }
-.ok::before { content: "■ "; color: var(--text); }
-.bad { color: var(--red); }
-.bad::before { content: "■ "; color: var(--red); }
-
-/* verb pad */
-.verbs {
-  display: grid;
-  grid-template-columns: repeat(2, 1fr);
-  gap: 6px;
-}
-.verbs button {
-  padding: 9px 4px;
-  font-size: 12px;
-  text-align: center;
-}
-.verb-status {
-  min-height: 1.2em;
-  margin-top: 8px;
-  font-family: var(--mono);
-  font-size: 12px;
-  color: var(--red);
+  opacity: 0.75;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
-/* danger zone */
-.danger { border-color: var(--red-dark); }
-.danger h2 { color: var(--red); }
-.danger h2::after { border-color: var(--red-dark); }
-.danger button {
+/* A panel with nothing in it should say so, not read as broken. The console
+   centres its line, because a console with no lines is a deliberate state. */
+#log-tail:empty { display: grid; place-items: center; }
+#log-tail:empty::before { content: "no log lines yet \2014  start a session"; }
+#brain-messages:empty::before { content: "the brain has not said anything yet"; }
+#health:empty::before { content: "no telemetry yet"; }
+#brain-messages:empty::before,
+#health:empty::before {
   display: block;
-  width: 100%;
-  margin-top: 6px;
-  border-color: var(--red-dark);
-  color: var(--red);
-  background: #0a0a0a;
-}
-.danger button:hover:not(:disabled) {
-  background: var(--red);
-  border-color: var(--red);
-  color: #000;
+  padding: 4px 2px;
+  color: var(--muted);
+  font-size: 12px;
+  opacity: 0.7;
 }
 
-/* ---------- center stage: game cam + robot filmstrip, one viewport ---------- */
+/* The chips are the only shape the telemetry rows take now; the shared .card
+   grid above is gone with the telemetry panel. */
+.ok::before { content: "● "; font-size: 8px; color: var(--go); }
+.bad::before { content: "● "; font-size: 8px; color: var(--halt); }
+
+/* ---------- stage: the game, its controls, the brain ---------- */
 
 .stage {
-  display: flex;
-  flex-direction: column;
-  min-height: 0;
+  display: grid;
+  /* Defaults are the tall-window arrangement; the [data-aspect] blocks above
+     replace the rows. */
+  grid-template-rows: auto auto minmax(0, 1fr);
+  gap: 10px;
   min-width: 0;
-  gap: 8px;
-}
-
-.stage-views {
-  flex: 1;
   min-height: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  background: var(--panel);
-  border: 2px solid var(--edge);
-  outline: 2px solid #161616;
-  outline-offset: 3px;
-  padding: 8px;
+  width: 100%;
 }
 
+.screen {
+  display: grid;
+  /* The screen takes the cell; the error banner keeps its own line. Without
+     explicit rows the banner shared the cell with the screen and grew to fill
+     it, which is what a failed fetch used to look like. */
+  grid-template-rows: minmax(0, 1fr) auto;
+  gap: 8px;
+  min-height: 0;
+}
+
+/* The screen keeps its dark surround in both themes: it is a monitor. */
 .preview {
   position: relative;
-  flex: 1;
-  min-width: 0;
+  border-radius: var(--r-lg);
+  overflow: hidden;
+  background: var(--screen);
+  border: 1px solid var(--edge);
+  box-shadow: var(--drop);
+  display: grid;
+  place-items: center;
   min-height: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: #000;
-  border: 2px solid var(--edge);
-  overflow: hidden;
+  margin-inline: auto;
 }
-.preview::before {
-  content: "GAME CAM";
-  position: absolute;
-  top: 0;
-  left: 0;
-  z-index: 2;
-  font-family: var(--display);
-  font-size: 10px;
-  font-weight: 600;
-  letter-spacing: 0.1em;
-  color: #000;
-  background: var(--red);
-  padding: 3px 10px 3px 12px;
-}
-
-.preview-clip {
-  position: relative;
-  width: 100%;
-  max-height: 100%;
-  aspect-ratio: 16 / 9;
-  overflow: hidden;
-  background: #000;
-}
-.preview-clip #preview { position: absolute; inset: 0; overflow: hidden; }
-#preview > div {
-  position: relative;
-  width: 100%;
-  height: 100%;
-  display: block;
-  overflow: hidden !important;
-}
-#preview canvas {
-  position: absolute;
-  top: auto;
-  bottom: 0;
-  width: 100% !important;
-  height: auto !important;
-  margin: 0;
-  display: block;
-}
-.preview-clip img {
-  display: block;
-  position: absolute;
-  top: auto;
-  bottom: 0;
-  width: 100%;
-  height: auto;
-}
-/* the raw Weston frame is upside down; the browser flips it */
-#preview-box .preview-clip img { transform: scaleY(-1); }
-/* the reader already flips the frame; the canvas keeps the last complete one */
-#preview-box .preview-clip #preview-live {
+.preview-clip { position: relative; width: 100%; max-height: 100%; }
+#preview { position: absolute; inset: 0; overflow: hidden; }
+#preview canvas { width: 100%; height: 100%; object-fit: contain; }
+#preview-live {
   position: absolute;
   inset: 0;
   width: 100%;
   height: 100%;
-  display: block;
-  background: #000;
+  object-fit: contain;
+  z-index: 1;
+}
+/* Grounding boxes and glow patches land here later, in game-pixel space. */
+#preview-overlay {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  z-index: 2;
+  pointer-events: none;
 }
 
 #preview-wait {
@@ -430,281 +684,274 @@ button.active:hover:not(:disabled) {
   display: grid;
   place-items: center;
   color: var(--muted);
-  font-family: var(--display);
   font-size: 13px;
   font-weight: 600;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
-  background: #000;
+  z-index: 0;
+}
+
+.manual-overlay {
+  position: absolute;
+  inset: 0;
+  display: none;
+  place-items: end center;
+  padding: 16px;
+  z-index: 3;
   pointer-events: none;
 }
+.manual-overlay.visible { display: grid; }
+.manual-panel {
+  display: grid;
+  gap: 2px;
+  text-align: center;
+  background: rgb(10 12 18 / 0.85);
+  color: #eef1f6;
+  border: 1.5px solid var(--edge);
+  border-radius: var(--r-md);
+  padding: 10px 18px;
+}
+.manual-panel strong { font-size: 13px; }
+.manual-panel span { color: #97a0b3; font: 11px var(--mono); }
+body.manual-mode .preview { cursor: pointer; }
+body.manual-active .preview { cursor: none; }
+body.manual-active .manual-panel { border-color: var(--warm); }
 
 .vnc-auth {
   position: absolute;
   inset: 0;
   display: none;
-  place-content: center;
-  gap: 10px;
-  padding: 18px;
-  background: #000d;
-  z-index: 3;
+  place-items: center;
+  background: rgb(5 7 12 / 0.6);
+  backdrop-filter: blur(4px);
+  z-index: 4;
 }
 .vnc-auth.visible { display: grid; }
-.vnc-auth label { display: grid; gap: 4px; color: var(--muted); font-size: 12px; }
-.vnc-auth input {
-  background: #0a0a0a;
-  color: var(--text);
-  border: 2px solid var(--edge);
-  border-radius: 0;
-  padding: 8px 10px;
-  font: inherit;
-}
-.vnc-auth button { justify-self: start; }
-#vnc-error { margin: 0; min-height: 1em; color: var(--red); }
-
-/* manual-mode overlay */
-.manual-overlay {
-  position: absolute;
-  inset: auto 0 0;
-  display: none;
-  justify-content: center;
-  padding: 14px;
-  pointer-events: none;
-}
-.manual-overlay.visible { display: flex; }
-.manual-panel {
+.vnc-card {
   display: grid;
-  gap: 3px;
-  max-width: 90%;
-  padding: 10px 18px;
-  border: 2px solid var(--edge);
-  background: #000;
-  text-align: center;
+  gap: 10px;
+  width: min(320px, 90%);
+  background: var(--panel);
+  border: 1px solid var(--edge);
+  border-radius: var(--r-lg);
+  box-shadow: var(--shadow);
+  padding: 20px;
 }
-.manual-panel strong {
-  color: var(--text);
-  font-family: var(--display);
-  font-size: 13px;
-  font-weight: 700;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-}
-.manual-panel span { color: var(--muted); font-size: 12px; font-family: var(--mono); }
-.manual-mode .preview { cursor: pointer; }
-.manual-active .preview { cursor: none; }
-.manual-active .manual-panel { border-color: var(--red); }
-.manual-active .manual-panel strong { color: var(--red); }
+.vnc-card label { display: grid; gap: 4px; color: var(--muted); font-size: 12px; }
+#vnc-error { margin: 0; color: var(--halt); font-size: 12px; min-height: 1em; }
 
 .error {
-  display: none;
   margin: 0;
-  color: #000;
-  border: 2px solid var(--red);
-  background: var(--red);
-  padding: 10px 12px;
-  font-family: var(--display);
+  display: none;
+  background: var(--halt);
+  color: var(--halt-ink);
+  border-radius: var(--r-md);
+  padding: 8px 14px;
   font-size: 12px;
-  font-weight: 700;
-  text-transform: uppercase;
+  font-weight: 600;
 }
 
-/* ---------- robot filmstrip below the game cam ---------- */
-/* Its own strip, so the preview box shrinks and letterboxes less. The
-   header is a side ribbon, leaving the full strip height to the tiles. */
-
+/* robot views + the switch that decides who drives them */
 #body-box {
-  position: relative;
-  flex: 0 0 auto;
-  min-height: 0;
-  display: flex;
-  flex-direction: row;
-  gap: 6px;
-  overflow: hidden;
-  border: 2px solid var(--edge);
-  background: #000;
-  padding: 6px;
-}
-.body-head {
+  background: var(--panel);
+  border: 1px solid var(--edge);
+  border-radius: var(--r-lg);
+  box-shadow: var(--drop);
+  padding: 10px 14px;
   display: flex;
   flex-direction: column;
-  align-items: stretch;
-  justify-content: center;
-  gap: 4px;
-  flex: 0 0 118px;
-  min-width: 0;
-}
-.body-head .body-title {
-  text-align: center;
-}
-.body-title {
-  flex: 1;
-  align-self: center;
-  padding: 3px 8px;
-  font-family: var(--display);
-  font-size: 11px;
-  font-weight: 600;
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
-  color: #000;
-  background: var(--text);
-}
-.body-head button {
-  padding: 3px 10px;
-  font-size: 10px;
-  border-width: 1px;
-}
-#body-wait {
-  display: flex;
-  flex: 1;
-  align-items: center;
-  justify-content: center;
-  align-self: stretch;
-  min-height: clamp(180px, 26vh, 300px);
-  padding: 8px;
-  color: var(--muted);
-  font-family: var(--mono);
-  font-size: 11px;
-  line-height: 1.5;
-  text-transform: none;
-  word-break: break-word;
-}
-#body-wait[hidden] { display: none; }
-
-/* one tile per camera angle, centred filmstrip owning the strip height */
-#body-tiles {
-  display: flex;
-  flex: 1;
-  min-width: 0;
-  justify-content: center;
-  align-items: center;
   gap: 8px;
-  overflow-x: auto;
 }
-#body-tiles:empty { display: none; }
-.body-tile {
-  position: relative;
-  flex: 0 0 auto;
-  height: clamp(180px, 26vh, 300px);
-  aspect-ratio: 560 / 420;
-  border: 2px solid var(--edge);
-  overflow: hidden;
-  background: #000;
+.body-head { display: flex; align-items: center; justify-content: space-between; }
+.body-title { font-size: 13px; font-weight: 700; color: var(--muted); }
+/* Packed left in reading order: the verbs you press, the switch that decides
+   who presses them, then the process buttons. No auto margins: the stray gap
+   in the middle of the row was what made it look accidental. */
+.body-actions { display: flex; align-items: stretch; gap: 8px; }
+.body-actions button { padding: 6px 20px; font-size: 12px; }
+.body-controls .mode-toggle {
+  flex: 0 1 420px;
+  padding: 8px 16px;
+  font-size: 13px;
 }
-.body-tile img {
-  display: block;
-  width: 100%;
-  height: 100%;
-  object-fit: contain;
-}
-.body-tile img:not([src]) { display: none; }
-.tile-caption {
-  position: absolute;
-  left: 0;
-  bottom: 0;
-  max-width: 100%;
-  font-family: var(--display);
-  font-size: 11px;
-  font-weight: 600;
-  letter-spacing: 0.05em;
-  text-transform: uppercase;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  color: var(--text);
-  background: #000;
-  border-top: 2px solid var(--edge);
-  border-right: 2px solid var(--edge);
-  padding: 3px 8px;
-  pointer-events: none;
-}
-
-/* ---------- bottom console ---------- */
-
-.console {
+/* In the narrow rail there is no room for a toolbar: the switch takes its own
+   line, with the view buttons under it. */
+.col-rail .body-controls .mode-toggle { flex: 1 1 100%; }
+.col-rail .body-actions { flex: 1 1 100%; margin-left: 0; }
+#body-tiles {
   display: grid;
-  grid-template-rows: auto minmax(0, 1fr);
-  height: clamp(170px, 26vh, 300px);
-  background: var(--panel);
-  border: 2px solid var(--edge);
-  padding: 8px 12px 12px;
+  /* One tile per view, each at the render's own 4:3, so nothing is cropped or
+     stretched and the panel height follows the width instead of the window. */
+  grid-template-columns: repeat(auto-fit, minmax(0, 420px));
+  /* Packed and centred: spreading the tiles across a wide panel left them
+     marooned at opposite ends of the row. */
+  justify-content: center;
+  gap: 10px;
   min-height: 0;
 }
-.console-head {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}
-.console-head h2 { margin: 0; flex: 0 0 auto; }
-.console-head h2::after { display: none; }
-
-/* filter chips: one per log source, coloured to match the stream */
-.log-filters {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px;
-  margin-left: auto;
-}
-.chip {
-  padding: 3px 9px;
-  font-size: 10px;
-  font-weight: 600;
-  letter-spacing: 0.05em;
-  background: #0a0a0a;
-}
-.chip[data-source="session"] { border-color: var(--src-session); color: var(--src-session); }
-.chip[data-source="monado"] { border-color: var(--src-monado); color: var(--src-monado); }
-.chip[data-source="weston"] { border-color: var(--src-weston); color: var(--src-weston); }
-.chip[data-source="proxy"] { border-color: var(--src-proxy); color: var(--src-proxy); }
-.chip[data-source="steam"] { border-color: var(--src-steam); color: var(--src-steam); }
-.chip[data-source="pose"] { border-color: var(--src-pose); color: var(--src-pose); }
-.chip[data-source="brain"] { border-color: var(--src-brain); color: var(--src-brain); }
-.chip.off { opacity: 0.28; text-decoration: line-through; }
-
-/* one stream, every source, tagged and coloured */
-#log-tail {
-  margin: 8px 0 0;
-  overflow: auto;
-  background: #000;
-  border: 2px solid var(--edge);
-  padding: 8px 10px;
-  font-family: var(--mono);
-  font-size: 12px;
-  line-height: 1.55;
-  color: #a8a8a8;
-}
-.log-line {
+.body-tile {
   display: grid;
-  grid-template-columns: 58px minmax(0, 1fr);
-  gap: 10px;
-  padding: 1px 0;
-  white-space: pre-wrap;
-  word-break: break-word;
+  gap: 4px;
+  justify-items: center;
+  min-width: 0;
+  /* A tile never grows past what a 640x480 render needs, so adding a third
+     view shrinks the neighbours instead of making every tile enormous on a
+     wide window. */
+  width: 100%;
+  max-width: 420px;
+  justify-self: center;
 }
-.log-src {
+.body-tile img {
+  width: 100%;
+  aspect-ratio: 4 / 3;
+  object-fit: contain;
+  border-radius: var(--r-md);
+  background: var(--screen);
+  border: 1px solid var(--edge);
+}
+.tile-caption { font-size: 11px; color: var(--muted); }
+#body-wait { color: var(--muted); font-size: 12px; }
+
+/* ---------- rail: brain conversation, logs, telemetry ---------- */
+
+.panel-brain, .panel-logs {
+  grid-template-rows: auto minmax(0, 1fr);
+  align-content: stretch;
+  overflow: hidden;
+}
+
+.brain-messages {
+  overflow-y: auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 2px;
+}
+.brain-row {
+  max-width: 92%;
+  padding: 8px 12px;
+  border-radius: 14px;
+  font-size: 13px;
+  line-height: 1.35;
+  overflow-wrap: break-word;
+  animation: bubble-in 0.22s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+@keyframes bubble-in {
+  from { opacity: 0; transform: translateY(4px) scale(0.98); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+.brain-row .tag {
+  display: block;
   font-size: 10px;
-  font-weight: 600;
-  letter-spacing: 0.05em;
-  text-transform: uppercase;
-  opacity: 0.8;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  opacity: 0.7;
+  margin-bottom: 2px;
 }
-.log-line.src-session .log-src { color: var(--src-session); }
-.log-line.src-monado .log-src { color: var(--src-monado); }
-.log-line.src-weston .log-src { color: var(--src-weston); }
-.log-line.src-proxy .log-src { color: var(--src-proxy); }
-.log-line.src-steam .log-src { color: var(--src-steam); }
-.log-line.src-pose .log-src { color: var(--src-pose); }
-.log-line.src-brain .log-src { color: var(--src-brain); }
+.kind-heard .tag::before { content: "« "; }
+.kind-think .tag::before { content: "» "; }
+.kind-heard {
+  align-self: flex-start;
+  background: var(--heard-bg);
+  color: var(--heard-text);
+  border-bottom-left-radius: 4px;
+}
+.kind-think {
+  align-self: flex-end;
+  background: var(--think-bg);
+  color: var(--think-text);
+  border-bottom-right-radius: 4px;
+}
+.kind-act {
+  align-self: center;
+  background: transparent;
+  border: 1.5px dashed var(--edge);
+  color: var(--muted);
+  border-radius: 999px;
+  padding: 4px 14px;
+  font-size: 12px;
+}
+.kind-result, .kind-error {
+  align-self: center;
+  background: transparent;
+  color: var(--muted);
+  padding: 1px 8px;
+  font-size: 12px;
+}
+.kind-error { color: var(--halt); }
+.brain-empty {
+  margin: auto;
+  color: var(--muted);
+  font-size: 12px;
+  text-align: center;
+  padding: 12px;
+}
 
-/* ---------- narrow screens: stack the deck ---------- */
+.logs-head { display: grid; gap: 8px; }
+.log-filters { display: flex; flex-wrap: wrap; gap: 6px; }
+/* chips are filters, not actions: flat pills, no candy lip */
+.chip {
+  padding: 3px 12px;
+  font-size: 11px;
+  font-weight: 600;
+  border-radius: 999px;
+  box-shadow: inset 0 0 0 1.5px var(--lip);
+}
+.chip:active:not(:disabled) {
+  transform: none;
+  box-shadow: inset 0 0 0 1.5px var(--lip);
+}
+.chip.off { opacity: 0.4; }
+.log-tail {
+  overflow-y: auto;
+  min-height: 0;
+  font: 11px/1.55 var(--mono);
+  color: var(--muted);
+  border-radius: var(--r-md);
+  background: var(--card);
+  padding: 8px;
+}
+.log-line { display: flex; gap: 8px; padding: 0 4px; border-radius: 6px; }
+.log-line > span:last-child { white-space: pre-wrap; overflow-wrap: anywhere; }
+.log-src {
+  flex: 0 0 auto;
+  align-self: flex-start;
+  margin-top: 2px;
+  font-size: 9px;
+  font-weight: 600;
+  border-radius: 999px;
+  padding: 1px 8px;
+  background: var(--panel);
+}
+.src-session .log-src { color: var(--src-session); }
+.src-monado .log-src { color: var(--src-monado); }
+.src-weston .log-src { color: var(--src-weston); }
+.src-proxy .log-src { color: var(--src-proxy); }
+.src-steam .log-src { color: var(--src-steam); }
+.src-pose .log-src { color: var(--src-pose); }
 
-@media (max-width: 1100px) {
+/* scrollbars: present but quiet */
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-thumb { background: var(--edge); border-radius: 999px; }
+::-webkit-scrollbar-track { background: transparent; }
+
+/* narrow windows collapse to one scrolling column */
+@media (max-width: 1150px) {
   body { overflow: auto; }
-  .frame { height: auto; grid-template-rows: auto auto auto; }
-  .deck { grid-template-columns: 1fr; }
-  .stage { min-height: 50vh; }
-  #body-box { flex: none; flex-direction: column; }
-  .body-head { flex-direction: row; flex: none; align-items: center; }
-  .body-head .body-title { flex: 1; text-align: left; }
-  .col, .col-right { grid-template-rows: none; overflow: visible; }
-  .console { height: 260px; }
+  .frame { height: auto; }
+  .deck[data-layout="side"] { grid-template-columns: minmax(0, 1fr); }
+  .col { overflow: visible; }
+  .col-feed { grid-template-rows: 300px 380px; }
+  .stage { min-height: 70vh; }
+}
+
+/* Motion is a garnish, and some people would rather not have it. Every
+   animation here is decorative, so they all go. Listed by selector rather than
+   a `*` reset, so the guard needs no !important to beat them. */
+@media (prefers-reduced-motion: reduce) {
+  .badge.running, .badge.starting, .badge.stopping { animation: none; }
+  .panel, .brain-row, .brand-face .eye { animation: none; }
+  .look-left:hover .look-arrow, .look-right:hover .look-arrow { animation: none; }
+  button, .panel, .brand-mark, .brand-face, .look, .brain-row, .badge, .log-tail { transition: none; }
+  .panel:hover, .brand:hover .brand-mark, .brand:hover .brand-face { transform: none; }
 }
