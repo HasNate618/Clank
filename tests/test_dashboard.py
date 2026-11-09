@@ -34,7 +34,6 @@ class FakeManager:
         self.fail_start = False
         self.start_calls = 0
         self.stop_calls = 0
-        self.kill_calls: list[str] = []
         self.manual_calls: list[dict] = []
         self.logs = {
             name: base / f"{name}.log"
@@ -69,13 +68,6 @@ class FakeManager:
             raise ConflictError("manual mode is not active")
         self.manual_calls.append(payload)
         return bool(payload.get("armed"))
-
-    def kill(self, target: str) -> None:
-        if target not in ("game", "steam"):
-            raise ValueError(f"unknown target {target!r}")
-        if self.state != "running":
-            raise ConflictError("session is not running")
-        self.kill_calls.append(target)
 
     def state_value(self) -> str:
         return self.state
@@ -304,7 +296,7 @@ class DashboardTests(unittest.TestCase):
         self.assertEqual(status, 202)
         self.assertEqual(self.manager.stop_calls, 1)
 
-    def test_mode_and_kill_validation(self) -> None:
+    def test_mode_validation(self) -> None:
         status, _ = self.request("POST", "/api/session/mode", {"mode": "yaw"})
         self.assertEqual(status, 409)
         self.manager.state = "running"
@@ -312,11 +304,6 @@ class DashboardTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(self.manager.mode, "yaw")
         status, _ = self.request("POST", "/api/session/mode", {"mode": "nope"})
-        self.assertEqual(status, 400)
-        status, _ = self.request("POST", "/api/session/kill", {"target": "game"})
-        self.assertEqual(status, 200)
-        self.assertEqual(self.manager.kill_calls, ["game"])
-        status, _ = self.request("POST", "/api/session/kill", {"target": "nope"})
         self.assertEqual(status, 400)
 
     def test_manual_input_requires_running_manual_mode(self) -> None:
@@ -483,6 +470,26 @@ class DashboardTests(unittest.TestCase):
         status, _ = self.request("POST", "/api/session/mode", raw=b"{")
         self.assertEqual(status, 400)
 
+    def test_brain_messages_returns_diary_rows(self) -> None:
+        diary = self.base / "brain.jsonl"
+        diary.write_text(
+            '{"t": 1.0, "iso": "11:27:33", "kind": "heard", "text": "Hello human"}\n'
+            '{"t": 2.0, "iso": "11:27:34", "kind": "think", "text": "I will grab the card"}\n',
+            encoding="utf-8",
+        )
+        with patch.dict(os.environ, {"CLANK_BRAIN_LOG": str(diary)}):
+            status, body = self.request("GET", "/api/brain/messages")
+        self.assertEqual(status, 200)
+        kinds = [row["kind"] for row in json.loads(body)["messages"]]
+        self.assertEqual(kinds, ["heard", "think"])
+
+    def test_brain_messages_without_diary_is_empty_not_an_error(self) -> None:
+        absent = self.base / "absent-brain.jsonl"
+        with patch.dict(os.environ, {"CLANK_BRAIN_LOG": str(absent)}):
+            status, body = self.request("GET", "/api/brain/messages")
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(body)["messages"], [])
+
     def test_negative_content_length_returns_400(self) -> None:
         status, _ = self.raw_request(
             "POST",
@@ -495,14 +502,6 @@ class DashboardTests(unittest.TestCase):
         self.manager.state = "running"
         with patch.object(self.manager, "set_mode", side_effect=RuntimeError("boom")):
             status, body = self.request("POST", "/api/session/mode", {"mode": "yaw"})
-        self.assertEqual(status, 500)
-        self.assertEqual(json.loads(body)["error"], "internal server error")
-        self.assertNotIn(b"boom", body)
-
-    def test_kill_exception_returns_500_without_detail(self) -> None:
-        self.manager.state = "running"
-        with patch.object(self.manager, "kill", side_effect=RuntimeError("boom")):
-            status, body = self.request("POST", "/api/session/kill", {"target": "game"})
         self.assertEqual(status, 500)
         self.assertEqual(json.loads(body)["error"], "internal server error")
         self.assertNotIn(b"boom", body)
@@ -584,10 +583,14 @@ class ShippedStaticAssetsTests(unittest.TestCase):
         _, index = self.request("/")
         self.assertIn(b"/app.js", index)
         self.assertIn(b"/style.css", index)
-        self.assertIn(b'data-mode="manual"', index)
+        self.assertIn(b'id="mode-toggle"', index)
+        self.assertIn(b'id="theme-toggle"', index)
+        self.assertIn(b'id="brain-messages"', index)
+        self.assertIn(b'id="preview-overlay"', index)
+        self.assertIn(b'data-layout="side"', index)
 
     def test_vendored_fonts_are_served(self) -> None:
-        for name in ("inter-var.woff2", "plex-mono-400.woff2", "plex-mono-600.woff2"):
+        for name in ("inter-var.woff2", "plex-mono-400.woff2", "plex-mono-600.woff2", "fredoka-600.woff2"):
             with self.subTest(name=name):
                 status, body = self.request(f"/fonts/{name}")
                 self.assertEqual(status, 200)

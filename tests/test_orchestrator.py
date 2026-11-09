@@ -248,6 +248,44 @@ class OrchestratorTests(unittest.TestCase):
             self.manager._steam_env()["OXR_VIEWPORT_SCALE_PERCENTAGE"], "150"
         )
 
+    def test_game_audio_muted_reads_pipewire_when_the_game_has_streams(self) -> None:
+        # module-stream-restore can mute the game behind the dashboard's back,
+        # so the reported state comes from wpctl, not from the flag last written.
+        with (
+            patch.object(self.manager, "_game_audio_node_ids", return_value=[55]),
+            patch("clank.orchestrator.subprocess.run") as run,
+        ):
+            run.return_value = subprocess.CompletedProcess(
+                [], 0, stdout="Volume: 1.00 [MUTED]\n", stderr=""
+            )
+            self.assertTrue(self.manager.game_audio_muted())
+            run.return_value = subprocess.CompletedProcess(
+                [], 0, stdout="Volume: 0.80\n", stderr=""
+            )
+            self.assertFalse(self.manager.game_audio_muted())
+
+    def test_game_audio_muted_falls_back_to_the_flag_without_streams(self) -> None:
+        with patch.object(self.manager, "_game_audio_node_ids", return_value=[]):
+            self.assertFalse(self.manager.game_audio_muted())
+            self.manager.set_game_audio_muted(True)
+            self.assertTrue(self.manager.game_audio_muted())
+
+    def test_apply_mute_pushes_the_flag_not_the_live_state(self) -> None:
+        # Asking PipeWire for the value to write would return the state being
+        # replaced and undo the toggle mid-flight.
+        calls: list[list[str]] = []
+
+        def fake_run(argv, **_kwargs):
+            calls.append(list(argv))
+            return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+
+        with (
+            patch.object(self.manager, "_game_audio_node_ids", return_value=[55]),
+            patch("clank.orchestrator.subprocess.run", side_effect=fake_run),
+        ):
+            self.manager.set_game_audio_muted(True)
+        self.assertIn(["wpctl", "set-mute", "55", "1"], calls)
+
     def test_steam_env_omits_a_native_scale(self) -> None:
         self.manager.cfg = replace(
             self.cfg,

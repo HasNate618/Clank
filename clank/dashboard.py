@@ -98,6 +98,14 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 return self._error(404, "no body frame")
         if path == "/api/logs":
             return self._log_stream()
+        if path == "/api/brain/messages":
+            # Structured diary rows for the Brain panel; /api/logs keeps its own
+            # rendered copy of the same diary for the plain log view.
+            try:
+                rows = brainlog.tail(50)
+            except Exception:  # noqa: BLE001 - a broken diary must not break the page
+                rows = []
+            return self._json({"messages": rows})
         if path.startswith("/fonts/"):
             return self._font(path[len("/fonts/"):])
         if path.startswith("/api/logs/"):
@@ -196,16 +204,6 @@ class DashboardHandler(BaseHTTPRequestHandler):
             except Exception:
                 return self._error(500, "internal server error")
             return self._json({"mode": body.get("mode")})
-        if path == "/api/session/kill":
-            try:
-                self.server.manager.kill(body.get("target"))
-            except ValueError as exc:
-                return self._error(400, str(exc))
-            except ConflictError as exc:
-                return self._error(409, str(exc))
-            except Exception:
-                return self._error(500, "internal server error")
-            return self._json({"killed": body.get("target")})
         if path in ("/api/audio/mute", "/api/audio", "/api/game/audio", "/api/game/audio/mute", "/api/audio/toggle"):
             try:
                 if path.endswith("/toggle"):

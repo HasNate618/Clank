@@ -324,6 +324,35 @@ class SessionManager:
         return self._manual_input.update(payload)
 
     def game_audio_muted(self) -> bool:
+        """The mute the game actually has, not the one this process last asked for.
+
+        The flag alone lies: module-stream-restore can remember `Mute: yes` for
+        the game across restarts, and wpctl can be poked from outside. When a
+        game stream exists, PipeWire is the truth and the flag is re-synced from
+        it; with no stream the flag is all there is.
+        """
+        nodes = self._game_audio_node_ids()
+        if nodes:
+            states = []
+            for node_id in nodes:
+                try:
+                    completed = subprocess.run(
+                        ["wpctl", "get-volume", str(node_id)],
+                        capture_output=True,
+                        text=True,
+                        timeout=5,
+                    )
+                except Exception:
+                    continue
+                if completed.returncode != 0:
+                    continue
+                states.append("[MUTED]" in completed.stdout.upper())
+            if states:
+                # "Muted" means nothing is audible: every stream must agree.
+                live = all(states)
+                with self._lock:
+                    self._game_audio_muted = live
+                return live
         with self._lock:
             return self._game_audio_muted
 
@@ -377,7 +406,11 @@ class SessionManager:
         return nodes
 
     def _apply_game_audio_mute(self) -> None:
-        muted = self.game_audio_muted()
+        # The desired state, read straight from the flag: game_audio_muted() asks
+        # PipeWire, which still holds the state this call is about to change, so
+        # reading it here would undo the toggle mid-flight.
+        with self._lock:
+            muted = self._game_audio_muted
         value = "1" if muted else "0"
         for node_id in self._game_audio_node_ids():
             with contextlib.suppress(Exception):
@@ -387,32 +420,6 @@ class SessionManager:
                     text=True,
                     timeout=5,
                 )
-
-    def kill(self, target: str) -> None:
-        with self._lock:
-            if self._state != State.RUNNING:
-                raise ConflictError("session is not running")
-        if target == "game":
-            for pid in self.runner.pids_by_argv0(self._game_argv0()):
-                self.runner.kill_pid(pid)
-            self._game_pids = []
-            return
-        if target == "steam":
-            with contextlib.suppress(Exception):
-                self.runner.run(
-                    [self.cfg.paths.steam_bin, "-shutdown"],
-                    env=self._steam_env(),
-                    cwd=Path.home(),
-                    timeout=20,
-                )
-            handle = self._handles.get("steam")
-            if handle is not None:
-                handle.stop(5)
-            for pid in self.runner.pids_by_argv0(self._game_argv0()):
-                self.runner.kill_pid(pid)
-            self._game_pids = []
-            return
-        raise ValueError(f"unknown target {target!r}")
 
     def snapshot(self) -> dict:
         with self._lock:

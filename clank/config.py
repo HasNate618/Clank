@@ -171,7 +171,7 @@ DEFAULTS: dict[str, dict[str, Any]] = {
         # so the body stays drivable on a machine with the graphics stack off.
         "render": True,
         # Camera angles rendered together, first is the primary tile.
-        "views": ("three_quarter", "side"),
+        "views": ("three_quarter", "front", "side"),
         # The robot's heading in the virtual room, degrees, positive toward its left.
         # The desk needs a 90 deg left turn, which is far outside what this body can
         # twist (measured: -28.6 deg left, +54.3 right), so the heading is chosen
