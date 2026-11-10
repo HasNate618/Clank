@@ -592,6 +592,9 @@ h2 {
   text-overflow: ellipsis;
 }
 .card span { font: 600 10px var(--mono); margin-left: auto; white-space: nowrap; }
+/* The model row names its weights, which are longer than a pid: it takes the
+   whole grid row rather than squeezing the label down to one letter. */
+.card-wide { grid-column: 1 / -1; background: var(--card); }
 .card small {
   font: 9px var(--mono);
   color: var(--muted);
@@ -619,6 +622,7 @@ h2 {
 /* The chips are the only shape the telemetry rows take now; the shared .card
    grid above is gone with the telemetry panel. */
 .ok::before { content: "● "; font-size: 8px; color: var(--go); }
+.warn::before { content: "● "; font-size: 8px; color: var(--warm); }
 .bad::before { content: "● "; font-size: 8px; color: var(--halt); }
 
 /* ---------- stage: the game, its controls, the brain ---------- */
@@ -687,6 +691,54 @@ h2 {
   font-size: 13px;
   font-weight: 600;
   z-index: 0;
+}
+
+/* The screen's HUD. It rides on the picture, so it is drawn in fixed light-on-
+   dark colours rather than theme variables: the screen is a monitor in both
+   themes, and theme-coloured chrome on it would read as part of the game. */
+.screen-hud {
+  position: absolute;
+  inset: 10px 10px auto 10px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  z-index: 4;
+  pointer-events: none;
+}
+/* A dead screen has nothing to switch between. */
+.preview:not([data-live]) .screen-hud { display: none; }
+.view-switch {
+  display: flex;
+  gap: 2px;
+  padding: 3px;
+  border-radius: 999px;
+  background: rgb(6 10 12 / 0.62);
+  border: 1px solid rgb(255 255 255 / 0.14);
+  backdrop-filter: blur(6px);
+  pointer-events: auto;
+}
+.view-switch button {
+  border: 0;
+  background: transparent;
+  color: rgb(233 216 166 / 0.66);
+  font: 600 10px var(--display);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  padding: 5px 12px;
+  border-radius: 999px;
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+.view-switch button:hover { color: var(--text); }
+.view-switch button[aria-pressed="true"] {
+  background: var(--accent);
+  color: var(--accent-ink);
+}
+#preview-status {
+  margin-left: auto;
+  color: rgb(233 216 166 / 0.66);
+  font: 600 11px var(--mono);
+  text-shadow: 0 1px 2px rgb(0 0 0 / 0.8);
 }
 
 .manual-overlay {

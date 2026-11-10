@@ -1,4 +1,5 @@
 import base64
+import email.message
 import unittest
 from unittest import mock
 
@@ -913,3 +914,78 @@ class TaskIntent(unittest.TestCase):
 
     def test_nothing_is_not_an_object(self):
         self.assertEqual(brain.task_intent(""), ("", ""))
+
+
+class _Response:
+    """The tiny slice of urlopen's return value `server_status` uses."""
+
+    def __init__(self, payload: bytes) -> None:
+        self.payload = payload
+
+    def read(self) -> bytes:
+        return self.payload
+
+    def __enter__(self) -> "_Response":
+        return self
+
+    def __exit__(self, *exc) -> bool:
+        return False
+
+
+class ServerStatusTests(unittest.TestCase):
+    """What the dashboard's Model card reports, from llama.cpp's own answers."""
+
+    def probe(self, *outcomes):
+        """`outcomes` are the urlopen results in call order."""
+        queue = list(outcomes)
+        calls = []
+
+        def fake_urlopen(url, timeout=None):
+            calls.append(url)
+            outcome = queue.pop(0)
+            if isinstance(outcome, Exception):
+                raise outcome
+            return outcome
+
+        with mock.patch.object(brain.urllib.request, "urlopen", side_effect=fake_urlopen):
+            status = brain.server_status("http://127.0.0.1:11434/")
+        return status, calls
+
+    def test_a_serving_server_names_its_weights(self) -> None:
+        status, calls = self.probe(
+            _Response(b'{"status":"ok"}'),
+            _Response(b'{"models":[{"name":"/home/nate/AI/models/LFM3-Omni-2B-Q8_0.gguf"}]}'),
+        )
+        self.assertTrue(status.up)
+        self.assertEqual(status.status, "ok")
+        self.assertEqual(status.model, "LFM3-Omni-2B-Q8_0")
+        self.assertEqual(calls[0], "http://127.0.0.1:11434/health")
+
+    def test_loading_is_not_down(self) -> None:
+        # llama.cpp answers 503 while it loads the weights: the operator should
+        # see "loading", not a red dot for a server that is doing the work.
+        error = brain.urllib.error.HTTPError(
+            "http://x/health", 503, "loading", email.message.Message(), None
+        )
+        status, _ = self.probe(error)
+        self.assertTrue(status.up)
+        self.assertEqual(status.status, "loading")
+
+    def test_a_stopped_server_is_down_and_asks_once(self) -> None:
+        status, calls = self.probe(brain.urllib.error.URLError("connection refused"))
+        self.assertFalse(status.up)
+        self.assertEqual(status.status, "down")
+        self.assertEqual(len(calls), 1)
+
+    def test_a_bad_models_answer_still_reports_health(self) -> None:
+        status, _ = self.probe(
+            _Response(b'{"status":"ok"}'),
+            brain.urllib.error.URLError("timed out"),
+        )
+        self.assertTrue(status.up)
+        self.assertEqual(status.status, "ok")
+        self.assertEqual(status.model, "")
+
+    def test_short_model_drops_the_directory_and_extension(self) -> None:
+        self.assertEqual(brain.short_model("/a/b/LFM3-Omni-2B-Q8_0.gguf"), "LFM3-Omni-2B-Q8_0")
+        self.assertEqual(brain.short_model("omni"), "omni")

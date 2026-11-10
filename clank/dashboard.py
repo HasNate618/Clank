@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import array
 import contextlib
 import getpass
 import json
@@ -79,6 +80,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return self._preview_live()
         if path == "/api/preview/live.rgba":
             return self._preview_live_rgba()
+        if path == "/api/preview/live.depth":
+            return self._preview_live_depth()
         if path.startswith("/novnc/"):
             return self._novnc(path[len("/novnc/"):])
         if path == "/api/body.jpg":
@@ -347,6 +350,36 @@ class DashboardHandler(BaseHTTPRequestHandler):
         width = int(frame["color_width"])
         height = int(frame["color_height"])
         data = frame["color"]
+        self.send_response(200)
+        self.send_header("Content-Type", "application/octet-stream")
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Frame-Width", str(width))
+        self.send_header("X-Frame-Height", str(height))
+        self.end_headers()
+        self.wfile.write(data)
+
+    def _preview_live_depth(self) -> None:
+        """The newest depth map as raw float32 metres, for the model-view fade.
+
+        The browser rebuilds what `spike/wbc_game/fade.py` does to the frame it
+        hands the model: a smoothstep mask from the foreground depth, blending
+        the far room toward a dark backdrop. Depth travels exactly as the layer
+        stores it - quantising to millimetres here would mean a per-pixel Python
+        loop per request, and a Float32Array costs the browser nothing.
+
+        Byte order is the reader's, which is little-endian on every machine this
+        runs on; the client checks the length before trusting it.
+        """
+        frame = latest(max_age=2.0)
+        if frame is None or frame.get("depth") is None:
+            return self._error(404, "no live frame")
+        width = int(frame["width"])
+        height = int(frame["height"])
+        depth = frame["depth"]
+        data = depth.tobytes() if isinstance(depth, array.array) else array.array("f", depth).tobytes()
+        if len(data) != width * height * 4:
+            return self._error(500, "depth frame is the wrong size")
         self.send_response(200)
         self.send_header("Content-Type", "application/octet-stream")
         self.send_header("Content-Length", str(len(data)))

@@ -18,6 +18,27 @@ let liveAvailable = false;
 let liveBackoffUntil = 0;
 const LIVE_PREVIEW_MS = 33;
 const LIVE_BACKOFF_MS = 10000;
+
+// Which picture the screen shows. "game" is the layer's colour frame; "model"
+// is the same frame faded by depth, which is what the planner is handed. The
+// fade is rebuilt here from `spike/wbc_game/fade.py` because that file needs
+// numpy and this page needs to run at frame rate.
+let viewMode = "game";
+const VIEW_KEY = "clank-view";
+
+//: The fade's constants, copied from fade.py: the reference depth is the fifth
+//: percentile of valid depth (the working surface, when the object's own depth
+//: is not known - and here it never is), the dead zone starts at 1.06x of it,
+//: and everything past 1.45x is fully faded.
+const FADE_PERCENTILE = 5;
+const FADE_NEAR = 1.06;
+const FADE_FAR = 1.45;
+const FADE_BACKDROP = [18, 22, 26];
+//: Missing samples: the layer writes 0 for a hole and has reported 11.8 m.
+const FADE_SENTINEL = 12.0;
+
+let frameTimes = [];
+const FPS_WINDOW_MS = 1500;
 let pollInFlight = false;
 let actionInFlight = false;
 let clientError = "";
@@ -237,34 +258,175 @@ function stopLivePreview(failed = false) {
   }
   liveAvailable = false;
   liveFailures = 0;
+  frameTimes = [];
+  drawStatus(false);
+  document.querySelector(".preview")?.removeAttribute("data-live");
   const canvas = $("preview-live");
   if (canvas) canvas.hidden = true;
 }
 
+// --- the screen's two views -------------------------------------------------
+// One mask, built at depth resolution and sampled nearest onto the colour frame:
+// `fade()` upsamples depth to the picture, and a mask has no detail to lose.
+let fadeMask = null;
+let fadeMaskFor = "";
+
+function foregroundDepth(depth) {
+  // The fifth percentile of valid depth, from every eighth sample. Sorting
+  // 16k numbers is cheaper than 130k and lands in the same place.
+  const samples = [];
+  for (let i = 0; i < depth.length; i += 8) {
+    const d = depth[i];
+    if (d > 0 && d < FADE_SENTINEL) samples.push(d);
+  }
+  if (!samples.length) return 0;
+  samples.sort((a, b) => a - b);
+  return samples[Math.floor((FADE_PERCENTILE / 100) * (samples.length - 1))];
+}
+
+function fadeAlphas(depth) {
+  const target = foregroundDepth(depth);
+  // No usable depth means do not fade: a frame with no depth is still a frame.
+  if (!target) return null;
+  const near = FADE_NEAR * target;
+  const far = FADE_FAR * target;
+  const key = `${depth.length}:${target.toFixed(4)}`;
+  if (fadeMaskFor === key && fadeMask) return fadeMask;
+  const mask = new Uint8Array(depth.length);
+  for (let i = 0; i < depth.length; i += 1) {
+    const d = depth[i];
+    let k = 1;
+    if (d > 0 && d < FADE_SENTINEL) {
+      if (d <= near) k = 0;
+      else if (d < far) {
+        const t = (d - near) / (far - near);
+        k = t * t * (3 - 2 * t);
+      }
+    }
+    mask[i] = Math.round(k * 255);
+  }
+  fadeMask = mask;
+  fadeMaskFor = key;
+  return mask;
+}
+
+function drawGame(canvas, colour, width, height) {
+  if (canvas.width !== width) canvas.width = width;
+  if (canvas.height !== height) canvas.height = height;
+  canvas.getContext("2d").putImageData(new ImageData(colour, width, height), 0, 0);
+}
+
+function drawModel(canvas, colour, colourWidth, colourHeight, depth, width, height) {
+  const mask = fadeAlphas(depth);
+  if (!mask) return false;
+  const out = new Uint8ClampedArray(width * height * 4);
+  const [br, bg, bb] = FADE_BACKDROP;
+  // Nearest-neighbour colour sampling, cached per width: the layer's colour
+  // buffer is an integer multiple of the depth buffer, so this is exact.
+  if (!drawModel.xmap || drawModel.xmap.length !== width || drawModel.xfrom !== colourWidth) {
+    const xmap = new Int32Array(width);
+    for (let x = 0; x < width; x += 1) xmap[x] = Math.min(colourWidth - 1, Math.floor((x * colourWidth) / width));
+    drawModel.xmap = xmap;
+    drawModel.xfrom = colourWidth;
+  }
+  const xmap = drawModel.xmap;
+  for (let y = 0; y < height; y += 1) {
+    const sy = Math.min(colourHeight - 1, Math.floor((y * colourHeight) / height));
+    const srcRow = sy * colourWidth;
+    const dstRow = y * width;
+    for (let x = 0; x < width; x += 1) {
+      const s = (srcRow + xmap[x]) * 4;
+      const d = dstRow + x;
+      const k = mask[d] / 255;
+      const o = d * 4;
+      out[o] = colour[s] + (br - colour[s]) * k;
+      out[o + 1] = colour[s + 1] + (bg - colour[s + 1]) * k;
+      out[o + 2] = colour[s + 2] + (bb - colour[s + 2]) * k;
+      out[o + 3] = 255;
+    }
+  }
+  if (canvas.width !== width) canvas.width = width;
+  if (canvas.height !== height) canvas.height = height;
+  canvas.getContext("2d").putImageData(new ImageData(out, width, height), 0, 0);
+  return true;
+}
+
+function noteFrame() {
+  const now = performance.now();
+  frameTimes.push(now);
+  while (frameTimes.length && now - frameTimes[0] > FPS_WINDOW_MS) frameTimes.shift();
+}
+
+function drawStatus(faded, wanted) {
+  const badge = $("preview-status");
+  if (!badge) return;
+  if (frameTimes.length < 2) {
+    badge.textContent = "";
+    return;
+  }
+  const span = frameTimes[frameTimes.length - 1] - frameTimes[0];
+  const fps = span > 0 ? Math.round(((frameTimes.length - 1) * 1000) / span) : 0;
+  // Say when the fade is missing: the switch would otherwise show the plain
+  // picture while claiming to show the model's.
+  badge.textContent = faded
+    ? `${fps} fps · depth`
+    : wanted ? `${fps} fps · no depth` : `${fps} fps`;
+}
+
+function setViewMode(mode) {
+  viewMode = mode === "model" ? "model" : "game";
+  for (const button of document.querySelectorAll("[data-view]")) {
+    const active = button.dataset.view === viewMode;
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-pressed", active ? "true" : "false");
+  }
+  try {
+    localStorage.setItem(VIEW_KEY, viewMode);
+  } catch {
+    // Private mode: the choice still holds for this page load.
+  }
+}
+
 async function liveTick() {
   if (!liveActive) return;
+  const wantDepth = viewMode === "model";
   try {
-    const response = await fetch(`/api/preview/live.rgba?t=${Date.now()}`, {
-      cache: "no-store",
-    });
-    if (!response.ok) throw new Error("no live frame");
-    const width = Number(response.headers.get("X-Frame-Width") || 0);
-    const height = Number(response.headers.get("X-Frame-Height") || 0);
-    const data = new Uint8ClampedArray(await response.arrayBuffer());
+    const stamp = Date.now();
+    const [colourResponse, depthResponse] = await Promise.all([
+      fetch(`/api/preview/live.rgba?t=${stamp}`, { cache: "no-store" }),
+      wantDepth ? fetch(`/api/preview/live.depth?t=${stamp}`, { cache: "no-store" }) : null,
+    ]);
+    if (!colourResponse.ok) throw new Error("no live frame");
+    const width = Number(colourResponse.headers.get("X-Frame-Width") || 0);
+    const height = Number(colourResponse.headers.get("X-Frame-Height") || 0);
+    const data = new Uint8ClampedArray(await colourResponse.arrayBuffer());
+    let depth = null;
+    let depthWidth = 0;
+    let depthHeight = 0;
+    if (depthResponse && depthResponse.ok) {
+      depthWidth = Number(depthResponse.headers.get("X-Frame-Width") || 0);
+      depthHeight = Number(depthResponse.headers.get("X-Frame-Height") || 0);
+      const buffer = await depthResponse.arrayBuffer();
+      if (depthWidth && depthHeight && buffer.byteLength === depthWidth * depthHeight * 4) {
+        depth = new Float32Array(buffer);
+      }
+    }
     if (!liveActive) return;
     if (!width || !height || data.length !== width * height * 4) {
       throw new Error("bad live frame");
     }
     const canvas = $("preview-live");
-    if (canvas.width !== width) canvas.width = width;
-    if (canvas.height !== height) canvas.height = height;
-    canvas.getContext("2d").putImageData(new ImageData(data, width, height), 0, 0);
+    const faded = depth ? drawModel(canvas, data, width, height, depth, depthWidth, depthHeight) : false;
+    if (!faded) drawGame(canvas, data, width, height);
+    noteFrame();
+    drawStatus(faded, wantDepth);
     canvas.hidden = false;
     liveAvailable = true;
     syncPreviewOverlay();
     liveFailures = 0;
     hidePreviewAuth();
     $("preview-wait").style.display = "none";
+    document.querySelector(".preview")?.setAttribute("data-live", "true");
     liveTimer = setTimeout(liveTick, LIVE_PREVIEW_MS);
   } catch {
     if (!liveActive) return;
@@ -283,6 +445,7 @@ function startLivePreview() {
   liveActive = true;
   liveAvailable = false;
   liveFailures = 0;
+  frameTimes = [];
   const canvas = $("preview-live");
   if (canvas) canvas.hidden = false;
   liveTick();
@@ -704,9 +867,9 @@ function render(state) {
   bodySync();
 }
 
-function healthCard(label, value, valueClass, detail) {
+function healthCard(label, value, valueClass, detail, wide) {
   const card = document.createElement("div");
-  card.className = "card";
+  card.className = wide ? "card card-wide" : "card";
   const strong = document.createElement("strong");
   strong.textContent = label;
   const span = document.createElement("span");
@@ -724,10 +887,15 @@ function renderHealth(state) {
       process.alive ? "ok" : "bad", process.pid ?? "")
   );
   cards.push(healthCard("OpenXR", state.openxr_client || "none"));
-  const preview = state.preview || {};
-  const transportAlive = Boolean(preview.vnc_alive && preview.proxy_alive);
-  cards.push(healthCard("Preview", transportAlive ? "live" : "waiting",
-    transportAlive ? "ok" : "bad", `${preview.mode ?? ""} · ${preview.fps_target ?? 0} fps`));
+  // The planner's server replaced the preview card here: the transport state is
+  // already obvious from the picture being alive, while "is the model loaded"
+  // was the one thing on this list nothing else could tell you.
+  const model = state.model || {};
+  const up = Boolean(model.up);
+  const value = up ? "serving" : model.status === "loading" ? "loading" : "down";
+  cards.push(healthCard("Model", model.model || value,
+    model.status === "ok" ? "ok" : model.status === "loading" ? "warn" : "bad",
+    model.model ? value : "", true));
   $("health").replaceChildren(...cards);
 }
 
@@ -791,6 +959,15 @@ $("theme-toggle").onclick = () => {
   syncThemeButton();
 };
 syncThemeButton();
+
+for (const button of document.querySelectorAll("[data-view]")) {
+  button.onclick = () => setViewMode(button.dataset.view);
+}
+try {
+  setViewMode(localStorage.getItem(VIEW_KEY) || "game");
+} catch {
+  setViewMode("game");
+}
 
 $("body-start").onclick = () => runAction(() => post("/api/body/start"));
 

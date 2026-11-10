@@ -15,12 +15,17 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
 
+from . import brain
 from .config import Config, body_pose_flags, missing_requirements
 from .manual_input import ManualInputBridge
 from .processes import Aborted, ProcessHandle, ProcessRunner
 
 
 MODES = ("hold", "yaw", "trigger", "dodge", "walk", "clock", "manual", "body")
+
+#: How long a `/health` answer from the planner's server is reused. The dashboard
+#: polls `/api/state` every second; the server does not change state that fast.
+MODEL_STATUS_TTL_S = 5.0
 
 
 def initial_mode(cfg: Config) -> str:
@@ -150,6 +155,8 @@ class SessionManager:
         self._handles: dict[str, ProcessHandle] = {}
         self._game_pids: list[int] = []
         self._game_audio_muted: bool = False
+        self._model_status: tuple[float, dict] | None = None
+        self._model_lock = threading.Lock()
         self._display: str | None = None
         self._socket_name: str | None = None
         self._pointer: dict = {}
@@ -322,6 +329,27 @@ class SessionManager:
             if self._mode != "manual":
                 raise ConflictError("manual mode is not active")
         return self._manual_input.update(payload)
+
+    def model_status(self) -> dict:
+        """The planner's llama.cpp server, cached for a few seconds.
+
+        `snapshot()` runs on every dashboard poll, so this cannot be a round trip
+        each time: a stopped server refuses instantly, but a wedged one would
+        hold the poll for the full timeout once a second. Caching makes that cost
+        one probe per TTL instead.
+
+        Its own lock, not `_lock`: this calls out to another process, and holding
+        the session lock across a socket read would block the orchestrator.
+        """
+        now = time.monotonic()
+        with self._model_lock:
+            cached = self._model_status
+        if cached is not None and now - cached[0] < MODEL_STATUS_TTL_S:
+            return cached[1]
+        status = brain.server_status().to_dict()
+        with self._model_lock:
+            self._model_status = (now, status)
+        return status
 
     def game_audio_muted(self) -> bool:
         """The mute the game actually has, not the one this process last asked for.
@@ -498,6 +526,7 @@ class SessionManager:
                 "available": bool(game_pids),
                 "target": "game",
             },
+            "model": self.model_status(),
         }
 
     def _reset_openxr(self) -> None:

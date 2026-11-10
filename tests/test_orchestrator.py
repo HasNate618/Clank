@@ -14,6 +14,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import patch
 
+from clank import brain
 from clank.config import load_config
 from clank.processes import ProcessError
 from clank.orchestrator import (
@@ -407,6 +408,31 @@ class OrchestratorTests(unittest.TestCase):
         self.assertTrue(snapshot["processes"]["game"]["alive"])
         self.assertEqual(snapshot["preview"]["width"], 1280)
         self.assertTrue(snapshot["player_log"].endswith("output_log.txt"))
+
+    def test_model_status_is_probed_once_per_ttl(self) -> None:
+        # The dashboard polls /api/state every second; the planner's server must
+        # not be asked that often, or a wedged server holds every poll.
+        calls = []
+
+        def status():
+            calls.append(1)
+            return brain.ServerStatus(up=True, status="ok", model="LFM3-Omni-2B")
+
+        with patch("clank.orchestrator.brain.server_status", side_effect=status):
+            first = self.manager.model_status()
+            second = self.manager.model_status()
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(first["model"], "LFM3-Omni-2B")
+        self.assertTrue(second["up"])
+
+    def test_snapshot_carries_the_model_status(self) -> None:
+        with patch(
+            "clank.orchestrator.brain.server_status",
+            return_value=brain.ServerStatus(up=True, status="ok", model="omni"),
+        ):
+            snapshot = self.manager.snapshot()
+        self.assertEqual(snapshot["model"]["status"], "ok")
+        self.assertEqual(snapshot["model"]["model"], "omni")
 
     def test_snapshot_keeps_openxr_client_across_log_growth(self) -> None:
         self.start()

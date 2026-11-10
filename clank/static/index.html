@@ -88,6 +88,17 @@
               <canvas id="preview-overlay"></canvas>
             </div>
             <div id="preview-wait">session stopped</div>
+            <!-- The screen's own controls ride on the picture: a layout that
+                 pays height for a toolbar pays for it twice, once here and
+                 once in the stage budget. Hidden until frames arrive, because
+                 a switch between two dead pictures is noise. -->
+            <div class="screen-hud">
+              <div class="view-switch" role="group" aria-label="Preview source">
+                <button type="button" data-view="game" aria-pressed="true">Game</button>
+                <button type="button" data-view="model" aria-pressed="false">Model</button>
+              </div>
+              <span id="preview-status" class="screen-status"></span>
+            </div>
             <div id="manual-overlay" class="manual-overlay">
               <div class="manual-panel">
                 <strong id="manual-title"></strong>

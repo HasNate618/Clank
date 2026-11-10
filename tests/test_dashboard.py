@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import array
 import http.client
 import json
 import os
@@ -489,6 +490,30 @@ class DashboardTests(unittest.TestCase):
             status, body = self.request("GET", "/api/brain/messages")
         self.assertEqual(status, 200)
         self.assertEqual(json.loads(body)["messages"], [])
+
+    def test_live_depth_is_raw_float32_metres(self) -> None:
+        frame = {
+            "width": 2,
+            "height": 2,
+            "depth": array.array("f", [0.4, 1.2, 3.0, 0.0]),
+            "color": None,
+            "color_width": 0,
+            "color_height": 0,
+        }
+        with patch("clank.dashboard.latest", return_value=frame):
+            status, headers, body = self.request_with_headers("/api/preview/live.depth")
+        self.assertEqual(status, 200)
+        self.assertEqual(headers["X-Frame-Width"], "2")
+        self.assertEqual(headers["X-Frame-Height"], "2")
+        self.assertEqual(len(body), 2 * 2 * 4)
+        values = array.array("f")
+        values.frombytes(body)
+        self.assertAlmostEqual(values[1], 1.2, places=5)
+
+    def test_live_depth_without_a_frame_is_404(self) -> None:
+        with patch("clank.dashboard.latest", return_value=None):
+            status, _ = self.request("GET", "/api/preview/live.depth")
+        self.assertEqual(status, 404)
 
     def test_negative_content_length_returns_400(self) -> None:
         status, _ = self.raw_request(

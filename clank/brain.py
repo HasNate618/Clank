@@ -204,6 +204,67 @@ class ModelReply:
     error: str = ""
 
 
+@dataclass(frozen=True)
+class ServerStatus:
+    """What the local llama.cpp server says about itself."""
+
+    up: bool = False
+    #: "ok" once weights are loaded, "loading" while llama.cpp is still loading
+    #: them, "down" when nothing is listening.
+    status: str = "down"
+    model: str = ""
+    error: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "up": self.up,
+            "status": self.status,
+            "model": self.model,
+            "error": self.error,
+        }
+
+
+def short_model(name: str) -> str:
+    """`/home/x/models/LFM3-Omni-2B-Q8_0.gguf` -> `LFM3-Omni-2B-Q8_0`."""
+    leaf = name.rsplit("/", 1)[-1]
+    return leaf[:-5] if leaf.endswith(".gguf") else leaf
+
+
+def server_status(base_url: str = DEFAULT_BASE_URL, timeout_s: float = 0.4) -> ServerStatus:
+    """Ask the planner's server whether it is serving, and which weights.
+
+    `/health` is llama.cpp's own report: 200 `{"status":"ok"}` once a model is
+    loaded, 503 while it is still loading. The distinction matters to an
+    operator - "down" and "loading" look identical from a timer otherwise, and
+    one of them just needs waiting. The weights come from `/v1/models`, asked
+    only when the server is up, so a stopped server costs one refused
+    connection and nothing else.
+    """
+    base = base_url.rstrip("/")
+    try:
+        with urllib.request.urlopen(f"{base}/health", timeout=timeout_s) as response:  # noqa: S310
+            body = json.loads(response.read().decode("utf-8") or "{}")
+    except urllib.error.HTTPError as exc:
+        if exc.code == 503:
+            return ServerStatus(up=True, status="loading")
+        return ServerStatus(error=f"http {exc.code}")
+    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        return ServerStatus(error=f"transport: {exc}")
+    except json.JSONDecodeError as exc:
+        return ServerStatus(error=f"health is not json: {exc}")
+
+    model = ""
+    try:
+        with urllib.request.urlopen(f"{base}/v1/models", timeout=timeout_s) as response:  # noqa: S310
+            models = json.loads(response.read().decode("utf-8") or "{}").get("models") or []
+        if models:
+            model = short_model(str(models[0].get("name") or models[0].get("model") or ""))
+    except (urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError, AttributeError):
+        # The name is a nicety; the health answer is the answer.
+        model = ""
+    return ServerStatus(up=True, status=str(body.get("status") or "ok"), model=model)
+
+
 def _chat(
     config: BrainConfig,
     messages: list[dict[str, Any]],
@@ -1335,5 +1396,6 @@ __all__ = [
     "plan",
     "reach_outcome",
     "run_turn",
+    "server_status",
     "verify",
 ]
