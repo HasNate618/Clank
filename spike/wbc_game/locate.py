@@ -27,6 +27,7 @@ import io
 import json
 import pathlib
 import re
+import statistics
 import sys
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2]))
@@ -44,6 +45,20 @@ MARGIN = 1.15
 #: the same 960 the full frame gets, which is 2x for a quadrant.
 CROP_WIDTH = 960
 
+#: Stage 2 asks for a **box**, several times, at these `(sent width, crop padding)` pairs.
+#: The padding is a fraction of the box's own size, and it jitters the framing so the reads
+#: are independent. Measured 2026-11-09 on a live Job Simulator frame: the model is bimodal -
+#: the same question at a different send width flipped between 9 px and 384 px - so one read
+#: is a coin flip. Taking the median of each of the four **edges** over five reads located the
+#: JobBot badge to 29 px where a single read of the same image gave 235 px.
+BOX_READS = ((640, 0.0), (720, 0.03), (800, 0.0), (880, 0.04), (960, 0.02))
+
+BOX_PROMPT = (
+    "This image is a crop of the game view. Give the bounding box of the {noun} in this "
+    'image, as JSON only: {{"x0": <int>, "y0": <int>, "x1": <int>, "y1": <int>}}. '
+    "Coordinates are a 0 to 1000 grid: 0 is the left/top edge, 1000 the right/bottom edge."
+)
+
 #: How tightly stage 3 looks around stage 2's answer, as a fraction of the frame.
 #: The absence measurement is the reason this exists: one call about a *tight*
 #: crop said `found: false` for an object that was not there, while a quadrant
@@ -60,6 +75,36 @@ CROP_WIDTH = 960
 VERIFY_HALF = 0.16
 
 _PIXEL = re.compile(r"(-?\d+(?:\.\d+)?)\s*(?:px)?\s*[, ]\s*(-?\d+(?:\.\d+)?)")
+
+#: A box reply, by key name so the "0"/"1" inside `x0`/`x1` cannot be read as a value.
+_BOX_KEYS = re.compile(r'([xy][01])"?\s*:\s*(-?\d+(?:\.\d+)?)')
+
+
+def parse_box(text: str) -> tuple[float, float, float, float] | None:
+    """The four numbers of a box reply, in the order `x0, y0, x1, y1`.
+
+    Read by key name first. A bare four-number reply is accepted too, but only after the
+    keyed form fails: measured 2026-11-09, a parser that just takes the first four numbers
+    off `{"x0": 105, ...}` reads the `0` in the key and returns a box at negative zero.
+    """
+    keyed = {name: float(value) for name, value in _BOX_KEYS.findall(text)}
+    if len(keyed) == 4:
+        return keyed["x0"], keyed["y0"], keyed["x1"], keyed["y1"]
+    numbers = [float(v) for v in re.findall(r"-?\d+(?:\.\d+)?", text)]
+    if len(numbers) >= 4:
+        return numbers[0], numbers[1], numbers[2], numbers[3]
+    return None
+
+
+def _grow(box: tuple[float, float, float, float], pad: float) -> tuple[float, float, float, float]:
+    """`box` widened by `pad` of its own size, clipped to the frame."""
+    w, h = box[2] - box[0], box[3] - box[1]
+    return (
+        max(0.0, box[0] - pad * w),
+        max(0.0, box[1] - pad * h),
+        min(1.0, box[2] + pad * w),
+        min(1.0, box[3] + pad * h),
+    )
 
 
 def quadrant_box(quadrant: str, margin: float = MARGIN) -> tuple[float, float, float, float]:
@@ -127,12 +172,81 @@ def ask_pixel(
     ), reply.text, reply.prompt_ms, reply.decode_ms
 
 
+def ask_box(
+    config: BrainConfig,
+    frame: Frame,
+    noun: str,
+    box: tuple[float, float, float, float],
+    width: int,
+    pad: float,
+) -> tuple[tuple[float, float, float, float] | None, str]:
+    """One stage-2 read: a box for `noun`, composed back into `box`'s coordinates.
+
+    The reply is a 0-1000 grid over the image that was sent, and that image is `box`
+    grown by `pad`, so the grid point maps straight back without a second offset table.
+    """
+    shown = _grow(box, pad)
+    jpeg = frames.crop_jpeg(frame.jpeg, shown, width=width)
+    cropped = Frame(index=frame.index, t_s=frame.t_s, jpeg=jpeg, source=f"box:{shown}")
+    reply = brain._chat(
+        config,
+        [{"role": "user", "content": [
+            brain._image_part(cropped),
+            {"type": "text", "text": BOX_PROMPT.format(noun=noun)},
+        ]}],
+        max_tokens=60,
+    )
+    if reply.error:
+        return None, reply.text
+    got = parse_box(reply.text)
+    if got is None:
+        return None, reply.text
+    span_x, span_y = shown[2] - shown[0], shown[3] - shown[1]
+    x0 = shown[0] + got[0] / 1000.0 * span_x
+    y0 = shown[1] + got[1] / 1000.0 * span_y
+    x1 = shown[0] + got[2] / 1000.0 * span_x
+    y1 = shown[1] + got[3] / 1000.0 * span_y
+    if x1 < x0:
+        x0, x1 = x1, x0
+    if y1 < y0:
+        y0, y1 = y1, y0
+    return (x0, y0, x1, y1), reply.text
+
+
+def read_box(
+    config: BrainConfig,
+    frame: Frame,
+    noun: str,
+    box: tuple[float, float, float, float],
+    reads: tuple[tuple[int, float], ...] = BOX_READS,
+) -> tuple[tuple[float, float, float, float] | None, list[tuple[float, float, float, float]], list[str]]:
+    """Stage 2: the box, read several times at different framings.
+
+    Returns the median-edge box, every individual box, and every raw reply. The median is
+    computed **per edge**, not per centre, so one wild read cannot drag the answer the way
+    it drags a mean: on the measured frame four reads bracketed the badge and the fifth
+    bracketed the console behind it.
+    """
+    boxes: list[tuple[float, float, float, float]] = []
+    raws: list[str] = []
+    for width, pad in reads:
+        one, raw = ask_box(config, frame, noun, box, width, pad)
+        raws.append(raw.strip())
+        if one is not None:
+            boxes.append(one)
+    if not boxes:
+        return None, [], raws
+    median = tuple(statistics.median(edge) for edge in zip(*boxes, strict=True))
+    return median, boxes, raws
+
+
 def verify_present(
     config: BrainConfig,
     frame: Frame,
     noun: str,
     pixel_px: tuple[float, float],
     size: tuple[int, int],
+    box: tuple[float, float, float, float] | None = None,
 ) -> tuple[bool | None, str]:
     """Stage 3: is the noun actually in a tight crop around stage 2's answer?
 
@@ -141,15 +255,18 @@ def verify_present(
     is what stops a wrong stage-1 quadrant from becoming a confident pixel.
     """
     width, height = size
-    u, v = pixel_px[0] / width, pixel_px[1] / height
-    box = (
-        max(0.0, u - VERIFY_HALF),
-        max(0.0, v - VERIFY_HALF),
-        min(1.0, u + VERIFY_HALF),
-        min(1.0, v + VERIFY_HALF),
-    )
-    jpeg = frames.crop_jpeg(frame.jpeg, box, width=CROP_WIDTH)
-    cropped = Frame(index=frame.index, t_s=frame.t_s, jpeg=jpeg, source=f"verify:{box}")
+    if box is not None:
+        crop_box = box
+    else:
+        u, v = pixel_px[0] / width, pixel_px[1] / height
+        crop_box = (
+            max(0.0, u - VERIFY_HALF),
+            max(0.0, v - VERIFY_HALF),
+            min(1.0, u + VERIFY_HALF),
+            min(1.0, v + VERIFY_HALF),
+        )
+    jpeg = frames.crop_jpeg(frame.jpeg, crop_box, width=CROP_WIDTH)
+    cropped = Frame(index=frame.index, t_s=frame.t_s, jpeg=jpeg, source=f"verify:{crop_box}")
     prompt = f"Is there a {noun} in this image? Answer YES or NO."
     reply = brain._chat(config, [{"role": "user", "content": [
         brain._image_part(cropped), {"type": "text", "text": prompt},
@@ -163,9 +280,14 @@ def verify_present(
 
 
 def locate(
-    config: BrainConfig, frame: Frame, noun: str, size: tuple[int, int], verify: bool = True
+    config: BrainConfig,
+    frame: Frame,
+    noun: str,
+    size: tuple[int, int],
+    verify: bool = True,
+    reads: int = 5,
 ) -> dict:
-    """Quadrant, then one crop call. Returns a dict with a full-frame pixel in px."""
+    """Quadrant, then box reads. Returns a dict with a full-frame pixel in px."""
     width, height = size
     stage1 = ask_quadrant(config, frame, noun)
     out: dict = {
@@ -182,28 +304,144 @@ def locate(
 
     box = quadrant_box(stage1.quadrant)
     out["box"] = [round(v, 4) for v in box]
-    uv, raw, p_ms, d_ms = ask_pixel(config, frame, noun, box, size)
-    out["stage2_raw"] = raw.strip()
-    out["stage2_prompt_ms"] = round(p_ms, 1)
-    out["stage2_decode_ms"] = round(d_ms, 1)
-    if uv is None:
-        out["error"] = "stage 2 did not name a pixel"
+    if reads <= 0:
+        # The single point read this module was measured on. Kept so the two can be
+        # compared on the same frame; the default is the box ensemble.
+        uv, raw, p_ms, d_ms = ask_pixel(config, frame, noun, box, size)
+        out["stage2_raw"] = raw.strip()
+        out["stage2_prompt_ms"] = round(p_ms, 1)
+        out["stage2_decode_ms"] = round(d_ms, 1)
+        if uv is None:
+            out["error"] = "stage 2 did not name a pixel"
+            return out
+        u = box[0] + uv[0] * (box[2] - box[0])
+        v = box[1] + uv[1] * (box[3] - box[1])
+        pixel = (round(u * width, 1), round(v * height, 1))
+        out["pixel_px"] = list(pixel)
+        if not verify:
+            out["verify_raw"] = "skipped"
+            out["present"] = None
+            return out
+        present, raw3 = verify_present(config, frame, noun, pixel, size)
+        out["verify_raw"] = raw3.strip()
+        out["present"] = present
+        if present is False:
+            out["error"] = "not visible"
         return out
-    u = box[0] + uv[0] * (box[2] - box[0])
-    v = box[1] + uv[1] * (box[3] - box[1])
-    pixel = (round(u * width, 1), round(v * height, 1))
-    out["pixel_px"] = list(pixel)
+
+    plan = tuple(BOX_READS[i % len(BOX_READS)] for i in range(reads))
+    median, boxes, raws = read_box(config, frame, noun, box, plan)
+    out["stage2_raw"] = raws
+    out["stage2_reads"] = len(raws)
+    if median is None:
+        out["error"] = "stage 2 did not name a box"
+        return out
+    out["found_box"] = [round(v, 4) for v in median]
+    out["stage2_boxes"] = [[round(v, 4) for v in b] for b in boxes]
+    centre = ((median[0] + median[2]) / 2, (median[1] + median[3]) / 2)
+    out["pixel_px"] = [round(centre[0] * width, 1), round(centre[1] * height, 1)]
+    # How far the individual reads disagreed with the median, in px of this frame. The
+    # caller's confidence signal: measured, the reads that landed 380 px away are visible
+    # here as a large spread long before anyone acts on them.
+    out["read_spread_px"] = round(
+        max(
+            (
+                (((b[0] + b[2]) / 2 - centre[0]) * width) ** 2
+                + (((b[1] + b[3]) / 2 - centre[1]) * height) ** 2
+            )
+            ** 0.5
+            for b in boxes
+        ),
+        1,
+    )
+    out["box_reads"] = len(boxes)
     if not verify:
         out["verify_raw"] = "skipped"
         out["present"] = None
         return out
-    present, raw3 = verify_present(config, frame, noun, pixel, size)
+    # Verify on the model's own extent, but never on a crop smaller than the measured safe
+    # size. A lever is a thin box: measured 2026-11-09, stage 2 placed it 5.9 px from truth
+    # and the verifier still refused it, because a 33x7 px crop holds a grey stick with no
+    # knob in it. The floor is `VERIFY_HALF`, the size that measurement says reads as an
+    # object rather than as a fragment.
+    half_w = max((median[2] - median[0]) / 2, VERIFY_HALF)
+    half_h = max((median[3] - median[1]) / 2, VERIFY_HALF)
+    verify_box = (
+        max(0.0, centre[0] - half_w),
+        max(0.0, centre[1] - half_h),
+        min(1.0, centre[0] + half_w),
+        min(1.0, centre[1] + half_h),
+    )
+    present, raw3 = verify_present(
+        config, frame, noun, (centre[0] * width, centre[1] * height), size, box=verify_box
+    )
     out["verify_raw"] = raw3.strip()
     out["present"] = present
     if present is False:
         out["error"] = "not visible"
-        out["quadrant"] = stage1.quadrant
     return out
+
+
+def _faded(
+    image: pathlib.Path, depth: pathlib.Path, percentile: float, near: float, far: float
+) -> tuple[bytes, tuple[int, int], float]:
+    """The still with everything behind the working volume faded, its size, and the seed.
+
+    numpy and Pillow are imported here rather than at module scope: `locate.py` itself
+    stays standard-library only, like the rest of the surface it sits on, and the fade is
+    an optional input to the same pipeline rather than a dependency of it.
+    """
+    import numpy as np
+    from PIL import Image
+
+    sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+    import fade as fade_module
+
+    rgb = np.asarray(Image.open(image).convert("RGB"))
+    depth_m = np.load(depth)
+    target = fade_module.foreground_depth(depth_m, percentile)
+    out = fade_module.fade_foreground(rgb, depth_m, percentile, near, far)
+    buf = io.BytesIO()
+    Image.fromarray(out).save(buf, format="PNG")
+    return buf.getvalue(), (int(out.shape[1]), int(out.shape[0])), target
+
+
+def _post_overlay(url: str, out: dict, size: tuple[int, int]) -> bool:
+    """Tell the dashboard where we looked, so it can draw it on the picture.
+
+    Best effort on purpose: a demo must not fail because a dashboard is not running, so
+    every transport problem is a ``False`` rather than an exception.
+    """
+    import urllib.parse
+    import urllib.request
+
+    addressed = urllib.parse.urlsplit(url)
+    # This posts to a dashboard on this machine and nothing else, so anything that is not
+    # loopback HTTP is refused before a socket is opened. `file:` in a URL that came from
+    # the command line is a read primitive, not a dashboard.
+    if addressed.scheme not in ("http", "https"):
+        return False
+    if addressed.hostname not in ("127.0.0.1", "localhost", "::1"):
+        return False
+
+    payload = json.dumps({
+        "noun": out.get("noun") or "object",
+        "box": out.get("found_box"),
+        "pixel": out.get("pixel_px"),
+        "size": [size[0], size[1]],
+        "spread": out.get("read_spread_px"),
+        "present": out.get("present"),
+    }).encode()
+    request = urllib.request.Request(  # noqa: S310 - scheme and host checked just above
+        url, data=payload, method="POST", headers={"Content-Type": "application/json"}
+    )
+    try:
+        with urllib.request.urlopen(  # noqa: S310 - scheme and host checked just above
+            request, timeout=2
+        ) as response:
+            return 200 <= response.status < 300
+    except Exception:  # noqa: BLE001 - no dashboard is the normal case for a CLI run
+        return False
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -213,6 +451,23 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--truth", nargs=2, type=float, metavar=("X", "Y"))
     ap.add_argument("--model")
     ap.add_argument(
+        "--reads",
+        type=int,
+        default=len(BOX_READS),
+        help="how many jittered box reads stage 2 makes; 0 falls back to the single point "
+        "read this module was originally measured on, so the two can be compared",
+    )
+    ap.add_argument(
+        "--depth",
+        type=pathlib.Path,
+        help="float32 .npy depth for the same view. Fades the background before grounding, "
+        "using a band derived from the depth map, so no object depth is needed first",
+    )
+    ap.add_argument("--no-fade", action="store_true", help="ignore --depth")
+    ap.add_argument("--fade-percentile", type=float, default=5.0)
+    ap.add_argument("--fade-near", type=float, default=1.06)
+    ap.add_argument("--fade-far", type=float, default=1.45)
+    ap.add_argument(
         "--no-verify",
         action="store_true",
         help="skip the tight-crop YES/NO. Measured 2026-11-04: on a cartridge label the "
@@ -221,6 +476,12 @@ def main(argv: list[str] | None = None) -> int:
         "itself is the stronger post-condition.",
     )
     ap.add_argument("--jsonl", type=pathlib.Path)
+    ap.add_argument(
+        "--post",
+        metavar="URL",
+        help="POST the result to a dashboard so the preview draws the box, e.g. "
+        "http://127.0.0.1:8765/api/overlay",
+    )
     args = ap.parse_args(argv)
 
     config = BrainConfig()
@@ -228,11 +489,26 @@ def main(argv: list[str] | None = None) -> int:
         config = BrainConfig(model=args.model)
     from PIL import Image  # only for the size; ffmpeg does the crops
 
-    with Image.open(args.image) as img:
-        size = img.size
-    frame = Frame(index=0, t_s=0.0, jpeg=args.image.read_bytes(), source=str(args.image))
+    faded: dict = {}
+    if args.depth and not args.no_fade:
+        jpeg, size, target = _faded(
+            args.image, args.depth, args.fade_percentile, args.fade_near, args.fade_far
+        )
+        frame = Frame(index=0, t_s=0.0, jpeg=jpeg, source=f"{args.image}+fade")
+        faded = {
+            "target_m": round(target, 3),
+            "cut_m": [round(target * args.fade_near, 3), round(target * args.fade_far, 3)],
+        }
+    else:
+        with Image.open(args.image) as img:
+            size = img.size
+        frame = Frame(index=0, t_s=0.0, jpeg=args.image.read_bytes(), source=str(args.image))
 
-    out = locate(config, frame, args.noun, size, verify=not args.no_verify)
+    out = locate(config, frame, args.noun, size, verify=not args.no_verify, reads=args.reads)
+    if faded:
+        out["fade"] = faded
+    if args.post and out.get("found_box"):
+        out["posted"] = _post_overlay(args.post, out, size)
     if args.truth and out["pixel_px"]:
         dx = out["pixel_px"][0] - args.truth[0]
         dy = out["pixel_px"][1] - args.truth[1]

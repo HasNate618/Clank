@@ -169,6 +169,96 @@ function syncPreviewOverlay() {
   if (overlay.height !== height) overlay.height = height;
 }
 
+// ---------- grounding overlay ----------
+// What the brain last claimed it could see. The board expires server-side, so nothing
+// here has to remember to erase a box; the alpha fade only stops an old claim from
+// looking as certain as a fresh one. Everything is drawn in the canvas's own pixels and
+// scaled from the frame size the brain reported, so a 1705-wide still and a 960-wide
+// live stream land in the same place.
+const OVERLAY_POLL_MS = 700;
+const OVERLAY_LIFE_S = 6;
+let overlayTimer = null;
+
+function cssColour(name, fallback) {
+  const value = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+  return value || fallback;
+}
+
+function drawOverlay(items) {
+  const overlay = $("preview-overlay");
+  if (!overlay) return;
+  const ctx = overlay.getContext("2d");
+  ctx.clearRect(0, 0, overlay.width, overlay.height);
+  if (!items || !items.length) return;
+  const go = cssColour("--go", "#3ecf8e");
+  const halt = cssColour("--halt", "#ff6b6b");
+  const fontPx = Math.max(12, Math.round(overlay.height / 34));
+  ctx.font = `600 ${fontPx}px ui-monospace, SFMono-Regular, Menlo, monospace`;
+  ctx.lineWidth = Math.max(2, overlay.height / 280);
+  const radius = Math.max(3, overlay.height / 110);
+  for (const item of items) {
+    const size = Array.isArray(item.size) && item.size.length === 2 ? item.size : [1920, 1080];
+    const scaleX = overlay.width / (Number(size[0]) || 1920);
+    const scaleY = overlay.height / (Number(size[1]) || 1080);
+    const age = Number(item.age_s) || 0;
+    const alpha = Math.max(0.25, 1 - age / OVERLAY_LIFE_S);
+    const colour = item.present === false ? halt : go;
+    const box = (item.box || []).map(Number);
+    if (box.length !== 4) continue;
+    const x = box[0] * overlay.width;
+    const y = box[1] * overlay.height;
+    const w = (box[2] - box[0]) * overlay.width;
+    const h = (box[3] - box[1]) * overlay.height;
+    ctx.globalAlpha = alpha;
+    ctx.strokeStyle = colour;
+    ctx.strokeRect(x, y, w, h);
+    const pixel = (item.pixel || []).map(Number);
+    if (pixel.length === 2) {
+      ctx.fillStyle = colour;
+      ctx.beginPath();
+      ctx.arc(pixel[0] * scaleX, pixel[1] * scaleY, radius, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    // The spread is the brain's own disagreement between reads, which is the number that
+    // says whether to trust the box at all.
+    const spread = Number(item.spread);
+    const name = String(item.noun || "object");
+    const short = name.length > 42 ? `${name.slice(0, 41)}…` : name;
+    const label = spread > 0 ? `${short} · spread ${Math.round(spread)} px` : short;
+    // Keep the label on the canvas: a box near an edge would otherwise run its caption
+    // off the picture, which is exactly where a grounding claim tends to sit.
+    const metrics = ctx.measureText(label);
+    const labelX = Math.max(4, Math.min(x, overlay.width - metrics.width - 14));
+    const textY = Math.min(overlay.height - 6, Math.max(fontPx + 6, y - 8));
+    ctx.globalAlpha = Math.min(1, alpha + 0.1);
+    ctx.fillStyle = "rgba(0, 0, 0, 0.72)";
+    ctx.fillRect(labelX, textY - fontPx - 4, metrics.width + 12, fontPx + 10);
+    ctx.fillStyle = colour;
+    ctx.fillText(label, labelX + 6, textY + 2);
+  }
+  ctx.globalAlpha = 1;
+}
+
+async function overlayTick() {
+  const overlay = $("preview-overlay");
+  if (overlay) {
+    try {
+      const response = await fetch(`/api/overlay?t=${Date.now()}`, { cache: "no-store" });
+      if (response.ok) {
+        const body = await response.json();
+        drawOverlay(body.items || []);
+      }
+    } catch {
+      // The overlay is a convenience; a failed poll must not touch the page.
+    }
+  }
+  overlayTimer = setTimeout(overlayTick, OVERLAY_POLL_MS);
+}
+
+function startOverlay() {
+  if (overlayTimer === null) overlayTick();
+}
+
 function showError(message) {
   $("error").textContent = message || "";
   $("error").style.display = message ? "block" : "none";
@@ -1310,3 +1400,7 @@ document.addEventListener("click", (event) => {
   const verbButton = event.target.closest("button[data-verb]");
   if (verbButton) bodyVerb(verbButton.dataset.verb, verbButton);
 });
+
+// The overlay polls on its own timer: it must draw whether the preview is a live depth
+// frame, a VNC stream, or nothing at all yet.
+startOverlay();

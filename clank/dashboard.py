@@ -9,6 +9,7 @@ import os
 import signal
 import sys
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import unquote, urlparse
@@ -30,6 +31,100 @@ class PayloadTooLarge(ValueError):
 #: enough that the whole payload stays well under a megabyte.
 LOG_TAIL_LINES = 250
 
+#: How long a grounding claim stays drawable, and how many are kept. The overlay answers
+#: "what did the brain just claim", not "what is true now", so items expire: a box left on
+#: the picture after the fact is a lie about what the robot currently sees.
+OVERLAY_TTL_S = 6.0
+OVERLAY_MAX = 12
+OVERLAY_NOUN_MAX = 120
+
+
+def _numbers(value, count: int, name: str, positive: bool = False) -> list[float]:
+    """`value` as `count` floats, or ValueError. Rejects bools, which are ints in Python."""
+    if not isinstance(value, (list, tuple)) or len(value) != count:
+        raise ValueError(f"{name} needs {count} numbers")
+    out: list[float] = []
+    for item in value:
+        if isinstance(item, bool) or not isinstance(item, (int, float)):
+            raise ValueError(f"{name} needs numbers")
+        number = float(item)
+        if number != number or number in (float("inf"), float("-inf")):
+            raise ValueError(f"{name} needs finite numbers")
+        if positive and number <= 0:
+            raise ValueError(f"{name} must be positive")
+        out.append(number)
+    return out
+
+
+class OverlayBoard:
+    """Recent grounding claims, for the preview overlay to draw and then forget.
+
+    The brain locates an object and this is where it says where: a normalised box, the
+    point it chose, and how far its own repeated reads disagreed. It is a board rather
+    than state because nothing reads it back to decide anything - and it expires, because
+    the picture it describes moves on.
+    """
+
+    def __init__(self, ttl_s: float = OVERLAY_TTL_S, limit: int = OVERLAY_MAX) -> None:
+        self._lock = threading.Lock()
+        self._ttl_s = float(ttl_s)
+        self._limit = max(1, int(limit))
+        self._items: list[dict] = []
+        self._seq = 0
+
+    def add(self, payload: dict) -> dict:
+        """Validate and remember one claim. Raises ValueError on anything malformed."""
+        box = _numbers(payload.get("box"), 4, "box")
+        if not (0.0 <= box[0] < box[2] <= 1.0 and 0.0 <= box[1] < box[3] <= 1.0):
+            raise ValueError("box must be four normalised edges, in order")
+        pixel = _numbers(payload.get("pixel"), 2, "pixel")
+        size = _numbers(payload.get("size"), 2, "size", positive=True)
+        noun = payload.get("noun", "object")
+        if not isinstance(noun, str) or not noun.strip():
+            raise ValueError("noun required")
+        spread = payload.get("spread")
+        if spread is not None:
+            spread = _numbers([spread], 1, "spread")[0]
+        present = payload.get("present")
+        with self._lock:
+            self._seq += 1
+            item = {
+                "id": self._seq,
+                "t": time.time(),
+                "noun": noun.strip()[:OVERLAY_NOUN_MAX],
+                "box": box,
+                "pixel": pixel,
+                "size": size,
+                "spread": spread,
+                "present": None if present is None else bool(present),
+            }
+            self._items.append(item)
+            del self._items[: -self._limit]
+            return self._view(item, item["t"])
+
+    def snapshot(self) -> list[dict]:
+        now = time.time()
+        with self._lock:
+            self._prune(now)
+            return [self._view(item, now) for item in self._items]
+
+    def _prune(self, now: float) -> None:
+        cutoff = now - self._ttl_s
+        kept = [item for item in self._items if item["t"] >= cutoff]
+        self._items[:] = kept
+
+    def _view(self, item: dict, now: float) -> dict:
+        return {
+            "id": item["id"],
+            "age_s": round(now - item["t"], 2),
+            "noun": item["noun"],
+            "box": item["box"],
+            "pixel": item["pixel"],
+            "size": item["size"],
+            "spread": item["spread"],
+            "present": item["present"],
+        }
+
 
 class DashboardServer(ThreadingHTTPServer):
     daemon_threads = True
@@ -41,6 +136,7 @@ class DashboardServer(ThreadingHTTPServer):
         self.config = config
         self.static_dir = Path(static_dir)
         self.body = body
+        self.overlay = OverlayBoard()
         self.shutdown_event = threading.Event()
         super().__init__(address, DashboardHandler)
 
@@ -109,6 +205,10 @@ class DashboardHandler(BaseHTTPRequestHandler):
             except Exception:  # noqa: BLE001 - a broken diary must not break the page
                 rows = []
             return self._json({"messages": rows})
+        if path == "/api/overlay":
+            # What the brain last claimed it could see, for the boxes it draws on the
+            # preview. Expires by itself, so a stale box cannot outlive its evidence.
+            return self._json({"items": self.server.overlay.snapshot()})
         if path.startswith("/fonts/"):
             return self._font(path[len("/fonts/"):])
         if path.startswith("/api/logs/"):
@@ -143,6 +243,12 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return self._error(413, str(exc))
         except ValueError as exc:
             return self._error(400, str(exc))
+        if path == "/api/overlay":
+            try:
+                self.server.overlay.add(body)
+            except ValueError as exc:
+                return self._error(400, str(exc))
+            return self._json({"ok": True, "items": self.server.overlay.snapshot()}, status=202)
         if path == "/api/manual/input":
             if not self._origin_allowed():
                 return self._error(403, "cross-origin input rejected")

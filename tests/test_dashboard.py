@@ -17,7 +17,7 @@ from unittest.mock import patch
 
 from clank.body_preview import BodyPreview
 from clank.config import load_config
-from clank.dashboard import DashboardHandler, DashboardServer
+from clank.dashboard import DashboardHandler, DashboardServer, OverlayBoard
 from clank.manual_input import ManualInputError, ManualInputUnavailable
 from clank.orchestrator import ConflictError, MODES, PreflightError, SessionManager
 
@@ -491,6 +491,53 @@ class DashboardTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(json.loads(body)["messages"], [])
 
+    def test_overlay_round_trip(self) -> None:
+        claim = {
+            "noun": "the JobBot ID card",
+            "box": [0.70, 0.70, 0.90, 0.90],
+            "pixel": [768.0, 432.0],
+            "size": [960, 540],
+            "spread": 34.1,
+            "present": True,
+        }
+        status, body = self.request("POST", "/api/overlay", claim)
+        self.assertEqual(status, 202)
+        self.assertTrue(json.loads(body)["ok"])
+        status, body = self.request("GET", "/api/overlay")
+        self.assertEqual(status, 200)
+        items = json.loads(body)["items"]
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0]["noun"], "the JobBot ID card")
+        self.assertEqual(items[0]["box"], claim["box"])
+        self.assertEqual(items[0]["pixel"], claim["pixel"])
+        self.assertEqual(items[0]["spread"], 34.1)
+        self.assertTrue(items[0]["present"])
+        self.assertGreaterEqual(items[0]["age_s"], 0)
+
+    def test_overlay_without_claims_is_an_empty_list(self) -> None:
+        status, body = self.request("GET", "/api/overlay")
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(body)["items"], [])
+
+    def test_overlay_rejects_an_inverted_box(self) -> None:
+        status, body = self.request("POST", "/api/overlay", {
+            "noun": "card",
+            "box": [0.9, 0.9, 0.2, 0.2],
+            "pixel": [1.0, 2.0],
+            "size": [960, 540],
+        })
+        self.assertEqual(status, 400)
+        self.assertIn("box", json.loads(body)["error"])
+
+    def test_overlay_rejects_a_missing_pixel(self) -> None:
+        status, body = self.request("POST", "/api/overlay", {
+            "noun": "card",
+            "box": [0.1, 0.1, 0.2, 0.2],
+            "size": [960, 540],
+        })
+        self.assertEqual(status, 400)
+        self.assertIn("pixel", json.loads(body)["error"])
+
     def test_live_depth_is_raw_float32_metres(self) -> None:
         frame = {
             "width": 2,
@@ -787,6 +834,41 @@ class BodyCommandRouteTestCase(unittest.TestCase):
     def test_missing_body_returns_400(self) -> None:
         status, _ = self._serve(None, {"verb": "punch"})
         self.assertEqual(status, 400)
+
+
+class OverlayBoardTests(unittest.TestCase):
+    """The board itself, without a server in the way."""
+
+    def claim(self, noun: str = "card") -> dict:
+        return {
+            "noun": noun,
+            "box": [0.0, 0.0, 1.0, 1.0],
+            "pixel": [10.0, 10.0],
+            "size": [960, 540],
+        }
+
+    def test_items_expire(self) -> None:
+        board = OverlayBoard(ttl_s=0.0)
+        board.add(self.claim())
+        # A claim that outlives its evidence is a lie about what the robot sees, so the
+        # board forgets rather than growing.
+        self.assertEqual(board.snapshot(), [])
+
+    def test_the_oldest_claims_are_dropped_first(self) -> None:
+        board = OverlayBoard(ttl_s=60.0, limit=2)
+        for noun in ("a", "b", "c"):
+            board.add(self.claim(noun))
+        self.assertEqual([item["noun"] for item in board.snapshot()], ["b", "c"])
+
+    def test_a_claim_must_be_finite_and_ordered(self) -> None:
+        board = OverlayBoard()
+        with self.assertRaises(ValueError):
+            board.add({**self.claim(), "box": [0.5, 0.5, 0.5, 0.9]})
+        with self.assertRaises(ValueError):
+            board.add({**self.claim(), "pixel": [float("nan"), 1.0]})
+        with self.assertRaises(ValueError):
+            board.add({**self.claim(), "size": [0, 540]})
+
 
 if __name__ == "__main__":
     unittest.main()

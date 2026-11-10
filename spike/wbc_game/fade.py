@@ -46,6 +46,81 @@ FAR_K = 3.5
 #: blending toward white would leave the object as flat as everything else.
 BACKDROP = (18, 22, 26)
 
+#: Percentile of valid depth that stands in for "the working volume" when the object's
+#: own depth is not yet known - which is the normal case, because finding the object is
+#: what grounding is for. Measured 2026-11-09 on a live museum-counter view: p5 of the
+#: valid depth was 0.332 m, and 1.06/1.45 of it is 0.35-0.48 m, the band that located the
+#: JobBot badge to 29 px on that frame.
+FOREGROUND_PERCENTILE = 5.0
+
+#: A seed nearer than this is the robot's own body, not the scene. Measured 2026-11-09: the
+#: forearm and hand sit at about 0.2 m in the head's own view, so during a reach the fifth
+#: percentile would fall to the hand and the band would fade out the very object the reach
+#: is aimed at. Nothing nearer than an arm's length is a thing to ground on.
+SEED_FLOOR_M = 0.28
+
+#: Multiples of that reference depth for the fade band. Narrower than `NEAR_K`/`FAR_K`
+#: above because the reference is already the near surface, not the object's own depth:
+#: 1.8x of the foreground would keep the console and its signage, measured to be exactly
+#: what pulled the model off the badge (234 px against 35 px).
+FOREGROUND_NEAR = 1.06
+FOREGROUND_FAR = 1.45
+
+
+def foreground_depth(
+    depth: np.ndarray,
+    percentile: float = FOREGROUND_PERCENTILE,
+    floor_m: float = SEED_FLOOR_M,
+) -> float:
+    """Depth of the nearest working surface, from the depth map alone.
+
+    This is the seed for `fade_foreground`, and it exists because the honest order of
+    operations is fade-then-ground: the object's depth is what grounding produces, so it
+    cannot be an input. The percentile is deliberately low - the nearest few percent is
+    the console the objects sit on - and the band then reaches forward from there.
+
+    Surfaces nearer than `floor_m` are the robot's own arm, and are skipped by taking the
+    percentile of what is past them. If almost nothing is past them the seed is clamped
+    instead, so a frame filled with the near field still fades something rather than
+    nothing.
+
+    Returns 0.0 when there is no usable depth, which `fade_foreground` treats as "do not
+    fade": a frame with no depth is still groundable, just worse.
+    """
+    valid = np.asarray(depth, dtype=np.float64)
+    valid = valid[np.isfinite(valid) & (valid > 0.0) & (valid < FAR_SENTINEL)]
+    if valid.size == 0:
+        return 0.0
+    seed = float(np.percentile(valid, percentile))
+    if seed >= floor_m:
+        return seed
+    beyond = valid[valid >= floor_m]
+    if beyond.size >= max(16, int(0.02 * valid.size)):
+        return float(np.percentile(beyond, percentile))
+    return float(max(seed, floor_m))
+
+
+def fade_foreground(
+    rgb: np.ndarray,
+    depth: np.ndarray,
+    percentile: float = FOREGROUND_PERCENTILE,
+    near: float = FOREGROUND_NEAR,
+    far: float = FOREGROUND_FAR,
+    backdrop: tuple[int, int, int] = BACKDROP,
+) -> np.ndarray:
+    """`fade` with the reference depth measured from the frame instead of supplied.
+
+    The object's depth is unknown before grounding, so the working volume stands in for
+    it. Measured 2026-11-09: this is worth 3-8x on the badge, because the depth that
+    matters is not the object's but "how far away is the clutter" - and the default
+    1.8/3.5 band of the object's depth kept the console signage that the model then
+    pointed at.
+    """
+    target_m = foreground_depth(depth, percentile)
+    if target_m <= 0.0:
+        return np.array(rgb, copy=True)
+    return fade(rgb, depth, target_m, near=near, far=far, backdrop=backdrop)
+
 
 def _smoothstep(t: np.ndarray) -> np.ndarray:
     t = np.clip(t, 0.0, 1.0)
@@ -90,7 +165,7 @@ def fade(
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    ap = argparse.ArgumentParser(description=(__doc__ or "").splitlines()[0])
     ap.add_argument("colour", type=pathlib.Path)
     ap.add_argument("depth", type=pathlib.Path, help=".npy of the 480x270 float32 depth")
     ap.add_argument("--target", type=float, required=True, help="object depth in metres")
@@ -161,9 +236,16 @@ def component_at(mask: np.ndarray, seed: tuple[int, int]) -> np.ndarray:
 
 
 def nearest_surface(
-    depth: np.ndarray, seed_px: tuple[float, float], radius: int = 8
+    depth: np.ndarray,
+    seed_px: tuple[float, float] | tuple[float, float, float, float],
+    radius: int = 8,
 ) -> tuple[float, tuple[int, int]] | None:
     """The nearest valid depth near a seed, and where it is.
+
+    `seed_px` is either `(x, y)` already in the depth buffer's own pixels, or
+    `(x, y, width, height)` in colour pixels, which this scales down. Both forms are in
+    use: `auto_crop` holds a colour pixel and the caller's frame size, while a caller
+    working in depth space holds neither.
 
     A single sample is not enough and this is measured, not defensive: the JobBot card's
     own pixel read **1.31 m** while the card is at **0.38 m**, because the card is thin and

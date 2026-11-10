@@ -42,7 +42,7 @@ def state_path() -> pathlib.Path:
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    ap = argparse.ArgumentParser(description=(__doc__ or "").splitlines()[0])
     ap.add_argument("--px", nargs=2, type=float, metavar=("X", "Y"), help="object pixel")
     ap.add_argument("--world", nargs=3, type=float, metavar=("X", "Y", "Z"),
                     help="object point in the pelvis frame, projected to a pixel")
@@ -71,8 +71,10 @@ def main() -> int:
         if uv is None:
             raise SystemExit("the object is behind the camera; nothing to fade to")
         px = (uv[0] * width, uv[1] * height)
-    else:
+    elif args.px:
         px = (args.px[0], args.px[1])
+    else:
+        raise SystemExit("give --px or --world; there is nothing to fade to")
 
     found = F.nearest_surface(depth, (px[0], px[1], width, height))
     if found is None:

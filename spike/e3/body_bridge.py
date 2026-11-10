@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# mujoco ships no type information, so a checker reads every API access as an unknown
+# attribute. That is a packaging gap, not a bug here: this file is exercised against a
+# real MuJoCo model by the body gates, which is the check that counts.
+# pyright: reportAttributeAccessIssue=false
 import argparse, csv, ctypes as C, math, os, socket, struct, sys, time
 import numpy as np
 import mujoco
