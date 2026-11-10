@@ -29,6 +29,7 @@ import pathlib
 import re
 import statistics
 import sys
+import time
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2]))
 
@@ -219,6 +220,7 @@ def read_box(
     noun: str,
     box: tuple[float, float, float, float],
     reads: tuple[tuple[int, float], ...] = BOX_READS,
+    times: list[float] | None = None,
 ) -> tuple[tuple[float, float, float, float] | None, list[tuple[float, float, float, float]], list[str]]:
     """Stage 2: the box, read several times at different framings.
 
@@ -226,11 +228,18 @@ def read_box(
     computed **per edge**, not per centre, so one wild read cannot drag the answer the way
     it drags a mean: on the measured frame four reads bracketed the badge and the fifth
     bracketed the console behind it.
+
+    Per-read durations are appended to `times` when given. They are needed because a slow
+    read is one the server queued or the network retried, and a caller deciding whether it
+    can afford the grid has to know the real cost of one call.
     """
     boxes: list[tuple[float, float, float, float]] = []
     raws: list[str] = []
     for width, pad in reads:
+        started = time.perf_counter()
         one, raw = ask_box(config, frame, noun, box, width, pad)
+        if times is not None:
+            times.append(time.perf_counter() - started)
         raws.append(raw.strip())
         if one is not None:
             boxes.append(one)
@@ -287,9 +296,29 @@ def locate(
     verify: bool = True,
     reads: int = 5,
 ) -> dict:
-    """Quadrant, then box reads. Returns a dict with a full-frame pixel in px."""
+    """Quadrant, then box reads. Returns a dict with a full-frame pixel in px.
+
+    `timings` reports where the wall clock went, in ms, and how many model calls were made.
+    It is emitted rather than estimated because the cost moved by more than 2x between the
+    first measurement of this pipeline and the second, and a stale estimate is worse than no
+    estimate: an older doc claimed 0.72 s per call when the live server answers in 0.40 s.
+    """
     width, height = size
+    started = time.perf_counter()
+    timings: dict = {"quadrant_ms": 0.0, "reads_ms": 0.0, "verify_ms": 0.0}
+    calls = {"n": 0}
+
+    def done() -> dict:
+        """`out` with its clock stopped, so every early return still reports a total."""
+        timings["total_ms"] = round((time.perf_counter() - started) * 1000, 1)
+        timings["calls"] = calls["n"]
+        out["timings"] = timings
+        return out
+
+    stage1_started = time.perf_counter()
     stage1 = ask_quadrant(config, frame, noun)
+    calls["n"] += 1
+    timings["quadrant_ms"] = round((time.perf_counter() - stage1_started) * 1000, 1)
     out: dict = {
         "noun": noun,
         "quadrant": stage1.quadrant,
@@ -300,20 +329,23 @@ def locate(
         "stage2_raw": "",
     }
     if stage1.quadrant is None:
-        return out
+        return done()
 
     box = quadrant_box(stage1.quadrant)
     out["box"] = [round(v, 4) for v in box]
     if reads <= 0:
         # The single point read this module was measured on. Kept so the two can be
         # compared on the same frame; the default is the box ensemble.
+        reads_started = time.perf_counter()
         uv, raw, p_ms, d_ms = ask_pixel(config, frame, noun, box, size)
+        calls["n"] += 1
+        timings["reads_ms"] = round((time.perf_counter() - reads_started) * 1000, 1)
         out["stage2_raw"] = raw.strip()
         out["stage2_prompt_ms"] = round(p_ms, 1)
         out["stage2_decode_ms"] = round(d_ms, 1)
         if uv is None:
             out["error"] = "stage 2 did not name a pixel"
-            return out
+            return done()
         u = box[0] + uv[0] * (box[2] - box[0])
         v = box[1] + uv[1] * (box[3] - box[1])
         pixel = (round(u * width, 1), round(v * height, 1))
@@ -321,21 +353,29 @@ def locate(
         if not verify:
             out["verify_raw"] = "skipped"
             out["present"] = None
-            return out
+            return done()
+        verify_started = time.perf_counter()
         present, raw3 = verify_present(config, frame, noun, pixel, size)
+        calls["n"] += 1
+        timings["verify_ms"] = round((time.perf_counter() - verify_started) * 1000, 1)
         out["verify_raw"] = raw3.strip()
         out["present"] = present
         if present is False:
             out["error"] = "not visible"
-        return out
+        return done()
 
     plan = tuple(BOX_READS[i % len(BOX_READS)] for i in range(reads))
-    median, boxes, raws = read_box(config, frame, noun, box, plan)
+    per_read: list[float] = []
+    reads_started = time.perf_counter()
+    median, boxes, raws = read_box(config, frame, noun, box, plan, times=per_read)
+    timings["reads_ms"] = round((time.perf_counter() - reads_started) * 1000, 1)
+    timings["read_ms"] = [round(t * 1000, 1) for t in per_read]
+    calls["n"] += len(raws)
     out["stage2_raw"] = raws
     out["stage2_reads"] = len(raws)
     if median is None:
         out["error"] = "stage 2 did not name a box"
-        return out
+        return done()
     out["found_box"] = [round(v, 4) for v in median]
     out["stage2_boxes"] = [[round(v, 4) for v in b] for b in boxes]
     centre = ((median[0] + median[2]) / 2, (median[1] + median[3]) / 2)
@@ -358,7 +398,7 @@ def locate(
     if not verify:
         out["verify_raw"] = "skipped"
         out["present"] = None
-        return out
+        return done()
     # Verify on the model's own extent, but never on a crop smaller than the measured safe
     # size. A lever is a thin box: measured 2026-11-09, stage 2 placed it 5.9 px from truth
     # and the verifier still refused it, because a 33x7 px crop holds a grey stick with no
@@ -372,14 +412,17 @@ def locate(
         min(1.0, centre[0] + half_w),
         min(1.0, centre[1] + half_h),
     )
+    verify_started = time.perf_counter()
     present, raw3 = verify_present(
         config, frame, noun, (centre[0] * width, centre[1] * height), size, box=verify_box
     )
+    calls["n"] += 1
+    timings["verify_ms"] = round((time.perf_counter() - verify_started) * 1000, 1)
     out["verify_raw"] = raw3.strip()
     out["present"] = present
     if present is False:
         out["error"] = "not visible"
-    return out
+    return done()
 
 
 def _faded(
@@ -490,10 +533,13 @@ def main(argv: list[str] | None = None) -> int:
     from PIL import Image  # only for the size; ffmpeg does the crops
 
     faded: dict = {}
+    fade_ms = 0.0
     if args.depth and not args.no_fade:
+        fade_started = time.perf_counter()
         jpeg, size, target = _faded(
             args.image, args.depth, args.fade_percentile, args.fade_near, args.fade_far
         )
+        fade_ms = round((time.perf_counter() - fade_started) * 1000, 1)
         frame = Frame(index=0, t_s=0.0, jpeg=jpeg, source=f"{args.image}+fade")
         faded = {
             "target_m": round(target, 3),
@@ -507,6 +553,10 @@ def main(argv: list[str] | None = None) -> int:
     out = locate(config, frame, args.noun, size, verify=not args.no_verify, reads=args.reads)
     if faded:
         out["fade"] = faded
+    if fade_ms:
+        # Separate from `total_ms`: the fade is paid once for the still, not once per call,
+        # and a caller comparing the faded and unfaded paths needs to see it on its own.
+        out.setdefault("timings", {})["fade_ms"] = fade_ms
     if args.post and out.get("found_box"):
         out["posted"] = _post_overlay(args.post, out, size)
     if args.truth and out["pixel_px"]:

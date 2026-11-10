@@ -4,6 +4,12 @@
 `grounding-omni.md` was measured against **hand-made** crops: a human looked at the frame and
 chose the box. That is not what the artifact claims. This is the attempt to remove the human.
 
+**UPDATE 2026-11-09.** The pipeline below is the version measured on 2026-11-04, and its numbers
+are left as they were recorded. Stage 2 has since become a **box ensemble read five times at
+jittered framings**, and a background fade derived from the depth map runs before stage 1. Both
+changes are in "Stage 2 since 2026-11-09" and in `locate.py`'s constants. Latency is now measured
+by the tool itself - see "Latency".
+
 ## The pipeline
 
 Three stages, each of which was already measured on its own:
@@ -15,7 +21,63 @@ Three stages, each of which was already measured on its own:
 3. **Verify.** Cut a tight `+/-9%` box around stage 2's answer and ask `YES`/`NO`. Refusal was
    measured to be a property of the *tight* crop, so this is where "not there" is decided.
 
-Cost: ~1.1-1.6 s, three calls, no grid, no offset table, no game layout.
+Cost: ~1.1-1.6 s, three calls, no grid, no offset table, no game layout. **That cost was measured
+before the box ensemble and is now wrong by about 3x**: three calls at 0.25-0.4 s each plus a
+0.4 s verify is closer to 1.5 s, and the shipped path makes seven calls. See "Latency".
+
+### Stage 2 since 2026-11-09: a box ensemble, on a faded frame
+
+A box ask beats a point ask **3.4x** on the same crop for the same single call (12.7-25.8 px vs
+35.9-65.8 px), because "where is its centre" is ambiguous for anything with a printed face - the
+barcode or the text? So stage 2 asks for a box, and `BOX_READS` jitters the framing five times
+(send width 640-960 px, crop padding 0-4%) so the reads are independent.
+
+The model is **bimodal**: the same question at a different send width flipped between 9 px and
+384 px. One read is therefore a coin flip, and the answer is the **median of each edge** - per
+edge, not per centre, so one wild read cannot drag it. On the lever, two of five reads landed on
+the console and the spread was 181 px; the median still came out 5.9 px from truth.
+
+Verification now crops to the model's **own box**, floored at `VERIFY_HALF` (0.16). Without the
+floor a thin box (the lever's was 33x7 px) holds a grey stick with no knob in it and refuses an
+answer that was 5.9 px from truth.
+
+Fading first is what made the badge reliable: `fade.foreground_depth()` takes the fifth percentile
+of valid depth with a 0.28 m floor (anything nearer is the robot's own arm, and during a reach the
+percentile would otherwise follow the hand), and everything past **1.06-1.45x** that seed is faded.
+The band is tight on purpose - the 1.8-3.5x default kept the console signage the model was
+actually pointing at. On the badge: 235 px to 35 px.
+
+Measured on a live frame with the fade: **card 21.0 px** (21 mm at 0.332 m), **lever 5.9 px**
+(6 mm), and **32.3 px** on a 1705x961 still the pipeline was never tuned on. The honest bar is the
+37 mm reach residual and the 90 mm grab radius, not an arbitrary 20 px.
+
+## Latency, measured 2026-11-09
+
+Wall clock from `locate()` against the live server, on the 960x540 live frame with the fade, two
+runs. `timings` is now part of the result, so this is reproducible with `--jsonl` instead of a
+bespoke script.
+
+| step | ms |
+| --- | --- |
+| fade (read still, numpy, encode) | 60-141 |
+| stage 1, quadrant | 182-265 |
+| stage 2, five box reads | 2000-2462 (398-522 each) |
+| stage 3, verify | 184-214 |
+| **total, five reads + verify** | **2.32-2.94 s** |
+| three reads + verify | 1.51 s |
+| five reads, no verify | 2.16 s |
+| first call after idle (cold) | 0.30 s |
+
+**A crop call is 0.40-0.52 s, not the 0.72 s this file used to imply.** That figure was carried
+from the earlier grounding measurements and is wrong for this server and these crops; the code now
+reports its own clock so the number cannot silently rot again.
+
+Stage 2 is **86% of the cost**, and it is the part that buys the accuracy on bimodal replies.
+Three reads cost 1.51 s and landed 20.1 px on the measured frame against 22.4 px for five - inside
+the reach residual either way - but the lever is why five exists: two of its five reads were wild,
+and with three reads two wild ones would be the majority. Depth already replaces some of what
+stage 1 does for free; using it to cut stage 1 outright is the next honest saving, worth 0.2 s and
+a tighter crop.
 
 ## Results
 
