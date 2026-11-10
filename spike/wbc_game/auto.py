@@ -305,7 +305,16 @@ def one_turn(say: str = "", pattern: str = ears.DEFAULT_PATTERN,
                 look(0.0, side)
             jpeg, size, png, depth_frame, camera = frame_and_jpeg()
             found = locate.locate(BrainConfig(), Frame(0, 0.0, jpeg, "live"), target, size)
-            pixel = found.get("pixel_px")
+            if found.get("present") is False:
+                # A refusal is a refusal. Stage 3 asks what is in the box it found and judges
+                # the answer here, so `present: False` means the box was described as
+                # something else - measured 2026-11-09, "job cartridge" pointed at JobBot's
+                # ID badge and the description said "card". Reaching at that box is the
+                # confident error the old verifier could not catch, so the sweep looks again
+                # rather than using the pixel.
+                pixel = None
+            else:
+                pixel = found.get("pixel_px")
             metres = 0.0
             point = None
             if pixel:

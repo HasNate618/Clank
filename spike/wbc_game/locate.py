@@ -57,8 +57,49 @@ BOX_READS = ((640, 0.0), (720, 0.03), (800, 0.0), (880, 0.04), (960, 0.02))
 BOX_PROMPT = (
     "This image is a crop of the game view. Give the bounding box of the {noun} in this "
     'image, as JSON only: {{"x0": <int>, "y0": <int>, "x1": <int>, "y1": <int>}}. '
-    "Coordinates are a 0 to 1000 grid: 0 is the left/top edge, 1000 the right/bottom edge."
+    "Coordinates are a 0 to 1000 grid: 0 is the left/top edge, 1000 the right/bottom edge. "
+    "Do not answer with a different object. If the {noun} is not in this image, reply "
+    'exactly {{"none": true}}.'
 )
+
+#: Stage 3, as a description rather than a question about the model's own answer.
+#: Measured 2026-11-09: shown a crop of JobBot's ID badge the model describes it as "Job Bot
+#: card" or "Job Bot Museum Curator card", and the lever knob as "Blue mushroom" - accurate
+#: and specific, on two different frames. Asked instead "is there a job cartridge here?"
+#: about that same badge crop it answered YES, and asked to choose between the badge and a
+#: cartridge it answered "A" for a lever. The model can *say* what it sees and cannot *judge*
+#: whether that is what was asked for, so the judgement comes back into code.
+DESCRIBE_PROMPT = (
+    "What object is in the middle of this image? Name it in at most six words. "
+    "No punctuation, no JSON, just the name."
+)
+
+#: Words that say nothing about identity: the summoner's own name, and filler.
+_MATCH_STOP = frozenset({
+    "job", "bot", "jobbot", "simulator", "museum", "the", "a", "an", "of", "in",
+    "on", "it", "this", "image", "middle", "object", "thing",
+})
+
+#: Colour and light say nothing about identity. They are excluded from the words a match
+#: may rest on, because measured 2026-11-09 on a second frame: a box described as "green
+#: robot computer" shared its colour with nothing in "job cartridge" and was accepted as a
+#: weak match, which is exactly the false accept this check exists to stop. A colour may
+#: appear in a description; it may not carry a verdict.
+_MATCH_WEAK = frozenset({
+    "blue", "green", "red", "white", "black", "yellow", "cyan", "orange", "grey",
+    "gray", "pink", "purple", "brown", "light", "dark",
+})
+
+#: This job's vocabulary, not a general ontology: what callers ask for, and what the model
+#: has actually called those things. "mushroom" is in the lever set because that is the
+#: measured description of the blue knob on the stick.
+_MATCH_SYNONYMS = {
+    "card": frozenset({"card", "badge", "id", "curator", "barcode"}),
+    "badge": frozenset({"card", "badge", "id", "curator", "barcode"}),
+    "cartridge": frozenset({"cartridge", "cart", "case", "cassette"}),
+    "lever": frozenset({"lever", "knob", "handle", "ball", "sphere", "stick", "mushroom"}),
+    "knob": frozenset({"lever", "knob", "handle", "ball", "sphere", "stick", "mushroom"}),
+}
 
 #: How tightly stage 3 looks around stage 2's answer, as a fraction of the frame.
 #: The absence measurement is the reason this exists: one call about a *tight*
@@ -95,6 +136,54 @@ def parse_box(text: str) -> tuple[float, float, float, float] | None:
     if len(numbers) >= 4:
         return numbers[0], numbers[1], numbers[2], numbers[3]
     return None
+
+
+def _norm_word(word: str) -> str:
+    """Singularise just enough for "cards" and "cartridges"."""
+    return word[:-1] if len(word) > 3 and word.endswith("s") else word
+
+
+def describe_matches(noun: str, description: str) -> tuple[bool, str]:
+    """Does `description` name the object `noun` asked for? Returns (matched, why).
+
+    The point of this function is that it lives in code. The model was measured to describe
+    a crop correctly and to answer YES to "is there a job cartridge here?" about a badge, so
+    the judgement cannot stay on the other side of the call.
+    """
+
+    def words(text: str) -> list[str]:
+        return re.findall(r"[a-z][a-z'\-]*", text.lower())
+
+    described = [_norm_word(w) for w in words(description) if w not in _MATCH_STOP]
+    if not described:
+        return False, "nothing described"
+    asked = [w for w in words(noun) if w not in _MATCH_STOP and w not in _MATCH_WEAK]
+    synonyms: set[str] = set()
+    for word in words(noun):
+        synonyms.update(_norm_word(s) for s in _MATCH_SYNONYMS.get(word, ()))
+    described_set = set(described)
+    for word in asked:
+        stem = _norm_word(word)
+        if stem in described_set:
+            return True, f"described as {stem!r}"
+    shared = sorted(synonyms & described_set)
+    if shared:
+        return True, f"described as {shared[0]!r}, a synonym of the {noun}"
+    # No weak tier: a shared colour is not evidence, and accepting one turned a box
+    # described as "green robot computer" into a job cartridge.
+    return False, f"described as {described[0]!r}, which is not the {noun}"
+
+
+def describe_crop(
+    config: BrainConfig, frame: Frame, box: tuple[float, float, float, float]
+) -> str:
+    """Stage 3: what is actually in `box`? One call, no judgement asked of the model."""
+    jpeg = frames.crop_jpeg(frame.jpeg, box, width=CROP_WIDTH)
+    cropped = Frame(index=frame.index, t_s=frame.t_s, jpeg=jpeg, source=f"describe:{box}")
+    reply = brain._chat(config, [{"role": "user", "content": [
+        brain._image_part(cropped), {"type": "text", "text": DESCRIBE_PROMPT},
+    ]}], max_tokens=24)
+    return reply.text.strip()
 
 
 def _grow(box: tuple[float, float, float, float], pad: float) -> tuple[float, float, float, float]:
@@ -221,13 +310,24 @@ def read_box(
     box: tuple[float, float, float, float],
     reads: tuple[tuple[int, float], ...] = BOX_READS,
     times: list[float] | None = None,
-) -> tuple[tuple[float, float, float, float] | None, list[tuple[float, float, float, float]], list[str]]:
+) -> tuple[
+    tuple[float, float, float, float] | None,
+    list[tuple[float, float, float, float]],
+    list[str],
+    bool,
+]:
     """Stage 2: the box, read several times at different framings.
 
-    Returns the median-edge box, every individual box, and every raw reply. The median is
-    computed **per edge**, not per centre, so one wild read cannot drag the answer the way
-    it drags a mean: on the measured frame four reads bracketed the badge and the fifth
-    bracketed the console behind it.
+    Returns the median-edge box, every individual box, every raw reply, and whether the
+    model refused. The median is computed **per edge**, not per centre, so one wild read
+    cannot drag the answer the way it drags a mean: on the measured frame four reads
+    bracketed the badge and the fifth bracketed the console behind it.
+
+    Refusal is a majority of reads replying `{"none": true}`, which `BOX_PROMPT` now asks
+    for. Measured 2026-11-09: without that clause the model never refused a box - asked for
+    a banana it returned the brightest object in the frame - and with it, 5 of 5 reads
+    refused. A refusal is worth more than a box here, because a box it cannot have is
+    exactly what the old pipeline invented.
 
     Per-read durations are appended to `times` when given. They are needed because a slow
     read is one the server queued or the network retried, and a caller deciding whether it
@@ -235,18 +335,23 @@ def read_box(
     """
     boxes: list[tuple[float, float, float, float]] = []
     raws: list[str] = []
+    refusals = 0
     for width, pad in reads:
         started = time.perf_counter()
         one, raw = ask_box(config, frame, noun, box, width, pad)
         if times is not None:
             times.append(time.perf_counter() - started)
         raws.append(raw.strip())
+        if '"none"' in raw.lower():
+            refusals += 1
+            continue
         if one is not None:
             boxes.append(one)
+    refused = refusals * 2 > len(reads)
     if not boxes:
-        return None, [], raws
+        return None, [], raws, refused
     median = tuple(statistics.median(edge) for edge in zip(*boxes, strict=True))
-    return median, boxes, raws
+    return median, boxes, raws, refused
 
 
 def verify_present(
@@ -295,6 +400,7 @@ def locate(
     size: tuple[int, int],
     verify: bool = True,
     reads: int = 5,
+    verify_mode: str = "describe",
 ) -> dict:
     """Quadrant, then box reads. Returns a dict with a full-frame pixel in px.
 
@@ -367,14 +473,19 @@ def locate(
     plan = tuple(BOX_READS[i % len(BOX_READS)] for i in range(reads))
     per_read: list[float] = []
     reads_started = time.perf_counter()
-    median, boxes, raws = read_box(config, frame, noun, box, plan, times=per_read)
+    median, boxes, raws, refused = read_box(config, frame, noun, box, plan, times=per_read)
     timings["reads_ms"] = round((time.perf_counter() - reads_started) * 1000, 1)
     timings["read_ms"] = [round(t * 1000, 1) for t in per_read]
     calls["n"] += len(raws)
     out["stage2_raw"] = raws
     out["stage2_reads"] = len(raws)
-    if median is None:
-        out["error"] = "stage 2 did not name a box"
+    refusals = sum(1 for raw in raws if '"none"' in raw.lower())
+    out["none_votes"] = refusals
+    if median is None or refused:
+        # A majority refusing is the answer, not a failure to get one: the noun is not in
+        # this frame, which is something the pipeline could not previously be told.
+        out["error"] = "not visible" if refused else "stage 2 did not name a box"
+        out["present"] = False if refused else None
         return done()
     out["found_box"] = [round(v, 4) for v in median]
     out["stage2_boxes"] = [[round(v, 4) for v in b] for b in boxes]
@@ -413,12 +524,20 @@ def locate(
         min(1.0, centre[1] + half_h),
     )
     verify_started = time.perf_counter()
-    present, raw3 = verify_present(
-        config, frame, noun, (centre[0] * width, centre[1] * height), size, box=verify_box
-    )
+    if verify_mode == "describe":
+        # Ask what is *in* the box and decide here. The model describes accurately and
+        # judges its own answer badly - see `DESCRIBE_PROMPT` - so the comparison is code.
+        description = describe_crop(config, frame, verify_box)
+        present, why = describe_matches(noun, description)
+        out["match"] = why
+        out["verify_raw"] = description
+    else:
+        present, raw3 = verify_present(
+            config, frame, noun, (centre[0] * width, centre[1] * height), size, box=verify_box
+        )
+        out["verify_raw"] = raw3.strip()
     calls["n"] += 1
     timings["verify_ms"] = round((time.perf_counter() - verify_started) * 1000, 1)
-    out["verify_raw"] = raw3.strip()
     out["present"] = present
     if present is False:
         out["error"] = "not visible"
@@ -518,6 +637,15 @@ def main(argv: list[str] | None = None) -> int:
         "of a label reads as a fragment rather than as a cartridge. For a grab the grasp "
         "itself is the stronger post-condition.",
     )
+    ap.add_argument(
+        "--verify-mode",
+        choices=("describe", "yesno"),
+        default="describe",
+        help="how stage 3 decides: 'describe' asks what is in the box and compares the "
+        "answer here, 'yesno' asks the model whether the noun is there. Measured "
+        "2026-11-09: yes/no answered YES for a job cartridge about a crop of JobBot's ID "
+        "badge, and the description of that same crop was 'Job Bot card'.",
+    )
     ap.add_argument("--jsonl", type=pathlib.Path)
     ap.add_argument(
         "--post",
@@ -550,7 +678,10 @@ def main(argv: list[str] | None = None) -> int:
             size = img.size
         frame = Frame(index=0, t_s=0.0, jpeg=args.image.read_bytes(), source=str(args.image))
 
-    out = locate(config, frame, args.noun, size, verify=not args.no_verify, reads=args.reads)
+    out = locate(
+        config, frame, args.noun, size, verify=not args.no_verify, reads=args.reads,
+        verify_mode=args.verify_mode,
+    )
     if faded:
         out["fade"] = faded
     if fade_ms:

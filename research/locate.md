@@ -51,6 +51,63 @@ Measured on a live frame with the fade: **card 21.0 px** (21 mm at 0.332 m), **l
 (6 mm), and **32.3 px** on a 1705x961 still the pipeline was never tuned on. The honest bar is the
 37 mm reach residual and the 90 mm grab radius, not an arbitrary 20 px.
 
+### Stage 3 since 2026-11-09: ask what is in the box, then judge in code
+
+The old stage 3 asked "is there a {noun} in this image?" and the file already recorded what
+that costs: the answer is yes to *a* thing, not *the* thing. Asked with the robot brain's own
+words, taken from JobBot's .srt lines, it was worse than that table suggests:
+
+| JobBot said | brain named | old stage 3 | what was actually in the box |
+| --- | --- | --- | --- |
+| "take my card" | `card` | YES, 22.5 px | JobBot's ID badge - **right** |
+| "grab one of the job cartridges" | `job cartridge` | **YES**, 22.2 px | JobBot's ID badge - **wrong, confirmed** |
+| "grab one of the job cartridges" | `JobBot cartridge` | YES | ID badge - wrong, confirmed |
+| (absent) | `banana` | **YES** | the brightest thing in frame |
+
+Every one of those is within 2 px of every other, because the faded frame holds one near
+object and the model answers whichever question it is asked about it. The spread did not move
+either: 39.9 px for the right noun, 39.7 px for the wrong one. **The pipeline's own confidence
+signals could not tell success from the confident-error class.**
+
+Three prompt shapes were measured against that, on the same frame and two crops:
+
+| change | measured effect |
+| --- | --- |
+| offer a refusal: `{"none": true}` when absent | **works**: banana 5/5 reads refuse. Without it the model never refused once |
+| add a negative ("the white barcode badge is NOT a {noun}") | does not move badge/cartridge: 1/5 refusals |
+| add the object's appearance ("a small plastic cartridge case with a printed label") | does not move it either |
+| ask a forced choice, "(A) badge or (B) cartridge?" | useless: answered "A" for a lever |
+| **ask what is in the crop, and judge the answer in code** | **works**: "Job Bot card", "JobBot Museum Curator card", "Blue mushroom" for the lever knob, on two frames |
+
+The model can *say* what it sees and cannot *judge* whether that is what was asked for. So
+stage 3 now asks `DESCRIBE_PROMPT` (six words, no JSON) and `describe_matches()` compares the
+answer to the noun in this file: a stoplist for the summoner's own name, a job vocabulary of
+synonyms (`card`/`badge`/`id`, `cartridge`/`cart`/`case`, `lever`/`knob`/`sphere`/`mushroom`),
+and **no colour-only match**. That last rule came from the generalisation frame: a box
+described as "green robot computer" was accepted as a weak match for `job cartridge` because
+it shared a colour word, and pointed the robot at a green monitor. A colour may appear in a
+description; it may not carry a verdict.
+
+Results with the brain's real nouns, live 960x540 frame with the fade, `describe` mode:
+
+| case | verdict | pixel error |
+| --- | --- | --- |
+| `card`, faded | accept | 22.5 px |
+| `card`, unfaded | accept | 17.2 px |
+| `job cartridge` | **refuse** | (box was the badge; described as a card) |
+| `blue lever knob` | accept | 5.8 px |
+| `banana` | **refuse** at stage 2, 5/5 | - |
+| 1705x961 frame: `card` | accept | 23.5-33.1 px |
+| 1705x961 frame: `job cartridge` | **refuse** | - |
+| 1705x961 frame: `red fire extinguisher` | **refuse** at stage 1 | - |
+
+**The conjunction now refuses instead of confidently pointing at the wrong object**, for the
+cost of no extra calls: the describe replaces the yes/no, so a locate is still seven calls and
+2.3-3.4 s. What it cannot do is find an object the model does not see: on this frame the job
+cartridges on the desk are outside the fade band, so "not visible" is the correct answer and
+is now the answer given. Whether the band should follow the target's depth rather than the
+frame's nearest surface is the next question, not a solved one.
+
 ## Latency, measured 2026-11-09
 
 Wall clock from `locate()` against the live server, on the 960x540 live frame with the fade, two
