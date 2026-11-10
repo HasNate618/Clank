@@ -108,6 +108,28 @@ cartridges on the desk are outside the fade band, so "not visible" is the correc
 is now the answer given. Whether the band should follow the target's depth rather than the
 frame's nearest surface is the next question, not a solved one.
 
+### Two optimisations that were measured and rejected, 2026-11-09
+
+**Clustering the reads instead of taking a per-edge median.** The reads are bimodal, so the
+obvious improvement is to take the densest group of them. Measured on four cases (lever and card,
+both frames, tolerance 6% of the frame): the cluster held 3/5 reads for the lever and 5/5 for the
+card, and its centre was within 1-4 px of the median's in every case, winning two and losing two.
+Not worth the extra code or the extra concept.
+
+**Gating on `read_spread_px`.** The temptation is a threshold, since the wrong answers are
+unstable. Measured: a spread of **198 px** was a *correct* lever answer (5.8 px from truth) and a
+spread of **455 px** was an 85 px error. The two do not separate, so the spread stays a
+diagnostic number for the log and the dashboard, and identity is decided by the description match.
+The live loop still acts on the first acceptable pixel; that is a real weakness, and a threshold
+would not have fixed it.
+
+**A false refusal, for the same reason the false accepts happened.** The synonym table is this
+job's vocabulary. JobBot's green head, asked for as `green robot head`, was found at 42.8 px -
+correctly - and then refused, because the model described it as "A computer monitor with a green
+face" and `head` is not in the table. Accepting "monitor" to catch that would also accept the
+signage the model over-selects, so the table stays small and the refusal stays. Unknown nouns
+refuse; that is the safe direction and it is a cost, not a design feature.
+
 ## Latency, measured 2026-11-09
 
 Wall clock from `locate()` against the live server, on the 960x540 live frame with the fade, two

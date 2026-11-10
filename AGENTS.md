@@ -265,7 +265,24 @@ python3 -m clank.brainlog --tail 20
 ## Locating without a human, 2026-11-04
 
 `spike/wbc_game/locate.py` - quadrant, then one pixel call on that crop, then a YES/NO on a tight
-crop. Measured in `research/locate.md`.
+crop. Measured in `research/locate.md`. **Since 2026-11-09 stage 2 is a five-read box ensemble and
+stage 3 is a description match; the three bullets below are the 2026-11-04 measurements.**
+
+- **Stage 3 does not ask the model to judge its own answer any more.** It asks what object is in the
+  box in six words and `describe_matches()` decides in code. Fed the brain's own nouns from JobBot's
+  .srt - "card", "job cartridge" - the old YES/NO returned JobBot's ID badge for both, 2 px apart,
+  with `present: true` and the same spread (39.9 vs 39.7 px). Now "card" accepts at 22.5 px and
+  "job cartridge" **refuses**, on the untuned 1705x961 frame too.
+- **Refusal is offered, not hoped for.** `{"none": true}` in the box prompt makes the model refuse
+  5/5 reads for an absent noun; without that clause it never refused once.
+- **Colour is not identity.** A box described as "green robot computer" matched "job cartridge" on the
+  shared colour word and pointed at a monitor. No colour-only matches. Synonyms are this job's
+  vocabulary (card/cartridge/lever), so an unknown noun refuses even when the box was right -
+  JobBot's head was found to 42.8 px and refused because the model called it a "computer monitor".
+- **`auto.py` gates on `present: False` now.** It used to log the field and reach at the pixel anyway.
+- **Two optimisations measured and rejected**: the spread does not separate right from wrong (198 px
+  was a correct answer, 455 px was 85 px off), and clustering the reads beats the per-edge median on
+  nothing (1-4 px, winning two cases and losing two).
 
 - **Card: 3.0 px and 17.4 px**, nothing hand-marked. Refuses when the card is genuinely absent.
 - **Cartridge rack defeats it** (66 px, then 369 px), and on a live frame with the card fallen out
