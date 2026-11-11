@@ -161,6 +161,62 @@ class Status(Mailbox):
         self.assertIsNone(mb_mailbox.read_status(self.dir))
 
 
+class ClearStale(Mailbox):
+    """A new body process starts from an empty mailbox, whatever the last run left.
+
+    `--out` is `session_root/body`: persistent, not one of the per-session directories, so
+    a finished run's files are still there at the next start. A leftover `mb_play.json` is
+    indistinguishable from a fresh deposit - nothing has loaded a seq yet - and used to
+    play the previous session's clip on the first tick with no adapter running.
+    """
+
+    def _write_a_finished_runs_mailbox(self) -> None:
+        mb_mailbox.write_pose36(self.dir, pose(0.5), seq=99, t_mono_ns=10, prev=None)
+        mb_mailbox.write_play(self.dir, seq=99)
+        (self.dir / mb_mailbox.CLIP_NAME).write_bytes(b"not really a zip")
+        mb_mailbox.write_status(self.dir, seq_ack=99, status="done", frame=4, n=5)
+
+    def test_a_finished_runs_files_are_all_removed(self) -> None:
+        self._write_a_finished_runs_mailbox()
+        self.assertEqual(mb_mailbox.clear_stale(self.dir), [])
+        self.assertIsNone(mb_mailbox.read_play(self.dir))
+        self.assertIsNone(mb_mailbox.read_pose36(self.dir))
+        self.assertIsNone(mb_mailbox.read_status(self.dir))
+        self.assertFalse((self.dir / mb_mailbox.CLIP_NAME).exists())
+
+    def test_the_status_file_goes_too(self) -> None:
+        # A stale `done`/`seq_ack` is the other half of the trap: it reads as this
+        # process's own first acknowledgement of a request it never received.
+        mb_mailbox.write_status(self.dir, seq_ack=4, status="done", frame=9, n=10)
+        mb_mailbox.clear_stale(self.dir)
+        self.assertFalse((self.dir / mb_mailbox.STATUS_NAME).exists())
+
+    def test_missing_files_are_not_a_failure(self) -> None:
+        self.assertEqual(mb_mailbox.clear_stale(self.dir), [])
+
+    def test_a_missing_directory_is_not_a_failure(self) -> None:
+        # The body is started before the session directory is guaranteed to exist.
+        self.assertEqual(mb_mailbox.clear_stale(self.dir / "absent"), [])
+
+    def test_a_file_that_cannot_be_removed_is_reported_not_raised(self) -> None:
+        # The body has to start either way; a directory in place of the clip is the
+        # shortest stand-in for an unlink that fails.
+        (self.dir / mb_mailbox.CLIP_NAME).mkdir()
+        mb_mailbox.write_play(self.dir, seq=1)
+        self.assertEqual(mb_mailbox.clear_stale(self.dir), [mb_mailbox.CLIP_NAME])
+        self.assertFalse((self.dir / mb_mailbox.PLAY_NAME).exists(), "the rest still go")
+
+    def test_files_that_are_not_the_mailbox_are_left_alone(self) -> None:
+        # `--out` is also where the rendered frame, the state file, the log and the
+        # command socket live: this clears four names, not the directory.
+        keep = ("body_state.json", "body_latest.jpg", "body_view.log", "control.sock")
+        for name in keep:
+            (self.dir / name).write_bytes(b"keep me")
+        mb_mailbox.clear_stale(self.dir)
+        for name in keep:
+            self.assertTrue((self.dir / name).exists(), name)
+
+
 class Atomic(Mailbox):
     def test_write_leaves_no_temp_file_behind(self) -> None:
         mb_mailbox.write_pose36(self.dir, pose(1.0), seq=1, t_mono_ns=10, prev=None)

@@ -35,6 +35,11 @@ CLIP_NAME = "mb_clip.npz"
 PLAY_NAME = "mb_play.json"
 STATUS_NAME = "mb_status.json"
 
+#: Everything one body process leaves behind for the next one. The directory is not
+#: per-session - `clank/dashboard.py` passes `session_root/body`, which is persistent and
+#: never removed - so a finished run's files are still there when the next body starts.
+STALE_NAMES = (PLAY_NAME, CLIP_NAME, STATUS_NAME, POSE36_NAME)
+
 #: Poses of context handed to the generator: 32 ticks, 0.64 s at BODY_HZ.
 RING = 32
 #: Floats per pose: root xyz + root quat xyzw + 29 hinge angles (`g1_pack.pose36_from_qpos`).
@@ -70,6 +75,28 @@ def _is_pose_row(row: object) -> bool:
     if not isinstance(row, list) or len(row) != POSE_LEN:
         return False
     return all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in row)
+
+
+def clear_stale(session_dir: Path) -> list[str]:
+    """Remove the mailbox files a previous run left in `session_dir`; return any that stay.
+
+    The body process owns the mailbox for as long as it runs, so at construction every file
+    in it belongs to someone else. A leftover `mb_play.json` is the dangerous one: a new
+    process has loaded no seq yet, so the request looks fresh and its clip plays on the
+    first tick with no adapter running. `mb_status.json` goes for the same reason - a stale
+    `done`/`seq_ack` reads as this process's own first acknowledgement.
+
+    A missing file, or a missing directory, is the normal state and stays silent. A file
+    that cannot be removed is returned instead of raised: the body has to start either way,
+    and a caller can only log it.
+    """
+    left = []
+    for name in STALE_NAMES:
+        try:
+            (session_dir / name).unlink(missing_ok=True)
+        except OSError:
+            left.append(name)
+    return left
 
 
 def write_pose36(

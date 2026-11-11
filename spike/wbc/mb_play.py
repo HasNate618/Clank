@@ -111,7 +111,9 @@ class Playback:
         return status
 
 
-def write_progress(session_dir: Path, seq: int, status: str, frame: int, n: int) -> str | None:
+def write_progress(
+    session_dir: Path, seq: int, status: str, frame: int, n: int
+) -> str | None:
     """Report progress for `seq`; return why it failed, or `None` when it landed.
 
     This runs inside the 50 Hz body tick, which owns the physics: a mailbox is never worth
@@ -126,6 +128,28 @@ def write_progress(session_dir: Path, seq: int, status: str, frame: int, n: int)
     except (OSError, ValueError) as exc:
         return str(exc) or type(exc).__name__
     return None
+
+
+class WarnLatch:
+    """The log-once decision for a mailbox write that has stopped working.
+
+    Both mailbox writes run every 20 ms and both go to the same directory, so a removed or
+    rotated directory fails both fifty times a second. One latch per write, never one for
+    both: the pose publish runs first in every tick and shared a latch with the status
+    write, which made the status failure unreachable - and the status stream stopping is
+    the thing an operator needs to hear about. Nothing unlatches a failure: a directory that
+    has gone away does not come back.
+    """
+
+    def __init__(self) -> None:
+        self.fired = False
+
+    def warn(self, why: str | None) -> str | None:
+        """The message to log for failure `why`, or `None` when there is nothing to say."""
+        if why is None or self.fired:
+            return None
+        self.fired = True
+        return why
 
 
 def lookahead_rows(frame: int, n: int) -> tuple[int, ...]:

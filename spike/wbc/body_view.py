@@ -608,6 +608,8 @@ def main(argv: list[str] | None = None) -> int:
     # `--out` is the session's body directory, which is also the mailbox: the adapter
     # (`spike/wbc/reach_ardy.py`) deposits `mb_play.json` here and reads `pose36.json`
     # back, so without it the executor is a plain hold and the mailbox has no reader.
+    # The directory is persistent, so the executor clears it at construction: a deposit
+    # left by the previous run would play on the first tick otherwise.
     if args.clip:
         executor = SonicExecutor(clip=args.clip, session_dir=out)
     else:

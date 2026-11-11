@@ -184,6 +184,38 @@ class ProgressWrite(unittest.TestCase):
         self.assertEqual((play.clip_seq, play.frame, play.n), (1, 2, 3))
 
 
+class WarnLatchOnce(unittest.TestCase):
+    """One failed mailbox write is worth one line, and each write needs its own latch."""
+
+    def test_a_failure_warns_once(self) -> None:
+        latch = mb_play.WarnLatch()
+        self.assertEqual(latch.warn("directory gone"), "directory gone")
+        self.assertIsNone(latch.warn("directory gone"))
+
+    def test_a_success_says_nothing(self) -> None:
+        latch = mb_play.WarnLatch()
+        self.assertIsNone(latch.warn(None))
+        self.assertFalse(latch.fired)
+        self.assertEqual(latch.warn("directory gone"), "directory gone")
+
+    def test_a_success_after_a_failure_does_not_reopen_the_latch(self) -> None:
+        # A directory that has gone away does not come back, so nothing unlatches: two
+        # consecutive failures each still produce exactly one message.
+        latch = mb_play.WarnLatch()
+        latch.warn("disk full")
+        self.assertIsNone(latch.warn(None))
+        self.assertIsNone(latch.warn("disk full"))
+
+    def test_the_pose_and_status_latches_are_independent(self) -> None:
+        # Both writes share the directory and both fail on the same tick, with the pose
+        # publish first. One shared latch swallowed the status message entirely, and the
+        # log then said nothing about the status stream having stopped.
+        pose, status = mb_play.WarnLatch(), mb_play.WarnLatch()
+        self.assertIsNotNone(pose.warn("directory gone"))
+        self.assertIsNotNone(status.warn("directory gone"))
+        self.assertEqual((pose.fired, status.fired), (True, True))
+
+
 class LookaheadRows(unittest.TestCase):
     def test_while_the_clip_lasts_no_row_is_clamped(self) -> None:
         # 60 rows, window 0..45: the whole 0.9 s is still inside the clip.
@@ -235,6 +267,27 @@ class ExecutorSource(unittest.TestCase):
         # away mid-session, so every site goes through the one writer that swallows it.
         self.assertNotIn("mb_mailbox.write_status(", self.text)
         self.assertEqual(self.text.count("self._write_status("), 3)
+
+    def test_the_two_mailbox_writes_have_their_own_warn_latch(self) -> None:
+        # The pose publish runs before the status write every tick and both write into the
+        # same directory, so one latch made the status message unreachable.
+        self.assertNotIn("_mailbox_warned", self.text)
+        self.assertEqual(self.text.count("mb_play.WarnLatch()"), 2)
+
+    def test_the_mailbox_is_cleared_at_construction_before_any_read(self) -> None:
+        # A deposit left in the persistent `--out` directory by the previous run played its
+        # clip on the first tick of a new body, with no adapter running. Construction is
+        # the only clearing site and it reads nothing, so nothing can be taken first.
+        init = self.text.split("def __init__(", 1)[1].split("\n    def ", 1)[0]
+        self.assertIn("mb_mailbox.clear_stale(", init)
+        self.assertNotIn("read_play", init)
+        self.assertNotIn("read_pose36", init)
+
+    def test_advancing_the_clip_does_not_unwind_the_tick(self) -> None:
+        # `_advance_clip` is reached from inside the 50 Hz tick, which owns the physics:
+        # no path out of it may throw, including the documented-unreachable one.
+        advance = self.text.split("def _advance_clip(", 1)[1].split("\n    def ", 1)[0]
+        self.assertNotIn("raise", advance)
 
     def test_executor_resets_only_at_construction(self) -> None:
         # One reset, in `__init__`, puts the body on the standing clip at startup. A second

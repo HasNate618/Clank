@@ -180,14 +180,32 @@ class SonicExecutor:
         #: out, deposited clips play, progress is reported. `None` keeps this a plain
         #: hold executor, down to the observation built each tick.
         self.session_dir = Path(session_dir) if session_dir is not None else None
+        #: The mailbox is this process's from here on. `--out` is `session_root/body`, a
+        #: persistent directory that `clank/` never clears, so the previous run's files are
+        #: still sitting in it - and a leftover `mb_play.json` looks exactly like a fresh
+        #: deposit to a process that has loaded no seq yet. Left alone it played the last
+        #: session's clip on the first tick, in mode 0, with no adapter running.
+        #: Nothing legitimate is lost: the adapter generates from `pose36.json`, which no
+        #: body has written yet, so it cannot have deposited a playable clip before this
+        #: point. Clearing `mb_status.json` matters too - a stale `done` would read as this
+        #: process's own first acknowledgement.
+        if self.session_dir is not None:
+            left = mb_mailbox.clear_stale(self.session_dir)
+            if left:
+                print(
+                    f"sonic_executor: stale mailbox files could not be removed: {left}",
+                    file=sys.stderr,
+                )
         #: Which deposit is being played and on which row, plus the seq of the request
         #: already answered. `mb_play.Playback` owns the tick ordering that keeps the last
         #: row played and progress reported against the clip that ran, not against a
         #: request that was rejected.
         self._playback = mb_play.Playback()
-        #: Set once when any mailbox write fails, so a removed session directory logs once
-        #: rather than fifty times a second for the rest of the session.
-        self._mailbox_warned = False
+        #: One log-once latch per mailbox write. A removed session directory fails both, and
+        #: the pose publish runs first every tick, so a shared latch would swallow the
+        #: status message and the log would never say the status stream had stopped.
+        self._pose36_warned = mb_play.WarnLatch()
+        self._status_warned = mb_play.WarnLatch()
         #: The pose36 ring, held in memory so the 50 Hz publish does not read back the
         #: file it wrote one tick ago.
         self._ring: list | None = None
@@ -375,7 +393,7 @@ class SonicExecutor:
             # anyway. The frame is the first row of the clamped look-ahead window, i.e.
             # the row being played and never past the clip's end.
             vr_pos, vr_orn = None, None
-            frame = mb_play.lookahead_rows(
+            frame = mb_play.lookahead_rows(  # pyright: ignore[reportIndexIssue]
                 self._playback.frame, self._playback.n
             )[0]
         else:
@@ -504,10 +522,10 @@ class SonicExecutor:
                 prev=self._ring,
             )
         except (OSError, ValueError) as exc:
-            if not self._mailbox_warned:
-                self._mailbox_warned = True
+            why = self._pose36_warned.warn(str(exc) or type(exc).__name__)
+            if why is not None:
                 print(
-                    f"sonic_executor: pose36 publish failed, carrying on: {exc}",
+                    f"sonic_executor: pose36 publish failed, carrying on: {why}",
                     file=sys.stderr,
                 )
 
@@ -517,16 +535,17 @@ class SonicExecutor:
         The same rule as `_publish_pose`, and the same trigger: a session directory that
         is rotated or removed under a running body makes the mailbox's atomic replace
         raise `OSError`. Here that would take the 50 Hz loop down from the middle of a
-        clip. Warned once, because a directory that has gone away does not come back -
-        which means status stops being observable at all. That converts a crash into
-        silence, so the adapter is expected to notice through the age of its clip rather
-        than through a `failed` status it will never receive.
+        clip. Warned once - on its own latch, not the pose publish's - because a directory
+        that has gone away does not come back, which means status stops being observable at
+        all. That converts a crash into silence, so the adapter is expected to notice
+        through the age of its clip rather than through a `failed` status it will never
+        receive.
         """
-        why = mb_play.write_progress(self._mailbox_dir(), seq, status, frame, n)
-        if why is None or self._mailbox_warned:
-            return
-        self._mailbox_warned = True
-        print(f"sonic_executor: status write failed, carrying on: {why}", file=sys.stderr)
+        why = self._status_warned.warn(
+            mb_play.write_progress(self._mailbox_dir(), seq, status, frame, n)
+        )
+        if why is not None:
+            print(f"sonic_executor: status write failed, carrying on: {why}", file=sys.stderr)
 
     def _accept_play(self) -> None:
         """Load a clip the adapter deposited and start playing it, without resetting.
@@ -603,8 +622,16 @@ class SonicExecutor:
         """
         status = self._playback.advance()
         seq = self._playback.clip_seq
-        if seq is None:  # unreachable: `advance()` is only called with a clip playing
-            raise RuntimeError("progress reported with no clip playing")
+        if seq is None:
+            # Documented unreachable: `advance()` is only reached from a mode-0 tick, and
+            # only a deposited clip sets mode 0 and fills `clip_seq`. Dropped rather than
+            # thrown anyway - this runs inside the 50 Hz tick, which owns the physics, and
+            # nothing here is worth unwinding that loop over.
+            print(
+                "sonic_executor: clip progress with no clip playing, skipped",
+                file=sys.stderr,
+            )
+            return
         self._write_status(seq, status, self._playback.frame, self._playback.n)
         if status == mb_play.DONE:
             self._finish_clip()
