@@ -1,4 +1,4 @@
-# MotionBricks Reach Implementation Plan
+# ARDY Reach Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
@@ -19,9 +19,9 @@
 | 6 (was: MotionBricks generate) | **replaced** by constraint authoring plus the reachability escalation |
 | 8 adapter | same loop minus the step chain |
 
-MotionBricks appears only as the documented fallback (spec amendment, plan §"Fallback"), and no task should now build it without a new decision.
+The spec itself was rewritten the same day: it now argues ARDY and carries no superseded sections. MotionBricks appears only as the documented fallback (spec §14, plan §"Fallback"), and no task should build it without a new decision.
 
-**Spec:** `docs/superpowers/specs/2026-11-11-motionbricks-reach-design.md`.
+**Spec:** `docs/superpowers/specs/2026-11-11-ardy-reach-design.md`.
 
 ## Global Constraints
 

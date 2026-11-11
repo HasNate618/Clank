@@ -2,7 +2,7 @@
 
 **Date:** 2026-11-11
 **Status:** decision recorded. Code read directly from the three repositories (shallow clones, all `LICENSE`-checked); nothing was run.
-**Question:** the reach plan (`docs/superpowers/specs/2026-11-11-motionbricks-reach-design.md`) bet on MotionBricks. Three NVIDIA motion generators now exist in the same family. Which one should produce the body's reference motion, and what does picking it cost?
+**Question:** the reach plan (`docs/superpowers/specs/2026-11-11-ardy-reach-design.md`, originally MotionBricks-first) bet on MotionBricks. Three NVIDIA motion generators now exist in the same family. Which one should produce the body's reference motion, and what does picking it cost?
 
 **Answer.** Pursue **ARDY**; fall back to **MotionBricks + Kimodo-authored still poses**; do not train a motion model.
 
@@ -146,10 +146,10 @@ perfectly good driver until `LD_LIBRARY_PATH=/run/opengl-driver/lib`.
 | Weights resident | **0.93 GB** |
 | Peak VRAM, one 52-frame window | **0.94 GB** allocated / 0.96 GB reserved |
 | Generate, 52 frames (2.08 s of motion), 10 steps | **0.07–0.20 s** |
-| Hand residual, `cfg_weight=(1, 2)`, zero text | **60.3 mm** |
+| Hand residual, `cfg_weight=(1, 2)`, zero text | **60.3 mm** (45.5 mm in the factored adapter, 33–80 mm across unseeded runs) |
 | Hand residual, `cfg_weight=(1, 4)` | 68.3 mm |
 | Hand residual, `cfg_weight=(2, 0)` (scalar default) | 869.8 mm |
-| Root waypoint adherence, target −0.80 m in z | **−0.790 m** |
+| Root waypoint adherence, target −0.80 m in z | **−0.790 m**; 0.60 m requested → 0.566 m travelled |
 | qpos export | `(1, 52, 36)` — our pose36 exactly |
 
 So §7.1 is answered: **0.94 GB peak, comfortably inside the ~2.6 GB the game leaves free**, and
