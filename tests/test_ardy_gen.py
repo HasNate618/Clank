@@ -1,0 +1,163 @@
+"""ARDY's constraint vocabulary, and the wrapper's pure parts.
+
+Three of the things this guards are silent failures that cost real time when they happen:
+
+* With ``cfg_type="separated"`` a *scalar* ``cfg_weight`` sets the **constraint** guidance
+  weight to zero (``ardy_model.py:274-279``), so a constrained run under the default returns
+  motion that ignores its constraints - measured 870 mm of hand error instead of 60.
+* ``num_denoising_steps`` above the checkpoint's ``num_base_steps`` trips a CUDA device-side
+  assert rather than raising, and it takes the GPU with it. ``check_steps`` refuses in Python.
+* A hand target is built relative to where the hand already is, and the arithmetic happens in
+  ARDY space (y up, z forward), not in our MuJoCo space (z up, x forward). ``hand_delta`` and
+  ``world_root`` are the two places that conversion happens, so both are pinned here.
+
+The rest is the root waypoint path: a straight run from the body's current root, `forward_m`
+along its heading, at the window's first, middle and last frame. That is pure geometry and has
+no business needing a GPU.
+
+This module must be importable without torch: `generate`/`load_ardy` import it inside the call,
+so a stdlib test suite can hold the whole surface above.
+"""
+
+from __future__ import annotations
+
+import importlib.util
+import math
+import pathlib
+import subprocess
+import sys
+import unittest
+
+WBC = pathlib.Path(__file__).resolve().parents[1] / "spike" / "wbc"
+
+IDENTITY = (0.0, 0.0, 0.0, 1.0)
+
+
+def _load(name: str):
+    spec = importlib.util.spec_from_file_location(f"{name}_test", WBC / f"{name}.py")
+    if spec is None or spec.loader is None:  # pragma: no cover - a missing file, not a branch
+        raise RuntimeError(f"could not load spike/wbc/{name}.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+ardy_gen = _load("ardy_gen")
+
+
+def pose36(root=(0.0, 0.0, 0.0), quat=IDENTITY, hinges=None) -> tuple[float, ...]:
+    """A pose with a chosen root and root rotation; hinges default to the neutral stand."""
+    return tuple(root) + tuple(quat) + tuple(hinges if hinges is not None else (0.0,) * 29)
+
+
+def yaw_quat(angle: float) -> tuple[float, float, float, float]:
+    """`xyzw` quaternion for `angle` about MuJoCo's z (the body's yaw)."""
+    return (0.0, 0.0, math.sin(angle / 2.0), math.cos(angle / 2.0))
+
+
+class ConstantsTest(unittest.TestCase):
+    def test_cfg_weight_is_a_pair_not_a_scalar(self) -> None:
+        self.assertEqual(ardy_gen.CFG_WEIGHT, (1.0, 2.0))
+        self.assertIsInstance(ardy_gen.CFG_WEIGHT[1], float)
+        self.assertGreater(ardy_gen.CFG_WEIGHT[1], 0.0)
+
+    def test_checkpoint_constants(self) -> None:
+        self.assertEqual(ardy_gen.ARDY_MODEL, "ARDY-G1-RP-25FPS-Horizon52")
+        self.assertEqual((ardy_gen.ARDY_FPS, ardy_gen.ARDY_HORIZON), (25, 52))
+        self.assertEqual((ardy_gen.HAND_DELTA_FWD, ardy_gen.HAND_DELTA_UP), (0.35, 0.15))
+
+
+class CheckStepsTest(unittest.TestCase):
+    def test_steps_above_the_schedule_are_refused(self) -> None:
+        with self.assertRaises(ValueError) as caught:
+            ardy_gen.check_steps(25, num_base_steps=10)
+        self.assertIn("10", str(caught.exception))
+
+    def test_the_schedule_itself_is_allowed(self) -> None:
+        self.assertEqual(ardy_gen.check_steps(10, num_base_steps=10), 10)
+        self.assertEqual(ardy_gen.check_steps(4, num_base_steps=10), 4)
+
+    def test_no_steps_at_all_is_refused(self) -> None:
+        with self.assertRaises(ValueError):
+            ardy_gen.check_steps(0, num_base_steps=10)
+
+
+class HandDeltaTest(unittest.TestCase):
+    def test_hand_delta_is_forward_and_up_in_ardy_space(self) -> None:
+        d = ardy_gen.hand_delta(0.35, 0.15)
+        self.assertEqual(d, (0.0, 0.15, 0.35))  # y up, z forward
+
+    def test_hand_delta_keeps_the_signs_it_is_given(self) -> None:
+        self.assertEqual(ardy_gen.hand_delta(-0.2, -0.1), (0.0, -0.1, -0.2))
+
+    def test_hand_delta_does_not_move_the_hand_sideways_and_returns_floats(self) -> None:
+        d = ardy_gen.hand_delta(1, 2)
+        self.assertEqual(d[0], 0.0)
+        self.assertIsInstance(d[2], float)
+
+
+class RootFrameTest(unittest.TestCase):
+    def test_world_root_swaps_mujoco_xyz_into_ardy_xz_and_drops_height(self) -> None:
+        # MuJoCo is (x forward, y left, z up); ARDY is (x left, y up, z forward). The model
+        # asserts a zero y in its initial translation, so the height is not ours to pass.
+        self.assertEqual(ardy_gen.world_root(pose36(root=(0.6, 0.0, 0.793))), (0.0, 0.0, 0.6))
+        self.assertEqual(ardy_gen.world_root(pose36(root=(-1.5, 2.0, 0.8))), (2.0, 0.0, -1.5))
+
+    def test_heading_angle_is_the_root_yaw(self) -> None:
+        self.assertAlmostEqual(ardy_gen.heading_angle(pose36()), 0.0)
+        self.assertAlmostEqual(ardy_gen.heading_angle(pose36(quat=yaw_quat(0.8))), 0.8)
+        self.assertAlmostEqual(ardy_gen.heading_angle(pose36(quat=yaw_quat(-2.1))), -2.1)
+
+    def test_heading_angle_wraps_at_half_a_turn(self) -> None:
+        self.assertAlmostEqual(abs(ardy_gen.heading_angle(pose36(quat=yaw_quat(math.pi)))), math.pi)
+
+
+class RootWaypointsTest(unittest.TestCase):
+    def assertPoints(self, got, want) -> None:
+        self.assertEqual(len(got), len(want))
+        for actual, expected in zip(got, want, strict=True):
+            self.assertAlmostEqual(actual[0], expected[0])
+            self.assertAlmostEqual(actual[1], expected[1])
+
+    def test_three_waypoints_at_the_first_middle_and_last_frame(self) -> None:
+        frames, points = ardy_gen.root_waypoints(52, 0.6)
+        self.assertEqual(frames, (0, 26, 51))
+        self.assertPoints(points, ((0.0, 0.0), (0.0, 0.3), (0.0, 0.6)))
+
+    def test_the_path_starts_where_the_body_stands(self) -> None:
+        _, points = ardy_gen.root_waypoints(52, 0.6, start_xy=(0.6, -1.2))
+        self.assertPoints(points, ((0.6, -1.2), (0.6, -0.9), (0.6, -0.6)))
+
+    def test_forward_follows_the_body_heading_not_the_world_z_axis(self) -> None:
+        _, points = ardy_gen.root_waypoints(52, 0.4, heading=math.pi / 2.0)
+        self.assertPoints(points, ((0.0, 0.0), (0.2, 0.0), (0.4, 0.0)))
+
+    def test_a_backwards_step_is_allowed(self) -> None:
+        _, points = ardy_gen.root_waypoints(52, -0.6)
+        self.assertAlmostEqual(points[-1][1], -0.6)
+
+
+class ContextValidationTest(unittest.TestCase):
+    """`generate` checks the context before it imports torch, so these stay stdlib-cheap."""
+
+    def test_an_empty_context_is_refused(self) -> None:
+        with self.assertRaises(ValueError):
+            ardy_gen.generate([], hand_delta=(0.0, 0.15, 0.35), root_forward_m=None)
+
+    def test_a_short_pose_is_refused(self) -> None:
+        with self.assertRaises(ValueError):
+            ardy_gen.generate([(0.0,) * 35], hand_delta=(0.0, 0.15, 0.35), root_forward_m=None)
+
+
+class LazyImportTest(unittest.TestCase):
+    def test_importing_the_module_does_not_import_torch(self) -> None:
+        code = (
+            f"import sys; sys.path.insert(0, {str(WBC)!r}); import ardy_gen; "
+            "raise SystemExit(1 if 'torch' in sys.modules else 0)"
+        )
+        done = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
+        self.assertEqual(done.returncode, 0, done.stderr)
+
+
+if __name__ == "__main__":
+    unittest.main()
