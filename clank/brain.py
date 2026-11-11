@@ -55,10 +55,17 @@ from .intent import (
 DEFAULT_BASE_URL = "http://127.0.0.1:11434"
 DEFAULT_MODEL = "LFM3-Omni-2B-Q8_0.gguf"
 
-#: The planner may only ask for skills the adapter can honour in this writer. The
-#: schema is wider (`fire`, `strike`, ...) so the adapter does not fork, but the
-#: constitution never offers them, and a model that names one is rejected here.
-PLANNER_SKILLS = ("hold", "look", "reach", "grab", "release")
+#: The planner chooses from two kinds of tool, and only one kind reaches the adapter.
+#:
+#: MEASURED 2026-11-10: the live loop never asked the model to choose. `task_intent()` read the
+#: verb out of JobBot's sentence, and `sequence()` then always ran locate and always reached. The
+#: model was a parser. Restoring the chooser means the model may name `locate`, which is a *sense*
+#: tool: code runs it and the pixel goes into working memory, never into an `Intent` and never
+#: onto the socket, because `clank.intent.SKILLS` has no such skill and the adapter cannot compile
+#: one. See `docs/superpowers/specs/2026-11-10-brain-tools.md` §3.
+SENSE_SKILLS = ("locate",)
+MOTOR_SKILLS = ("hold", "look", "reach", "grab", "release")
+PLANNER_SKILLS = MOTOR_SKILLS + SENSE_SKILLS
 
 #: The words the constitution promises the model will be told after each action.
 #: Kept to exactly these three: a fourth would break the sentence in
@@ -143,24 +150,26 @@ You may do exactly one action:
 - hold    keep still
 - look    turn to look; name a target to look toward it, or omit the target to \
 look a step to the side
-- reach   move one hand toward a named thing
+- locate  find a named thing in what you see; do this before you reach for it or \
+grab it
+- reach   move one hand toward a named thing you have located
 - grab    close one hand
 - release open one hand
 
 While holding something, reach moves it with that hand.
 
-After each action you are told done, saturated, or timeout, and you see a new \
-image.
+After locate you are told present or not_visible. After a hand action you are \
+told done, saturated, or timeout, and you see a new image.
 
 Reply with one JSON object and nothing else. All three keys are always present:
-{"skill":"hold"|"look"|"reach"|"grab"|"release",\
+{"skill":"hold"|"look"|"locate"|"reach"|"grab"|"release",\
 "side":"none"|"left"|"right","target": <noun string or null>}
 
-side is "none" for hold and look, and is "left" or "right" for reach, grab and \
-release.
+side is "none" for hold, look and locate, and is "left" or "right" for reach, \
+grab and release.
 
-Do what the voice asked. Do not invent extra chores. If you cannot see the \
-thing, look. If you are unsure, hold.
+Do what the voice asked. Do not invent extra chores. If you have not located the \
+thing, locate it. If locate said it is not there, look. If you are unsure, hold.
 
 Grab only when glow is yes. A yellow ghost means the held thing will go into \
 the slot if you release. A full hand cannot grab; use the other hand or \
@@ -569,6 +578,12 @@ def plan(
 
     if target is not None and not isinstance(target, str):
         error = error or f"target {target!r} is not a string or null"
+    elif skill in SENSE_SKILLS and not (isinstance(target, str) and target.strip()):
+        # A sense tool with nothing to sense is not an action, it is a shrug. Measured on the
+        # frozen-still arm: the reply `{"skill":"locate","side":"none","target":null}` only
+        # appears when the model has lost the noun, and running it would locate nothing and
+        # store nothing, leaving the next think no better informed.
+        error = error or f"{skill} needs a target"
 
     return Plan(
         skill=skill if isinstance(skill, str) and skill in PLANNER_SKILLS else None,

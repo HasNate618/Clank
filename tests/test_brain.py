@@ -117,10 +117,22 @@ class PlanParser(ChatPatchMixin, unittest.TestCase):
 
 
 class PlannerSkills(unittest.TestCase):
-    def test_the_planner_skills_are_a_subset_of_the_intent_schema(self) -> None:
-        self.assertEqual(set(brain.PLANNER_SKILLS),
+    def test_motor_tools_are_a_subset_of_the_intent_schema(self) -> None:
+        self.assertEqual(set(brain.MOTOR_SKILLS),
                          {"hold", "look", "reach", "grab", "release"})
-        self.assertLessEqual(set(brain.PLANNER_SKILLS), set(SKILLS))
+        self.assertLessEqual(set(brain.MOTOR_SKILLS), set(SKILLS))
+
+    def test_sense_tools_are_not_intent_skills(self) -> None:
+        # The whole point of `locate` being planner-only: the adapter cannot compile it, so an
+        # Intent that names it must stay impossible even though the model may choose it.
+        self.assertEqual(set(brain.SENSE_SKILLS), {"locate"})
+        self.assertTrue(set(brain.SENSE_SKILLS).isdisjoint(SKILLS))
+        self.assertEqual(set(brain.PLANNER_SKILLS),
+                         set(brain.MOTOR_SKILLS) | set(brain.SENSE_SKILLS))
+
+    def test_the_constitution_offers_locate(self) -> None:
+        self.assertIn("locate", brain.CONSTITUTION.lower())
+        self.assertIn('"locate"', brain.CONSTITUTION)
 
     def test_the_planner_cannot_emit_rest(self) -> None:
         # `rest` exists on the intent schema so a writer can ask for the clip
@@ -129,6 +141,54 @@ class PlannerSkills(unittest.TestCase):
         self.assertIn("rest", SKILLS)
         self.assertNotIn("rest", brain.PLANNER_SKILLS)
         self.assertNotIn("rest", brain.CONSTITUTION)
+
+    def test_locate_is_accepted_with_a_target_and_no_side(self) -> None:
+        class LocateReply(ChatPatchMixin, unittest.TestCase):
+            reply = '{"skill":"locate","side":"none","target":"card"}'
+
+        case = LocateReply("run")
+        case.setUp()
+        try:
+            result = brain.plan(
+                config=brain.BrainConfig(), seed="", frame=fake_frame(),
+                live="heard: take my card",
+            )
+        finally:
+            case.tearDown()
+        self.assertTrue(result.ok)
+        self.assertEqual(result.skill, "locate")
+        self.assertEqual(result.target, "card")
+        self.assertEqual(result.side, "none")
+
+    def test_locate_without_a_target_is_rejected(self) -> None:
+        class NoTarget(ChatPatchMixin, unittest.TestCase):
+            reply = '{"skill":"locate","side":"none","target":null}'
+
+        case = NoTarget("run")
+        case.setUp()
+        try:
+            result = brain.plan(
+                config=brain.BrainConfig(), seed="", frame=fake_frame(), live="heard: hi",
+            )
+        finally:
+            case.tearDown()
+        self.assertFalse(result.ok)
+        self.assertIn("needs a target", result.error)
+
+    def test_locate_with_a_side_is_rejected(self) -> None:
+        class WithSide(ChatPatchMixin, unittest.TestCase):
+            reply = '{"skill":"locate","side":"right","target":"card"}'
+
+        case = WithSide("run")
+        case.setUp()
+        try:
+            result = brain.plan(
+                config=brain.BrainConfig(), seed="", frame=fake_frame(), live="heard: hi",
+            )
+        finally:
+            case.tearDown()
+        self.assertFalse(result.ok)
+        self.assertIn("does not take a side", result.error)
 
     def test_rest_is_rejected_by_the_planner_parser(self) -> None:
         class RestReply(ChatPatchMixin, unittest.TestCase):
