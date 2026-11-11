@@ -130,9 +130,29 @@ class PlannerSkills(unittest.TestCase):
         self.assertEqual(set(brain.PLANNER_SKILLS),
                          set(brain.MOTOR_SKILLS) | set(brain.SENSE_SKILLS))
 
-    def test_the_constitution_offers_locate(self) -> None:
-        self.assertIn("locate", brain.CONSTITUTION.lower())
-        self.assertIn('"locate"', brain.CONSTITUTION)
+    def test_the_constitution_offers_the_sense_tool_as_find(self) -> None:
+        # MEASURED 2026-11-10: offered as `locate` the model chose it 0 of 3 stills; offered as
+        # `find` it chose it on the clearest frame. The canonical skill stays `locate`, so the
+        # word the model uses and the word the code uses are joined by SENSE_ALIASES.
+        self.assertIn('"find"', brain.CONSTITUTION)
+        self.assertNotIn('"locate"', brain.CONSTITUTION)
+        self.assertEqual(brain.SENSE_ALIASES["find"], "locate")
+
+    def test_find_is_read_as_the_canonical_locate(self) -> None:
+        class FindReply(ChatPatchMixin, unittest.TestCase):
+            reply = '{"skill":"find","target":"card"}'
+
+        case = FindReply("run")
+        case.setUp()
+        try:
+            result = brain.plan(config=brain.BrainConfig(), seed="", frame=fake_frame(),
+                                live="heard: take my card")
+        finally:
+            case.tearDown()
+        self.assertTrue(result.ok)
+        self.assertEqual(result.skill, "locate")
+        self.assertEqual(result.side, "none")
+        self.assertIn("find", result.note)
 
     def test_the_planner_cannot_emit_rest(self) -> None:
         # `rest` exists on the intent schema so a writer can ask for the clip
@@ -175,7 +195,9 @@ class PlannerSkills(unittest.TestCase):
         self.assertFalse(result.ok)
         self.assertIn("needs a target", result.error)
 
-    def test_locate_with_a_side_is_rejected(self) -> None:
+    def test_locate_with_a_side_is_coerced_to_none(self) -> None:
+        # A sense tool has no hand. The model adds a side anyway, and a right decision is not
+        # thrown away over a field the tool does not use.
         class WithSide(ChatPatchMixin, unittest.TestCase):
             reply = '{"skill":"locate","side":"right","target":"card"}'
 
@@ -187,8 +209,9 @@ class PlannerSkills(unittest.TestCase):
             )
         finally:
             case.tearDown()
-        self.assertFalse(result.ok)
-        self.assertIn("does not take a side", result.error)
+        self.assertTrue(result.ok, result.error)
+        self.assertEqual(result.side, "none")
+        self.assertIn("side ignored", result.note)
 
     def test_rest_is_rejected_by_the_planner_parser(self) -> None:
         class RestReply(ChatPatchMixin, unittest.TestCase):
@@ -335,12 +358,18 @@ class ThinkTests(ChatPatchMixin, unittest.TestCase):
 
 
 class PromptText(unittest.TestCase):
-    def test_seed_names_the_green_cartridge_the_slot_and_the_lever(self) -> None:
+    def test_the_seed_carries_no_choreography(self) -> None:
+        # MEASURED 2026-11-10: a seed naming the cartridge, the slot and the lever overrode what
+        # JobBot said - asked for his card, the model answered `release ... cartridge` on three
+        # stills. The seed now names the world and no errand, and this test is what keeps a later
+        # hand from quietly putting the walkthrough back.
+        # Naming the world's things is fine and is what makes the model name the right object.
+        # Naming an errand is not: the seed may not say what to do with them.
         s = brain.DEFAULT_SEED.lower()
-        self.assertIn("store clerk", s)
-        self.assertIn("green", s)
-        self.assertIn("ghost", s)
-        self.assertIn("lever", s)
+        for banned in ("slot", "lever", "ghost", "glow", "store clerk", "goes in",
+                       "put it", "insert", "pull the"):
+            self.assertNotIn(banned, s)
+        self.assertIn("job simulator", s)
 
     def test_seed_and_constitution_do_not_list_positions(self) -> None:
         blob = brain.CONSTITUTION + "\n" + brain.DEFAULT_SEED

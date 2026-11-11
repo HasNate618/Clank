@@ -64,6 +64,10 @@ DEFAULT_MODEL = "LFM3-Omni-2B-Q8_0.gguf"
 #: onto the socket, because `clank.intent.SKILLS` has no such skill and the adapter cannot compile
 #: one. See `docs/superpowers/specs/2026-11-10-brain-tools.md` §3.
 SENSE_SKILLS = ("locate",)
+#: The word the model reaches for. MEASURED 2026-11-10: offered as `locate` it was chosen 0 of 3
+#: stills and every hand action came back `release`; offered as `find` it was chosen on the frame
+#: where the card was clearest. Same tool, so the alias costs nothing and hides no decision.
+SENSE_ALIASES = {"find": "locate", "search": "locate"}
 MOTOR_SKILLS = ("hold", "look", "reach", "grab", "release")
 PLANNER_SKILLS = MOTOR_SKILLS + SENSE_SKILLS
 
@@ -150,7 +154,7 @@ You may do exactly one action:
 - hold    keep still
 - look    turn to look; name a target to look toward it, or omit the target to \
 look a step to the side
-- locate  find a named thing in what you see; do this before you reach for it or \
+- find    find a named thing in what you see; do this before you reach for it or \
 grab it
 - reach   move one hand toward a named thing you have located
 - grab    close one hand
@@ -158,29 +162,32 @@ grab it
 
 While holding something, reach moves it with that hand.
 
-After locate you are told present or not_visible. After a hand action you are \
+After find you are told present or not_visible. After a hand action you are \
 told done, saturated, or timeout, and you see a new image.
 
 Reply with one JSON object and nothing else. All three keys are always present:
-{"skill":"hold"|"look"|"locate"|"reach"|"grab"|"release",\
+{"skill":"hold"|"look"|"find"|"reach"|"grab"|"release",\
 "side":"none"|"left"|"right","target": <noun string or null>}
 
-side is "none" for hold, look and locate, and is "left" or "right" for reach, \
+side is "none" for hold, look and find, and is "left" or "right" for reach, \
 grab and release.
 
-Do what the voice asked. Do not invent extra chores. If you have not located the \
-thing, locate it. If locate said it is not there, look. If you are unsure, hold.
+Do what the voice asked. Do not invent extra chores. Find a thing before you reach for it. If find said it is not there, look. If you are unsure, hold.
 
 Grab only when glow is yes. A yellow ghost means the held thing will go into \
 the slot if you release. A full hand cannot grab; use the other hand or \
 release.\
 """
 
-#: Asked once, verbatim. One instruction, no choreography.
+#: Identity and nothing else. MEASURED 2026-11-10: the seed that carried the walkthrough
+#: ("use the store clerk cartridge ... pull the lever") overrode what JobBot actually said - asked
+#: to take his card, the model answered `release ... cartridge` on three different stills and under
+#: every constitution wording tried, and dropping the choreography turned the same call into
+#: `grab card` / `find card`. The seed is the largest single cause of a wrong verb measured here,
+#: so it now names the world and no errand. See `research/brain-tools.md`.
 DEFAULT_SEED = (
-    "use the store clerk cartridge (green label).\n"
-    "a cartridge goes in the glowing slot; a yellow ghost means you may release.\n"
-    "pull the lever down to start the job."
+    "The game is Job Simulator. You can see a console, a card and a cartridge.\n"
+    "The voice is a job instructor."
 )
 
 #: The four answers GROUND accepts. A tray quadrant is the smallest set that
@@ -537,10 +544,15 @@ def plan(
 
     raw_skill = parsed.get("skill", parsed.get("action"))
     skill = raw_skill if isinstance(raw_skill, str) else None
+    note_alias = ""
+    if isinstance(skill, str) and skill.strip().lower() in SENSE_ALIASES:
+        canonical = SENSE_ALIASES[skill.strip().lower()]
+        note_alias = f"skill {skill!r} read as {canonical!r}"
+        skill = canonical
     side = parsed.get("side")
     target = parsed.get("target")
 
-    note = ""
+    note = note_alias
     # The model's key names are not stable, but its content is. Three shapes came
     # back for the same request on 2026-11-01:
     #   {"skill":"release","side":"right","target":"Job Bot card"}
@@ -559,6 +571,11 @@ def plan(
                 note = f"skill expressed as a key: {key!r}"
                 break
 
+    if side is None and skill in SENSE_SKILLS:
+        # MEASURED 2026-11-10: asked for a sense tool, the model omits `side` entirely -
+        # `{"skill":"find","target":"card"}` - which the side rule below would reject for a tool
+        # that has no hand. A sense tool never addresses a side, so its side is "none".
+        side = "none"
     if side is None and skill in PLANNER_SIDE_SKILLS:
         side = default_side
         suffix = f"side missing; defaulted to {default_side}"
@@ -574,7 +591,14 @@ def plan(
     elif skill in PLANNER_SIDE_SKILLS and side == "none":
         error = f"{skill} needs a side"
     elif skill not in PLANNER_SIDE_SKILLS and side != "none":
-        error = f"{skill} does not take a side"
+        # MEASURED 2026-11-10: asked what to do about JobBot's card, the model answered
+        # `{"skill":"hold","side":"right","target":"card"}`. The decision is right and the field
+        # is noise, so it is coerced rather than rejected - the same call this parser already
+        # makes for a skill expressed as a key. Rejecting it turned a correct hold into an error
+        # and the whole turn into nothing.
+        side = "none"
+        coerced = f"side ignored for {skill}"
+        note = f"{note}; {coerced}" if note else coerced
 
     if target is not None and not isinstance(target, str):
         error = error or f"target {target!r} is not a string or null"

@@ -12,10 +12,16 @@ What it does per turn:
 
     ears.listen       -> the game's own audio, gated and trimmed
     brain.transcribe  -> the words JobBot said
-    brain.next_step   -> {goal, object, destination, side} from one still
-    brain.sequence    -> the ordered skills; ordering is code, never the prompt
-    locate            -> the pixel the noun is at, verified present
-    reach_vr --grab   -> one continuous stream plus the close, in the same process
+    ready             -> the body stands up and goes back to its clip
+    brain.think       -> the model chooses one act, from the still and the speech
+    sense             -> locate plus the depth gate, when the act needs a pixel
+    reach_vr          -> one continuous stream, closing inside it when the act is a grab
+
+The ordering is the measurement: the model was never asked to choose, so nothing here reads the
+sentence for a verb. Design and its measurements: `docs/superpowers/specs/2026-11-10-brain-tools.md`
+and `research/brain-tools.md`. On this model the act is chosen correctly (object 3 of 3 stills);
+the sense tool is chosen only sometimes, so the body guarantees the search for an act that needs
+one rather than trusting a refusal to teach the model anything.
 
 Every decision goes to clank.brainlog, so the dashboard's brain panel is the transcript of
 what happened rather than a reconstruction. A quiet game writes nothing at all.
@@ -77,7 +83,10 @@ FOV = Fov.from_degrees(70.0, 70.0, 57.11, 57.11)
 #: Head yaw offsets to try, in order, before giving up on seeing the thing. Measured: a
 #: commanded yaw RATE does not turn the body (+0.2 deg where 69 was asked), but the head is
 #: pinned by every reach command, so the *look* is the one aimable part of the robot.
-LOOK_DEG = (0.0, 25.0, -25.0, 45.0, -45.0)
+#: How many times one turn may look for a thing before it gives up on it. Two is enough for
+#: "find it, then find it from another angle"; the third is a loop an operator has to watch, and
+#: MEASURED 2026-11-10 the model does not learn from a refusal, so more ticks do not help it.
+SENSE_BUDGET = 2
 #: A grounded point outside this distance from the *resting hand* is not the object being
 #: reached for. The bound is reach_vr's own: it refuses past MAX_PLAUSIBLE_M from the hand,
 #: and measuring from the camera instead let a 0.9 m-away pixel pass here and be refused
@@ -198,25 +207,103 @@ def confirm(pattern: str, max_s: float = 20.0) -> str:
     return heard.text
 
 
-def grab_pixel(x: float, y: float, side: str, camera: Pose | None = None) -> int:
-    """Reach the pixel and close, in one process with no gap.
+def grab_pixel(x: float, y: float, side: str, camera: Pose | None = None,
+               grab: bool = True) -> int:
+    """Reach the pixel, and close if asked, in one process with no gap.
 
     `camera` is the pose the pixel was marked from. Without it the reach unprojects through
     whatever the head has drifted to by then, and the same pixel means a different ray.
+
+    `grab=False` is the model's `reach` - a hand moved to a thing without closing. The close
+    never happens in a second process: measured 2026-11-09, a 2 s gap let the hand drift 0.09 m,
+    which is more than the grab radius, so a brain that decides to grab must decide it here.
     """
     argv = [
         VENV, str(HERE / "reach_vr.py"), f"{x:.1f}", f"{y:.1f}", "--side", side,
         "--no-rest", "--no-clamp", "--tol", "0.02", "--corrections", "4",
-        "--gain", "0.6", "--guard", "0.25", "--grab",
+        "--gain", "0.6", "--guard", "0.25",
     ]
+    if grab:
+        argv.append("--grab")
     if camera is not None:
         argv += ["--camera", *[f"{v:.5f}" for v in (*camera.p, *camera.q_xyzw)]]
     return subprocess.call(argv)
 
 
+def sense(target: str, memory: brain.WorkingMemory, stamp: str):
+    """Run locate on a fresh still, gate it against depth, and remember what it found.
+
+    This is the body's own sense step, and it runs when a motor needs a pixel - design A. The
+    model chooses *what* to act on and the body still has to find out *where*. The model does
+    choose `find` sometimes (1 of 3 stills measured), which is why the constitution offers it,
+    but on this model it will not choose it when asked and re-issues a refused reach instead of
+    correcting itself (3 of 3), so the loop cannot depend on the choice. `research/brain-tools.md`.
+
+    Returns the sighting and, when it is usable, `(pixel, png, camera, side)` for the motor.
+    """
+    jpeg, size, png, depth_frame, camera = frame_and_jpeg()
+    found = locate.locate(BrainConfig(), Frame(0, 0.0, jpeg, "live"), target, size)
+    pixel = found.get("pixel_px")
+    metres = 0.0
+    side = "right"
+    if pixel:
+        # Two questions, two samples. The *median* around the pixel says whether this is an
+        # object at all (a sign on a far wall measures metres and is refused); the *nearest*
+        # is the card itself, a thin plane standing in front of that wall.
+        centre = point_from_pixel(depth_frame, pixel[0] / size[0], pixel[1] / size[1],
+                                  camera, FOV)
+        if centre is not None:
+            metres = min(math.dist(centre, reach_vr.wrist("left")),
+                         math.dist(centre, reach_vr.wrist("right")))
+        point = point_from_pixel(depth_frame, pixel[0] / size[0], pixel[1] / size[1],
+                                 camera, FOV, nearest=True, min_m=reach_vr.MIN_SURFACE_M)
+        if point is not None:
+            side = "left" if point[1] > 0.0 else "right"
+    outcome = "present"
+    if not pixel or found.get("present") is False:
+        # A refusal is a refusal: stage 3 now asks what is in the box and judges the answer in
+        # code, so `present: False` means the box described itself as something else.
+        outcome = "not_visible"
+    elif metres < reach_vr.MIN_SURFACE_M:
+        outcome = "not_visible"          # the robot's own glove sits at about 0.2 m
+    elif metres > MAX_OBJ_M:
+        outcome = "too_far"
+    sighting = brain.Sighting(
+        noun=target,
+        present=outcome == "present",
+        pixel=(pixel[0] / size[0], pixel[1] / size[1]) if pixel else None,
+        pixel_px=(pixel[0], pixel[1]) if pixel else None,
+        metres=round(metres, 3),
+        outcome=outcome,
+    )
+    memory.remember(target, sighting)
+    brainlog.log("act", f"locate({target})", pixel=sighting.pixel_px, outcome=outcome,
+                 metres=round(metres, 2), side=side,
+                 quadrant=found.get("quadrant"), error=found.get("error") or "")
+    if outcome != "present":
+        brainlog.log("think", f"the {target} is {outcome.replace('_', ' ')}"
+                              + (f" at {metres:.2f} m" if metres else ""))
+        return sighting, None
+    assert pixel is not None      # "present" means locate gave a pixel and the gate passed it
+    mark(png, pixel, STATE / f"marked-{stamp}.png")
+    return sighting, ((float(pixel[0]), float(pixel[1])), png, camera, side)
+
+
+def hands_holding() -> tuple[str, str]:
+    """Which hands are closed, from the body's own state rather than from a guess."""
+    closure = reach_vr.state().get("closure") or [0.0, 0.0]
+    return tuple("holding" if float(c) >= 0.5 else "empty" for c in closure)  # type: ignore[return-value]
+
+
 def one_turn(say: str = "", pattern: str = ears.DEFAULT_PATTERN,
              max_s: float = 25.0, plan_only: bool = False) -> str:
-    """Hear, interpret, ground, act. Returns the words heard ("" if the game was quiet)."""
+    """Hear, think, find, act. Returns the words heard ("" if the game was quiet).
+
+    The model chooses the act: which skill, on which thing, with which hand. Nothing here reads
+    the sentence for a verb - that was `task_intent`, and it made the brain a parser. What this
+    function owns is the body: reset, the still, the depth gate, and the one measured way to
+    find a pixel. See `docs/superpowers/specs/2026-11-10-brain-tools.md`.
+    """
     if say:
         spoken = say
         brainlog.log("heard", spoken, source="typed")
@@ -237,155 +324,111 @@ def one_turn(say: str = "", pattern: str = ears.DEFAULT_PATTERN,
         brainlog.log("heard", spoken, ms=heard.decode_ms, speech_s=hearing.speech_s,
                      peak=hearing.peak, cut=heard.ellipsis)
 
-    # Stand the robot up *before* looking, not after. Measured 2026-11-08: the frame was
-    # captured from wherever the previous run's failed reach had left the body, so the card
-    # was off-screen and locate answered the signage instead. The default pose is the one
-    # the card is visible from; the reset is what puts the robot back in it.
     if not plan_only and not ready():
         return spoken
 
-    jpeg, size, png, depth_frame, camera = frame_and_jpeg()
     stamp = time.strftime("%H%M%S")
-    sight = STATE / f"frame-{stamp}.png"
-    sight.parent.mkdir(parents=True, exist_ok=True)
-    sight.write_bytes(png)
-
-    step = brain.next_step(
-        BrainConfig(max_tokens=160), Frame(0, 0.0, jpeg, "live"),
-        f'JobBot said: "{spoken}"', default_side="right",
-    )
-    if step.error:
-        brainlog.log("error", f"the model did not answer: {step.error}")
-        return spoken
-    brainlog.log("think", f"I will {step.goal}", object=step.object,
-                 destination=step.destination, side=step.side)
-
-    side = step.side or "right"
-    # The instruction names the verb and the object; the model was measured answering a
-    # later step with an invented object ("insert the card into the machine" from "take my
-    # card"). So the task line wins for both, and the model keeps the destination.
-    skill, noun = brain.task_intent(spoken)
-    if noun:
-        if step.object and noun not in (step.object or "").lower():
-            brainlog.log("think", f"the task says {noun!r}, the model said {step.object!r}"
-                                  " - the task wins")
-        steps = [("grab", noun)]
-        if skill == "place" and step.destination:
-            steps.append(("place", step.destination))
-    else:
-        steps = brain.sequence(step, holding=False, object_noun=step.object or "")
-    brainlog.log("think", "plan: " + (" -> ".join(f"{s}({n})" for s, n in steps) or "nothing"),
-                 hand="empty", frame=sight.name)
-    if plan_only or not steps:
-        return spoken
-
-    for skill, target in steps:
-        if skill != "grab":
-            brainlog.log("think", f"skipping {skill}({target}) - only grab is wired")
-            continue
-        # Look before reaching, and reach inside the sweep. The robot cannot turn its body,
-        # so the head is swept until the noun grounds somewhere the arm could get to; a pixel
-        # that unprojects to metres away is signage, not the card (measured: locate answered
-        # the JOB SIMULATOR sign at 4.9 m). The reach belongs inside the loop because it can
-        # refuse for a reason the sweep cannot see: `code 1` means there was no surface above
-        # the arm's own radius at that pixel, i.e. the robot's glove was in front of the
-        # camera. Measured: the gate approved a pixel at 0.43 m and the reach found nothing
-        # there. A different head yaw looks around the arm.
-        rest_left = reach_vr.wrist("left")
-        rest_right = reach_vr.wrist("right")
-        code = -1
-        pixel = None
-        seconds = 0.0
-        for attempt, dyaw in enumerate(LOOK_DEG, start=1):
-            if dyaw:
-                for _ in range(4):
-                    look(dyaw, side)
-                    time.sleep(0.18)
-            else:
-                look(0.0, side)
-            jpeg, size, png, depth_frame, camera = frame_and_jpeg()
-            found = locate.locate(BrainConfig(), Frame(0, 0.0, jpeg, "live"), target, size)
-            if found.get("present") is False:
-                # A refusal is a refusal. Stage 3 asks what is in the box it found and judges
-                # the answer here, so `present: False` means the box was described as
-                # something else - measured 2026-11-09, "job cartridge" pointed at JobBot's
-                # ID badge and the description said "card". Reaching at that box is the
-                # confident error the old verifier could not catch, so the sweep looks again
-                # rather than using the pixel.
-                pixel = None
-            else:
-                pixel = found.get("pixel_px")
-            metres = 0.0
-            point = None
-            if pixel:
-                # Two different questions, two different samples. The *median* surface
-                # around the pixel says whether this is an object at all - a sign on a far
-                # wall measures metres and is refused - while the *nearest* surface is the
-                # card itself, which is a thin plane in front of that wall.
-                centre = point_from_pixel(depth_frame, pixel[0] / size[0],
-                                          pixel[1] / size[1], camera, FOV)
-                if centre is not None:
-                    metres = min(math.dist(centre, rest_left),
-                                 math.dist(centre, rest_right))
-                point = point_from_pixel(depth_frame, pixel[0] / size[0],
-                                         pixel[1] / size[1], camera, FOV, nearest=True,
-                                         min_m=reach_vr.MIN_SURFACE_M)
-                if point is not None:
-                    side = "left" if point[1] > 0.0 else "right"
-            brainlog.log(
-                "act", f"locate({target})", pixel=pixel, present=found.get("present"),
-                metres=round(metres, 2), head_yaw_off=dyaw, attempt=attempt,
-                quadrant=found.get("quadrant"), error=found.get("error") or "",
-            )
-            if not pixel:
-                continue
-            if metres < reach_vr.MIN_SURFACE_M:
-                # The robot's own glove sits in frame at about 0.2 m. Nothing that close is
-                # the object; reaching there closes the hand on itself.
-                brainlog.log("think", f"that is {metres:.2f} m from my hand - that is my own "
-                                      "arm, not the card; looking elsewhere")
-                continue
-            if metres > MAX_OBJ_M:
-                brainlog.log("think", f"that pixel is {metres:.2f} m away - not the "
-                                      f"{target}; looking elsewhere")
-                continue
-            brainlog.log("think", f"the {target} is {metres:.2f} m from my hand; "
-                                  f"reaching with the {side}", side=side)
-            mark(png, pixel, STATE / f"marked-{stamp}.png")
-            started = time.monotonic()
-            code = grab_pixel(pixel[0], pixel[1], side, camera)
-            seconds = round(time.monotonic() - started, 1)
-            if code == 1 and attempt < len(LOOK_DEG):
-                brainlog.log("think", "nothing at that pixel the hand could reach - "
-                                      "something of mine is in the way; looking from elsewhere")
-                continue
-            break
-        if pixel is None or code < 0:
-            brainlog.log("result", f"cannot see {target} within reach", ok=False)
-            break
-        brainlog.log(
-            "result", f"grab({target}) {'reached' if code == 0 else 'failed'}",
-            ok=code == 0, code=code, seconds=seconds, pixel=pixel,
-            marked=f"marked-{stamp}.png",
+    memory = brain.WorkingMemory()
+    last = "(none)"
+    seen = None
+    thought = None
+    intent = None
+    for _ in range(SENSE_BUDGET + 1):
+        jpeg, size, png, _depth, _camera = frame_and_jpeg()
+        sight = STATE / f"frame-{stamp}.png"
+        sight.parent.mkdir(parents=True, exist_ok=True)
+        sight.write_bytes(png)
+        left, right = hands_holding()
+        thought = brain.think(
+            BrainConfig(max_tokens=160), brain.DEFAULT_SEED, Frame(0, 0.0, jpeg, "live"),
+            spoken, [], memory, left=left, right=right, last=last,
         )
-        # The game says whether it worked. JobBot moves on to the cartridges once the card
-        # is taken, and repeats himself if it is not.
-        if not say:
-            spoken_after = confirm(pattern)
-            if spoken_after:
-                moved_on = "cartridge" in spoken_after.lower()
-                brainlog.log(
-                    "result",
-                    "the card is in my hand - JobBot moved on to the cartridges"
-                    if moved_on else f"JobBot said something else: {spoken_after[:90]}",
-                    ok=moved_on,
-                )
-            else:
-                brainlog.log("result", f"no word from JobBot after the grab; reach said "
-                                      f"code {code}", ok=False)
-        if code == 2:
-            brainlog.log("think", f"the {target} is out of reach - the body cannot turn")
+        if thought.plan.error:
+            brainlog.log("error", f"the model did not answer: {thought.plan.error}")
+            return spoken
+        target = thought.plan.target or ""
+        brainlog.log("think", f"plan: {thought.plan.skill}({target or '-'})",
+                     side=thought.plan.side, frame=sight.name, note=thought.plan.note)
+        if plan_only:
+            return spoken
+        if thought.sense == "locate":
+            found, seen = sense(target, memory, stamp)
+            last = brain.last_line("locate", "none", target, found.outcome)
+            continue
+        intent = thought.decision.intent
+        if intent.skill in ("reach", "grab") and target:
+            known = memory.find(target)
+            if known is None or not known.present:
+                # The model chose the act; the body has to find the thing before it can do it.
+                # This is not a hidden skill: `locate` here is what "reach the card" means when
+                # nothing has measured where the card is.
+                brainlog.log("think", f"the {target} is not found yet - finding it")
+                found, seen = sense(target, memory, stamp)
+                last = brain.last_line("locate", "none", target, found.outcome)
+                thought.decision = brain.assemble(
+                    thought.plan, None, 0, 0, memory=memory, left=left, right=right)
+                intent = thought.decision.intent
+                if found.outcome != "present":
+                    continue
+        if not thought.decision.accepted:
+            brainlog.log("think", f"holding: {thought.decision.reason}")
         break
+
+    if intent is None or thought is None:
+        return spoken
+    skill = intent.skill
+    # `thought` cannot be None here, and saying so once keeps every later `thought.plan` honest
+    # instead of a chain of "is not a known attribute of None" warnings that hide a real one.
+    assert thought is not None
+    if skill in ("hold", "rest"):
+        brainlog.log("act", "hold")
+        return spoken
+    if skill == "look":
+        yaw_deg = math.degrees(intent.yaw_rad or 0.0)
+        look(yaw_deg, "right")
+        brainlog.log("act", f"look({yaw_deg:+.0f} deg)")
+        return spoken
+    if skill == "release":
+        reach_vr.send(verb=f"open_{intent.side}")
+        brainlog.log("act", f"release({intent.side})",
+                     closed=reach_vr.state().get("closure"))
+        return spoken
+    if skill not in ("reach", "grab"):
+        brainlog.log("think", f"{skill} is not wired yet")
+        return spoken
+    if seen is None:
+        brainlog.log("result", f"cannot {skill} the {thought.plan.target or 'thing'} - "
+                               "nothing was found", ok=False)
+        return spoken
+
+    pixel, png, camera, side = seen
+    started = time.monotonic()
+    code = grab_pixel(pixel[0], pixel[1], side, camera, grab=skill == "grab")
+    seconds = round(time.monotonic() - started, 1)
+    brainlog.log("result", f"{skill}({thought.plan.target or '-'}) "
+                           f"{'reached' if code == 0 else 'failed'}",
+                 ok=code == 0, code=code, seconds=seconds, pixel=pixel, hand=side,
+                 marked=f"marked-{stamp}.png")
+    if skill != "grab":
+        return spoken
+    # The game says whether it worked. JobBot moves on to the cartridges once the card is
+    # taken, and repeats himself if it is not - the only oracle that sees the grab itself.
+    if not say:
+        spoken_after = confirm(pattern)
+        if spoken_after:
+            moved_on = "cartridge" in spoken_after.lower()
+            brainlog.log(
+                "result",
+                "the card is in my hand - JobBot moved on to the cartridges"
+                if moved_on else f"JobBot said something else: {spoken_after[:90]}",
+                ok=moved_on,
+            )
+        else:
+            brainlog.log("result", f"no word from JobBot after the grab; reach said code {code}",
+                         ok=False)
+    if code == 2:
+        brainlog.log("think", f"the {thought.plan.target or 'thing'} is out of reach - "
+                              "the body cannot turn")
     return spoken
 
 
