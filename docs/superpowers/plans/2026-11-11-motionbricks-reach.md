@@ -395,11 +395,14 @@ def zero_text(device: str) -> Tensor                     # zeros(1, 1, 4096)
 def hand_constraint(skeleton, pose: dict, hand_delta: tuple[float, float, float]) -> list
 def root_goal_constraint(skeleton, num_frames: int, forward_m: float) -> list
 def generate(pose36_context: Sequence[Sequence[float]], *, hand_delta, root_forward_m: float | None,
-             num_frames: int = ARDY_HORIZON, steps: int = 10) -> tuple[list[tuple[float, ...]], dict]
+             num_frames: int = ARDY_HORIZON, steps: int = 10,
+             history_features=None) -> tuple[list[tuple[float, ...]], dict]
     # returns (25 Hz pose36 frames, metrics dict with seconds/peak_vram/hand_residual_m)
 ```
 
 `generate` must: build the constraint from the **latest achieved pose** in the context; pass `cfg_weight=CFG_WEIGHT`; reject `steps > model.diffusion.num_base_steps` with a message; run `model.motion_rep.inverse(...)` then `MujocoQposConverter` (which already returns our 36 floats, `(1, T, 36)`); and return the achieved right-hand residual against the requested point.
+
+**Continuity, and the one thing to leave out at first.** ARDY continues from `init_history_sequence`, which the demo fills from its own previously generated *feature* tensor (`scripts/interactive_demo/generation.py:150-176, 275`). Our body state is MuJoCo `qpos`, and there is no `motion_rep.encode(pose36)` — feature assembly lives in `ardy/data_processing`. So v1 does **not** pass history: it generates from a canonical standing pose translated to the body's current root and heading (`init_global_translation`, `init_first_heading_angle`), and lets SONIC absorb the small pose offset because it starts from the live `mjData` regardless. Chained generation inside one reach reuses the previous window's features, which is the case the demo already exercises. A pose36 -> features encoder is a known follow-on, not a Task 5 requirement.
 
 - [ ] **Step 1: Write the failing stdlib tests** in `tests/test_ardy_gen.py`
 
