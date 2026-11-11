@@ -1,6 +1,0 @@
-Language: en
-Duration: 0.0s
-Model: cohere-transcribe-03-2026
-============================================================
-
-Hello, human! Welcome to the Job Simulator. My name is Jobbot, and I'm the curator of this fine job museum. Here's my card. Hey, human, take my card. All right, why don't you grab one of the job cartridges off the table and let's get started.  There's never a dull day in the old cubicle.

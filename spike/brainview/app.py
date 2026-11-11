@@ -17,7 +17,7 @@ step is requested.
 
     python3 spike/brainview/app.py \
         --video "Job Simulator VR FULL WALKTHROUGH ... .mp4" \
-        --heard-file 0549396b6562.txt \
+        --srt research/evidence/walkthrough.srt \
         --port 8770
 """
 

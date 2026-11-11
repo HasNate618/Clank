@@ -42,6 +42,8 @@ spike/e1/xr_view_probe
 
 # Machine-specific config (absolute paths, Steam shortcut id)
 config.toml
+# ...and its local backups
+config.toml.*
 
 # weston-screenshooter ignores its output argument and writes here
 wayland-screenshot-*.png
