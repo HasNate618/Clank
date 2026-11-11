@@ -281,6 +281,59 @@ class AssembleLocate(unittest.TestCase):
         self.assertNotIn("TOP-LEFT", text)
 
 
+class ThinkTests(ChatPatchMixin, unittest.TestCase):
+    """Think is the chooser: PLAN plus ASSEMBLE, and nothing else. It never locates."""
+
+    def run_think(self, reply: str, heard: str, memory=None):
+        self.reply = reply
+        return brain.think(
+            brain.BrainConfig(), "", fake_frame(), heard, [],
+            memory if memory is not None else brain.WorkingMemory())
+
+    def test_take_my_card_can_choose_locate(self) -> None:
+        thought = self.run_think(
+            '{"skill":"locate","side":"none","target":"card"}',
+            "Hey, Hillman, take my card.")
+        self.assertEqual(thought.sense, "locate")
+        self.assertEqual(thought.plan.target, "card")
+        self.assertEqual(thought.decision.intent.skill, "hold")
+        self.assertEqual(thought.decision.note, "locate")
+
+    def test_reach_without_memory_is_not_located(self) -> None:
+        thought = self.run_think(
+            '{"skill":"reach","side":"right","target":"card"}', "take my card")
+        self.assertIsNone(thought.sense)
+        self.assertIn("not_located", thought.decision.reason)
+
+    def test_reach_after_remembering_emits_reach(self) -> None:
+        mem = brain.WorkingMemory()
+        mem.remember("card", brain.Sighting(
+            noun="card", present=True, pixel=(0.8, 0.4)))
+        thought = self.run_think(
+            '{"skill":"reach","side":"right","target":"card"}', "take my card", mem)
+        self.assertIsNone(thought.sense)
+        self.assertEqual(thought.decision.intent.skill, "reach")
+        self.assertEqual(thought.decision.intent.pixel, (0.8, 0.4))
+
+    def test_think_does_not_send_audio(self) -> None:
+        self.run_think('{"skill":"hold","side":"none","target":null}', "take my card")
+        content = self.chat_calls[0]["messages"][-1]["content"]
+        self.assertNotIn("input_audio", [part["type"] for part in content])
+
+    def test_the_prompt_is_the_constitution_not_a_skill_enum(self) -> None:
+        self.run_think('{"skill":"hold","side":"none","target":null}', "take my card")
+        system = self.chat_calls[0]["messages"][0]["content"]
+        self.assertEqual(system, brain.CONSTITUTION)
+        self.assertNotIn("grab|place|reach|release", system)
+
+    def test_the_last_line_reaches_the_model(self) -> None:
+        self.reply = '{"skill":"hold","side":"none","target":null}'
+        brain.think(brain.BrainConfig(), "", fake_frame(), "take my card", [],
+                    brain.WorkingMemory(),
+                    last="locate none target=card \u2192 not_visible")
+        self.assertIn("not_visible", self.user_text())
+
+
 class PromptText(unittest.TestCase):
     def test_seed_names_the_green_cartridge_the_slot_and_the_lever(self) -> None:
         s = brain.DEFAULT_SEED.lower()

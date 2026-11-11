@@ -1297,6 +1297,72 @@ def assemble(
 
 
 # --------------------------------------------------------------------------- #
+# THINK
+# --------------------------------------------------------------------------- #
+
+
+@dataclass
+class Thought:
+    """One chooser tick: what the model said, what that became, and what to run.
+
+    `sense` is the only place a sense tool survives assembly, because a sense tool has no Intent.
+    The caller looks at it and runs `locate.py`; the model never sees a pixel and `clank/` never
+    imports the locator, which keeps this package standard-library only.
+    """
+
+    plan: Plan
+    decision: Decision
+    sense: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "plan": self.plan.to_dict(),
+            "decision": self.decision.to_dict(),
+            "sense": self.sense,
+        }
+
+
+def think(
+    config: BrainConfig,
+    seed: str,
+    frame: Frame,
+    heard: str,
+    history: list[str],
+    memory: WorkingMemory,
+    *,
+    seq: int = 0,
+    t_mono_ns: int = 0,
+    left: str = "empty",
+    right: str = "empty",
+    yaw_rad: float = 0.0,
+    glow: str = "unknown",
+    ghost: str = "unknown",
+    last: str = "(none)",
+    default_side: str = "right",
+    look_step: int = 1,
+) -> Thought:
+    """One chooser tick: PLAN, then ASSEMBLE. Never grounds, never locates.
+
+    Transcribe stays a separate call. Measured twice: one call that asked for the words and a
+    decision together produced a decision that ignored the words, so the audio never reaches PLAN
+    on the live path.
+
+    No GROUND either. The live path's grounding is `locate.py` in the spike, chosen by the model as
+    its own tool - which is the whole point of the sense/motor split: if this function grounded the
+    target for it, the model's `locate` would be decoration.
+    """
+    live = live_block(heard, left, right, yaw_rad, glow, last, ghost=ghost)
+    plan_result = plan(config, seed, frame, live, transcript=history,
+                       default_side=default_side)
+    decision = assemble(plan_result, None, seq, t_mono_ns, left=left, right=right,
+                        glow=glow, ghost=ghost, memory=memory, look_step=look_step)
+    sense = None
+    if plan_result.ok and plan_result.skill in SENSE_SKILLS:
+        sense = plan_result.skill
+    return Thought(plan=plan_result, decision=decision, sense=sense)
+
+
+# --------------------------------------------------------------------------- #
 # trace
 # --------------------------------------------------------------------------- #
 
