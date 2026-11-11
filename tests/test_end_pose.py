@@ -141,7 +141,7 @@ class Escalation(unittest.TestCase):
                                               generated=end_pose.MAX_STEP_GEN), "saturated")
 
     def test_a_planted_reach_just_short_stops_instead_of_escalating(self) -> None:
-        # 0.09 m is inside the 0.33-0.80 m spread the unseeded generator shows, so spending
+        # 0.09 m is inside the 33-80 mm spread the unseeded generator shows, so spending
         # a regeneration on it would be chasing sampling noise.
         self.assertEqual(end_pose.decide_next(kind="planted", residual_m=0.09, escalated=False,
                                               gen=1, elapsed_s=1.0, generated=1), "stop")

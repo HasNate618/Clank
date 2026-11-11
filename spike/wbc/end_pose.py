@@ -70,9 +70,13 @@ def step_root(
     ``root_xy_guess`` is the current root position, and it sets the facing direction, so the
     placement does depend on it: two different guesses put the same object at two different
     roots. Applying the function again from its own result does return that same root, but a
-    single pass can move the root further than ``|HAND_PREF|`` because the yaw itself moves.
-    The caller checks the distance with `step_too_far` — this function deliberately does not
-    clamp, because a 3 m unprojection is a bad measurement, not a walk.
+    single pass can move the root further than ``|HAND_PREF_xy|``: the displacement is
+    ``|root - guess| = | |obj - guess| - |HAND_PREF_xy| |``, so it grows with the object's
+    *distance*, not with the turn - the yaw rotation is what *minimises* the move.
+    ``HAND_PREF_xy`` is the 2-D norm, ``hypot(0.35, 0.28) = 0.4482`` m; the 3-D norm,
+    0.4727, is not what the code uses. The caller checks the distance with `step_too_far` —
+    this function deliberately does not clamp, because a 3 m unprojection is a bad
+    measurement, not a walk.
     """
     try:
         pref = HAND_PREF[side]
