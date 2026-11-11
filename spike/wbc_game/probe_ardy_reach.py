@@ -64,8 +64,14 @@ RESIDUAL_GATE_M = 0.10
 #: canonical hinge axes, and `to_qpos` keeps one atan2 per joint), and 0 mm is ours - MuJoCo's
 #: FK of the same qpos agrees with `_motion_pose` to 0.00 mm (`spike/ardy/verify_fk.py`). So
 #: this catches a gross mapping error - wrong joint order, axis or offset transpose, which is
-#: hundreds of mm - and not a bias under 30 mm.
-FK_ROUNDTRIP_GATE_M = 0.030
+#: hundreds of mm - and not a small bias.
+#:
+#: The gate is 50 mm, not the 30 mm this started at, because the metric is a max over 29 joints
+#: and its own floor moves with diffusion noise: 36 windows over 18 runs spanned 6.7-40.3 mm,
+#: so a 30 mm gate failed one run in eighteen for no reason. A gate that fires on the
+#: measurement's own spread teaches the next reader to ignore it. 50 mm still sits far below
+#: the hundreds of mm a real mapping error produces.
+FK_ROUNDTRIP_GATE_M = 0.050
 #: The same export loss in rotation: measured 2.0-10.5 deg max joint over 36 generated windows
 #: (18 probe runs, typically 2.5-5, the root goal's wider motion being the high end). A leaf
 #: joint on the wrong axis or sign moves its global rotation by roughly its own angle or twice
