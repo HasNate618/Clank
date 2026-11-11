@@ -6,6 +6,8 @@
 - Implements against: `spike/wbc/sonic_executor.py`, `spike/wbc/sonic_runner.py`, `spike/wbc_game/reach_vr.py`, `clank/workspace.py`, `clank/player_scale.py`
 - Does not implement: brain/planner changes, locate, glow, neck, HumanML3D training, SONIC or MotionBricks retraining
 
+> **Amendment 2026-11-11 — generator decision.** `research/motion-generators.md` compares this design's MotionBricks bet against Kimodo and ARDY. Outcome: **pursue ARDY** (live, end-effector constraints), **fall back to MotionBricks + Kimodo-authored still poses**. The parts of this spec that survive unchanged are §7.3 packing, §8.1 mode 0 + flatten-hold, §9 mailbox/process split, and the §11 gates; §6's IK still frame and §8.3's step chain exist only because MotionBricks cannot be told "hand here", and are superseded if ARDY passes its spike. Where the two disagree, `research/motion-generators.md` §8 decides what changes and when.
+
 Claim tags: `[MEASURED]` local file or named run; `[CITED]` external source; `[OPERATOR]` the person who owns the game; `[ASSUMPTION]` inference, untested. Builder calls are marked **(call)**.
 
 ## 1. Problem
