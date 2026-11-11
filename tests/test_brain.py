@@ -209,6 +209,78 @@ class PlannerSkills(unittest.TestCase):
         self.assertIn("rest", result.error)
 
 
+class WorkingMemoryTests(unittest.TestCase):
+    def test_card_finds_jobbot_card(self) -> None:
+        mem = brain.WorkingMemory()
+        mem.remember("JobBot card", brain.Sighting(
+            noun="JobBot card", present=True, pixel=(0.8, 0.4)))
+        found = mem.find("card")
+        self.assertIsNotNone(found)
+        self.assertIsNotNone(found)
+        assert found is not None
+        self.assertEqual(found.pixel, (0.8, 0.4))
+
+    def test_missing_noun_is_none(self) -> None:
+        self.assertIsNone(brain.WorkingMemory().find("card"))
+
+    def test_a_near_miss_is_not_a_match(self) -> None:
+        mem = brain.WorkingMemory()
+        mem.remember("cartridge", brain.Sighting(noun="cartridge", present=True))
+        self.assertIsNone(mem.find("card"))
+
+
+class AssembleLocate(unittest.TestCase):
+    def test_locate_does_not_emit_a_locate_intent(self) -> None:
+        d = brain.assemble(Plan(skill="locate", side="none", target="card"),
+                           None, seq=0, t_mono_ns=0)
+        self.assertEqual(d.intent.skill, "hold")
+        self.assertEqual(d.note, "locate")
+        self.assertTrue(d.accepted)
+
+    def test_reach_without_a_sighting_is_not_located(self) -> None:
+        d = brain.assemble(Plan(skill="reach", side="right", target="card"),
+                           None, seq=0, t_mono_ns=0, memory=brain.WorkingMemory())
+        self.assertFalse(d.accepted)
+        self.assertIn("not_located", d.reason)
+        self.assertEqual(d.intent.skill, "hold")
+
+    def test_reach_after_an_absent_sighting_is_not_located(self) -> None:
+        mem = brain.WorkingMemory()
+        mem.remember("card", brain.Sighting(
+            noun="card", present=False, outcome="not_visible"))
+        d = brain.assemble(Plan(skill="reach", side="right", target="card"),
+                           None, seq=0, t_mono_ns=0, memory=mem)
+        self.assertFalse(d.accepted)
+        self.assertIn("not_visible", d.reason)
+
+    def test_reach_with_a_sighting_fills_the_pixel(self) -> None:
+        mem = brain.WorkingMemory()
+        mem.remember("card", brain.Sighting(
+            noun="card", present=True, pixel=(0.81, 0.45)))
+        d = brain.assemble(Plan(skill="reach", side="right", target="card"),
+                           None, seq=0, t_mono_ns=0, memory=mem)
+        self.assertTrue(d.accepted)
+        self.assertEqual(d.intent.skill, "reach")
+        self.assertEqual(d.intent.pixel, (0.81, 0.45))
+
+    def test_grab_with_a_sighting_keeps_the_target(self) -> None:
+        mem = brain.WorkingMemory()
+        mem.remember("card", brain.Sighting(
+            noun="card", present=True, pixel=(0.81, 0.45)))
+        d = brain.assemble(Plan(skill="grab", side="right", target="card"),
+                           None, seq=0, t_mono_ns=0, memory=mem)
+        self.assertTrue(d.accepted, d.reason)
+        self.assertEqual(d.intent.skill, "grab")
+
+    def test_live_block_does_not_carry_coordinates(self) -> None:
+        text = brain.live_block(
+            "take my card", "empty", "empty", 0.0, "unknown",
+            "locate none target=card → present")
+        self.assertNotIn("0.8", text)
+        self.assertNotIn("px", text.lower())
+        self.assertNotIn("TOP-LEFT", text)
+
+
 class PromptText(unittest.TestCase):
     def test_seed_names_the_green_cartridge_the_slot_and_the_lever(self) -> None:
         s = brain.DEFAULT_SEED.lower()

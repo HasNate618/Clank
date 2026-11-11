@@ -1072,6 +1072,57 @@ def verify(config: BrainConfig, frame: Frame, noun: str) -> Verify:
 
 
 # --------------------------------------------------------------------------- #
+# WORKING MEMORY
+# --------------------------------------------------------------------------- #
+
+
+@dataclass(frozen=True)
+class Sighting:
+    """One thing the sense tools have found, in code, for this turn only.
+
+    The pixel lives here and nowhere else. Measured 2026-11-01 and again on 2026-11-08: a number in
+    a prompt is something the model will repeat back as if it had measured it, so the live block is
+    told `present` / `not_visible` / `too_far` and the coordinates stay in Python until an Intent
+    needs them.
+    """
+
+    noun: str
+    present: bool
+    pixel: tuple[float, float] | None = None      # full-frame [0, 1], as Intent wants
+    pixel_px: tuple[float, float] | None = None   # the frame's own pixels, as locate reports
+    metres: float | None = None
+    outcome: str = ""                             # present | not_visible | too_far | error
+
+
+@dataclass
+class WorkingMemory:
+    """What this turn has looked at, keyed by the noun the planner used.
+
+    Lifetime is one turn on purpose: the head moves between turns, so a pixel from the last turn is
+    a guess. Matching is deliberately loose in one direction only - `card` finds `JobBot card`,
+    because the planner says "card" and locate needs something to search for - and a miss is
+    `None` rather than a nearest key, because a near miss here means the arm reaches for the wrong
+    object.
+    """
+
+    sightings: dict[str, Sighting] = field(default_factory=dict)
+
+    def remember(self, noun: str, sighting: Sighting) -> None:
+        self.sightings[noun.strip().lower()] = sighting
+
+    def find(self, noun: str) -> Sighting | None:
+        key = noun.strip().lower()
+        if not key:
+            return None
+        if key in self.sightings:
+            return self.sightings[key]
+        for stored, sighting in self.sightings.items():
+            if key in stored or stored in key:
+                return sighting
+        return None
+
+
+# --------------------------------------------------------------------------- #
 # ASSEMBLE
 # --------------------------------------------------------------------------- #
 
@@ -1114,6 +1165,7 @@ def assemble(
     right: str = "empty",
     glow: str = "unknown",
     ghost: str = "unknown",
+    memory: WorkingMemory | None = None,
 ) -> Decision:
     """Turn a plan plus its grounding into an `Intent`, or explain the refusal.
 
@@ -1144,6 +1196,26 @@ def assemble(
     note = plan_result.note
     yaw_rad = None
 
+    # `locate` is a sense tool: the caller runs it and stores the Sighting. Emitting an Intent for
+    # it would be a lie in two directions - `clank.intent.SKILLS` has no such skill, and the body
+    # would be told to hold while the caller measures. The freeze-hold below is honest: nothing
+    # moves this think, and `note` says why.
+    if skill in SENSE_SKILLS:
+        return Decision(Intent(skill="hold", side="none", source="vlm", seq=seq,
+                               t_mono_ns=t_mono_ns),
+                        note="locate")
+
+    # A reach or grab at a thing nobody has located is refused, not silently located: the model is
+    # told `not_located` in its last line and is expected to choose `locate` next. Auto-locating
+    # here would put the choreography back in Python, which is the bug this whole slice fixes.
+    sighting = memory.find(target) if (memory is not None and target) else None
+    if (memory is not None and target and skill in ("reach", "grab")
+            and (sighting is None or not sighting.present)):
+        why = "never looked at it" if sighting is None else f"last look said {sighting.outcome or 'absent'}"
+        return Decision(Intent(skill="hold", side="none", source="vlm", seq=seq,
+                               t_mono_ns=t_mono_ns),
+                        reason=f"not_located: {target!r} - {why}", note=note)
+
     hand = {"left": left, "right": right}.get(side)
     if skill == "release" and hand == "empty":
         return Decision(Intent(skill="hold", side="none", source="vlm", seq=seq,
@@ -1166,7 +1238,10 @@ def assemble(
 
     needs_where = skill in ("reach", "look") and target is not None
     if needs_where:
-        if ground_result is None or ground_result.pixel is None:
+        if sighting is not None and sighting.present and sighting.pixel is not None:
+            pixel = sighting.pixel
+            note = f"located {sighting.noun!r}"
+        elif ground_result is None or ground_result.pixel is None:
             reason = (ground_result.error if ground_result and ground_result.error
                       else "target not grounded")
             # A named thing we cannot see is not a reason to guess a pixel; the
@@ -1179,15 +1254,26 @@ def assemble(
                               t_mono_ns=t_mono_ns,
                               yaw_rad=LOOK_ARC_RAD * (1 if look_step % 2 else -1))
             return Decision(fallback, reason=f"{reason}: {target!r}", note="downgraded to scan")
-        pixel = ground_result.pixel
+        else:
+            pixel = ground_result.pixel
 
     if skill == "grab" and target is not None:
-        if ground_result is None or ground_result.pixel is None:
+        if sighting is not None and sighting.present:
+            pixel = sighting.pixel
+            note = f"located {sighting.noun!r}"
+        elif memory is not None:
+            # Unreachable in practice: the not_located guard above already refused. Kept so the
+            # legacy path below cannot quietly take over when a memory is passed.
+            return Decision(Intent(skill="hold", side="none", source="vlm", seq=seq,
+                                   t_mono_ns=t_mono_ns),
+                            reason=f"grab {target!r} but it is not located")
+        elif ground_result is None or ground_result.pixel is None:
             return Decision(Intent(skill="hold", side="none", source="vlm", seq=seq,
                                    t_mono_ns=t_mono_ns),
                             reason=f"grab {target!r} but it is not visible")
-        pixel = ground_result.pixel
-        note = "grab does not need a pixel; target kept for verify"
+        else:
+            pixel = ground_result.pixel
+            note = "grab does not need a pixel; target kept for verify"
 
     if skill == "look" and target is None:
         yaw_rad = LOOK_ARC_RAD * (1 if look_step % 2 else -1)
