@@ -30,7 +30,7 @@ The spec itself was rewritten the same day: it now argues ARDY and carries no su
 - Unittest **must not** open `:4242`, `:5901`, `:8765`, `:8770`, `:8771`, or `:11434`.
 - Do **not** edit `run.sh`, `config.toml`, `flake.nix`, `clank/orchestrator.py`, `clank/config.py`, `clank/body.py` (`FRAMES`, `BodyCommand`), or `reach_vr.py` except a later one-line pointer after §11.5.
 - Do **not** put object XYZ or a clip on `BodyCommand`. Do **not** feed mink joints to SONIC as `upper_body` or `ctrl`.
-- Do **not** enable TF32. Do **not** build a TensorRT plan while the game is up.
+- Do **not** enable TF32. Do **not** build a TensorRT plan while the game is up. (ARDY needs none of this; the rule survives because the fallback does. Torch's own first CUDA call is the only warm-up ARDY needs.)
 - **ARDY's torch needs `LD_LIBRARY_PATH=/run/opengl-driver/lib`.** NixOS keeps `libcuda.so.1` off the loader path, so torch reports `cuda False` with a working driver. Every ARDY run uses `spike/ardy/.venv/bin/python` with that variable set.
 - **A scalar `cfg_weight` disables constraints.** With `cfg_type="separated"`, ARDY sets `w_text, w_cstr = cfg_weight, 0.0`, so a constrained run under the default ignores its constraints (measured: 870 mm instead of 60 mm). Always pass `(text, constraint)`.
 - **`num_denoising_steps` must be <= `num_base_steps`** (10 for this checkpoint). Larger values trip a device-side assert, not a clean error.
@@ -149,7 +149,7 @@ Message: `add g1 pose36 packing that skips the interleaved hands`
 ### Task 2: Envelope and stepped placement
 
 **Files:**
-- Create: `spike/wbc/end_pose.py` (stdlib at import time; mink stays inside `solve_*`)
+- Create: `spike/wbc/end_pose.py` (stdlib at import time; no IK in it — Task 5+ replaced the mink solves with constraints)
 - Test: `tests/test_end_pose.py`
 
 **Interfaces:**
