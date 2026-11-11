@@ -160,6 +160,44 @@ service, so the repo service is enough for full corners. If you edit the patch,
 rebuild (`nix build .#monado`), restart the dashboard/session, and use the new
 `CLANK_PATHS_MONADO_BIN`.
 
+## Body control: constraints into a generator, 2026-11-11
+
+The reach/grab path is being replaced. **It is not live yet**: `reach_vr.py` is still what the session runs.
+Design: `docs/superpowers/specs/2026-11-11-ardy-reach-design.md`. Plan: `docs/superpowers/plans/2026-11-11-ardy-reach.md`
+(work happens on the `motionbricks-reach` branch in `.worktrees/`). Comparison and measurements:
+`research/motion-generators.md`.
+
+The old shape was "hand-write a reference, then ask a policy to follow it". The new shape is "state what to
+achieve, let a motion prior choose the motion, let SONIC do the physics":
+
+```
+right hand at the object  +  feet planted  (or a root waypoint when out of reach)
+  -> ARDY-G1-RP-25FPS-Horizon52  ->  36-float qpos at 25 Hz
+  -> resample 25 -> 50 Hz        ->  SONIC mode 0 (10-frame look-ahead, flatten-hold at the end)
+  -> mj_step 500 Hz              ->  body_state.json -> pose_relay -> game
+```
+
+Measured on the 4060 `[MEASURED: research/motion-generators.md §9]`: 0.94 GB peak VRAM, 0.07–0.20 s per
+52-frame window, **45.5 mm** hand-constraint residual (33–80 mm unseeded), 0.566 m travelled of a 0.60 m root
+goal, and clip frame 0 within 1 mm / 0.8° of the live body. SONIC tracking a generated clip is still
+unmeasured — that is the gate that can still kill it.
+
+Four traps, all of which cost real time:
+
+- **`LD_LIBRARY_PATH=/run/opengl-driver/lib`.** On NixOS `libcuda.so.1` is off the loader path, so torch
+  reports `cuda False` with a perfectly good driver. Every ARDY run needs it.
+- **A scalar `cfg_weight` silently disables constraints.** With `cfg_type="separated"`, ARDY sets
+  `w_text, w_cstr = cfg_weight, 0.0` (`ardy_model.py:274-279`): 870 mm instead of 60 mm. Pass
+  `(text, constraint)`.
+- **`num_denoising_steps` must be <= `num_base_steps`** (10). Larger trips a CUDA device-side assert.
+- **No text encoder is needed.** The checkpoint conditions on one pooled 4096-vector
+  (`llm_shape: [1, 4096]`); pass zeros. Do not chase the gated Llama licence for a runtime dependency.
+
+The workspace: `spike/ardy/.venv` (Python 3.12, torch cu128, ARDY editable from a clone) and the checkpoint at
+`~/.local/state/Clank/ardy/ARDY-G1-RP-25FPS-Horizon52`. `spike/ardy/probe_g1.py` is the smallest working call.
+The shared transport (`spike/wbc/g1_pack.py`, `mb_mailbox.py`, `clip_from_gen.py`, `end_pose.py`) is stdlib and
+tested without a GPU.
+
 ## Gotchas
 
 - `clank/` is **standard-library only**. Numpy/MuJoCo/ONNX live in

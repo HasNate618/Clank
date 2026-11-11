@@ -8,7 +8,7 @@ Clank is a real-time controls and systems-integration project that uses a commer
 >
 > **The two halves are joined.** `body_view → body_state.json → pose_relay → Monado :4242 → game`, one simulation and no retargeting, so the body tile and the game show the same robot rather than two lookalikes. Co-residency is measured: beside the running game the body holds **44.2 Hz** against **44.5 Hz** alone, for **+177 MiB** of GPU memory.
 >
-> **Still not true: nobody has played it.** The trigger has never reached the game, the body has never walked in-game (it is clip-anchored, so it leans and reaches but does not step), and no level has been cleared. With the game running the simulation advances at **0.89× real time**. Everything below is labelled with what is proven, what is not, and where the number came from.
+> **Still not true: nobody has played it.** The trigger has never reached the game, the body has never walked in-game (it is clip-anchored, so it leans and reaches but does not step — the constraint-driven replacement is in progress, see `docs/superpowers/specs/2026-11-11-ardy-reach-design.md`), and no level has been cleared. With the game running the simulation advances at **0.89× real time**. Everything below is labelled with what is proven, what is not, and where the number came from.
 
 <!-- ![clank dashboard](docs/dashboard.png) -->
 
