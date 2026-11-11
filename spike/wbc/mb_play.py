@@ -35,6 +35,7 @@ if str(_HERE) not in sys.path:
     sys.path.insert(0, str(_HERE))
 
 import clip_from_gen  # noqa: E402
+import mb_mailbox  # noqa: E402
 
 #: The two statuses this module can report. `mb_mailbox.STATUSES` also allows `failed`,
 #: which the executor writes itself when a deposited clip cannot be read.
@@ -61,6 +62,70 @@ def after_clip(frame: int, n: int) -> str:
     be asked for an observation on the tick after it stopped advancing.
     """
     return DONE if frame >= n - 1 else PLAYING
+
+
+class Playback:
+    """Which deposited clip is playing, on which row, and which request was answered.
+
+    Two seqs, and they are not the same one. `requested_seq` is the last request taken out
+    of the mailbox - the mailbox is latest-wins, so it is what stops a payload that cannot
+    be loaded being re-attempted every 20 ms, and it is the seq a `failed` status names.
+    `clip_seq` is the request the clip *currently playing* came from, and `playing`/`done`
+    are only ever reported against it: a reload that fails while an older clip still runs
+    must not make that clip acknowledge a request that never ran.
+    """
+
+    def __init__(self) -> None:
+        self.requested_seq: int | None = None
+        self.clip_seq: int | None = None
+        self.frame = 0
+        self.n = 0
+
+    def pending(self, play: dict | None) -> dict | None:
+        """`play` if it is a request this instance has not taken yet, else `None`."""
+        return play if on_play_seq_change(self.requested_seq, play) else None
+
+    def rejected(self, seq: int) -> None:
+        """Record request `seq` as taken and unplayable. Any playing clip is untouched."""
+        self.requested_seq = int(seq)
+
+    def started(self, seq: int, n: int) -> None:
+        """Record request `seq` as the clip now playing, from its first row."""
+        self.requested_seq = int(seq)
+        self.clip_seq = int(seq)
+        self.frame = 0
+        self.n = int(n)
+
+    def advance(self) -> str:
+        """Report the status of the row just played, then move to the next one.
+
+        The status is decided **before** the index moves, so the last row is played by the
+        tick that reports `done` and only that tick leaves mode 0. Deciding after the move
+        skipped it: frames `0..n-2` played and mode 1 took the body back before `n-1` ever
+        reached an observation. A one-row clip still plays its one row, then finishes.
+        Frame stays on the last row once `done`, so a further tick cannot move it.
+        """
+        status = after_clip(self.frame, self.n)
+        if status != DONE:
+            self.frame, _ = clip_from_gen.clip_tick(self.frame, self.n)
+        return status
+
+
+def write_progress(session_dir: Path, seq: int, status: str, frame: int, n: int) -> str | None:
+    """Report progress for `seq`; return why it failed, or `None` when it landed.
+
+    This runs inside the 50 Hz body tick, which owns the physics: a mailbox is never worth
+    the loop. A session directory rotated or removed under a running body makes the atomic
+    replace raise `OSError`, and an unknown status raises `ValueError`; both come back as a
+    string instead. The caller warns once, because a directory that has gone away does not
+    come back: this converts a crash into silence, and the adapter is expected to notice
+    through the age of its clip rather than through a `failed` status it will never get.
+    """
+    try:
+        mb_mailbox.write_status(session_dir, seq, status, frame, n)
+    except (OSError, ValueError) as exc:
+        return str(exc) or type(exc).__name__
+    return None
 
 
 def lookahead_rows(frame: int, n: int) -> tuple[int, ...]:

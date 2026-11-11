@@ -2,11 +2,12 @@
 the look-ahead that holds the body still once it is.
 
 `sonic_executor.py` pulls MuJoCo and ONNX, so nothing here constructs it; the decisions it
-makes are extracted into `spike/wbc/mb_play.py` and tested there. The one exception is the
-text checks at the end, which read the executor as source to pin the two rules that matter
-most: a generated clip is never handed to `SonicRunner.reset` (it teleports the body, and a
-generated dict has no `bl`/`ba` so it raises), and the 50 Hz process never gains the
-generator's import.
+makes are extracted into `spike/wbc/mb_play.py` and tested there - including
+`Playback`, the tick ordering that decides when the last clip row is played and which seq
+a progress write may name. The one exception is the text checks at the end, which read the
+executor as source to pin the two rules that matter most: a generated clip is never handed
+to `SonicRunner.reset` (it teleports the body, and a generated dict has no `bl`/`ba` so it
+raises), and the 50 Hz process never gains the generator's import.
 
 The hold itself is a property of the look-ahead, not of the clip data. The clip's own rows
 are played in full and never rewritten; every one of the ten rows the mode-0 encoder reads
@@ -18,6 +19,8 @@ from __future__ import annotations
 
 import importlib.util
 import pathlib
+import shutil
+import tempfile
 import unittest
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -34,6 +37,7 @@ def _load(name: str):
 
 
 mb_play = _load("mb_play")
+mb_mailbox = _load("mb_mailbox")
 
 
 class PlaySeqChange(unittest.TestCase):
@@ -65,6 +69,119 @@ class AfterClip(unittest.TestCase):
 
     def test_a_one_frame_clip_is_done_at_frame_zero(self) -> None:
         self.assertEqual(mb_play.after_clip(0, 1), "done")
+
+
+def _play(seq: int) -> dict:
+    return {"seq": seq, "path": "mb_clip.npz"}
+
+
+class PlaybackClip(unittest.TestCase):
+    """The 50 Hz ordering: a tick observes `frame`, then `advance()` reports on it."""
+
+    def test_the_last_row_is_played_before_done(self) -> None:
+        play = mb_play.Playback()
+        play.started(1, 3)
+        reported = []
+        for _ in range(3):
+            frame = play.frame  # the row this tick builds its observation from
+            reported.append((frame, play.advance()))
+        # Frame 2 is observed and then reported `done`. Advancing before deciding skipped
+        # it: frames 0..1 played, mode 1 took the body back on the third tick.
+        self.assertEqual(
+            reported, [(0, "playing"), (1, "playing"), (2, "done")]
+        )
+
+    def test_every_row_of_a_longer_clip_is_played(self) -> None:
+        play = mb_play.Playback()
+        play.started(1, 10)
+        played = []
+        while True:
+            played.append(play.frame)
+            if play.advance() == "done":
+                break
+        self.assertEqual(played, list(range(10)))
+
+    def test_a_one_row_clip_plays_its_row_then_finishes(self) -> None:
+        play = mb_play.Playback()
+        play.started(1, 1)
+        self.assertEqual(play.frame, 0)
+        self.assertEqual(play.advance(), "done")
+        self.assertEqual(play.frame, 0)
+
+    def test_a_tick_after_done_stays_done_on_the_last_row(self) -> None:
+        play = mb_play.Playback()
+        play.started(1, 2)
+        play.advance()
+        self.assertEqual(play.advance(), "done")
+        self.assertEqual(play.advance(), "done")
+        self.assertEqual(play.frame, 1)
+
+    def test_a_started_request_is_not_loaded_twice(self) -> None:
+        play = mb_play.Playback()
+        self.assertTrue(play.pending(_play(1)))
+        play.started(1, 4)
+        self.assertFalse(play.pending(_play(1)))
+        self.assertTrue(play.pending(_play(2)))
+
+    def test_a_rejected_request_is_not_retried_every_tick(self) -> None:
+        play = mb_play.Playback()
+        self.assertTrue(play.pending(_play(7)))
+        play.rejected(7)
+        self.assertFalse(play.pending(_play(7)))
+        self.assertTrue(play.pending(_play(8)))
+
+    def test_a_failed_reload_keeps_the_playing_clips_seq(self) -> None:
+        play = mb_play.Playback()
+        play.started(1, 4)
+        play.advance()
+        # Seq 2 is deposited and cannot be read: the request is taken, the clip is not.
+        self.assertTrue(play.pending(_play(2)))
+        play.rejected(2)
+        self.assertEqual(play.clip_seq, 1, "progress must name the clip that ran")
+        self.assertEqual(play.frame, 1)
+        self.assertEqual(play.advance(), "playing")
+        self.assertEqual(play.clip_seq, 1)
+        self.assertEqual(play.frame, 2)
+
+
+class ProgressWrite(unittest.TestCase):
+    """Reporting is best-effort: the 50 Hz tick owns the physics, not the mailbox."""
+
+    def test_a_report_that_lands_returns_none(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            session = pathlib.Path(tmp)
+            self.assertIsNone(mb_play.write_progress(session, 1, "playing", 0, 4))
+            self.assertEqual(mb_mailbox.read_status(session)["status"], "playing")
+
+    def test_a_removed_session_directory_is_returned_not_raised(self) -> None:
+        # The measured failure: a session directory rotated or removed under a running
+        # body made the atomic replace raise FileNotFoundError out of `step()`.
+        with tempfile.TemporaryDirectory() as tmp:
+            session = pathlib.Path(tmp) / "body"
+            session.mkdir()
+            shutil.rmtree(session)
+            self.assertIsNotNone(mb_play.write_progress(session, 1, "playing", 0, 4))
+
+    def test_an_unknown_status_is_returned_not_raised(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertIsNotNone(
+                mb_play.write_progress(pathlib.Path(tmp), 1, "halfway", 0, 4)
+            )
+
+    def test_a_failed_report_does_not_stop_the_clip(self) -> None:
+        play = mb_play.Playback()
+        play.started(1, 3)
+        with tempfile.TemporaryDirectory() as tmp:
+            session = pathlib.Path(tmp) / "body"
+            session.mkdir()
+            shutil.rmtree(session)
+            for _ in range(3):
+                status = play.advance()
+                self.assertIsNotNone(
+                    mb_play.write_progress(session, play.clip_seq, status, play.frame, play.n)
+                )
+        # The rows were still played out and the clip still owns its own seq.
+        self.assertEqual((play.clip_seq, play.frame, play.n), (1, 2, 3))
 
 
 class LookaheadRows(unittest.TestCase):
@@ -105,6 +222,19 @@ class ExecutorSource(unittest.TestCase):
     def test_executor_does_not_import_the_generator(self) -> None:
         self.assertNotIn("ardy_gen", self.text)
         self.assertNotIn("end_pose", self.text)
+
+    def test_playback_progress_is_reported_against_the_playing_clip(self) -> None:
+        # `_mb_seq` used to be assigned before the load, so a clip that was still running
+        # wrote `playing`/`done` naming a seq that had already been rejected. The accepted
+        # request and the playing clip are two pieces of state; progress names the second.
+        self.assertIn("self._playback.clip_seq", self.text)
+        self.assertNotIn("self._mb_seq", self.text)
+
+    def test_progress_writes_go_through_the_guarded_writer(self) -> None:
+        # A status write that raises is how the tick died when the session directory went
+        # away mid-session, so every site goes through the one writer that swallows it.
+        self.assertNotIn("mb_mailbox.write_status(", self.text)
+        self.assertEqual(self.text.count("self._write_status("), 3)
 
     def test_executor_resets_only_at_construction(self) -> None:
         # One reset, in `__init__`, puts the body on the standing clip at startup. A second
