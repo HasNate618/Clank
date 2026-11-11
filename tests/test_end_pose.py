@@ -120,5 +120,69 @@ class StepPlacement(unittest.TestCase):
         self.assertEqual(end_pose.HAND_PREF_LEFT, (0.35, 0.28, 0.15))
 
 
+class Escalation(unittest.TestCase):
+    def test_success_stops(self) -> None:
+        self.assertEqual(end_pose.decide_next(kind="planted", residual_m=0.06, escalated=False,
+                                              gen=1, elapsed_s=1.0, generated=1), "stop")
+
+    def test_short_hand_escalates_once(self) -> None:
+        self.assertEqual(end_pose.decide_next(kind="planted", residual_m=0.25, escalated=False,
+                                              gen=1, elapsed_s=1.0, generated=1), "escalate")
+
+    def test_already_escalated_is_saturated(self) -> None:
+        # One root goal is the whole budget, so a second request for one is a dead end, not
+        # a quiet stop: the caller has to report the residual it could not beat.
+        self.assertEqual(end_pose.decide_next(kind="planted", residual_m=0.25, escalated=True,
+                                              gen=2, elapsed_s=2.0, generated=2), "saturated")
+
+    def test_generation_budget_is_bounded(self) -> None:
+        self.assertEqual(end_pose.decide_next(kind="planted", residual_m=0.25, escalated=False,
+                                              gen=1, elapsed_s=1.0,
+                                              generated=end_pose.MAX_STEP_GEN), "saturated")
+
+    def test_a_planted_reach_just_short_stops_instead_of_escalating(self) -> None:
+        # 0.09 m is inside the 0.33-0.80 m spread the unseeded generator shows, so spending
+        # a regeneration on it would be chasing sampling noise.
+        self.assertEqual(end_pose.decide_next(kind="planted", residual_m=0.09, escalated=False,
+                                              gen=1, elapsed_s=1.0, generated=1), "stop")
+
+    def test_a_residual_on_the_10_cm_gate_stops(self) -> None:
+        # "more than ROOT_GOAL_RESIDUAL_M short" is strict: exactly 10 cm is not a shortfall.
+        self.assertEqual(end_pose.decide_next(kind="planted", residual_m=0.10, escalated=False,
+                                              gen=1, elapsed_s=1.0, generated=1), "stop")
+
+    def test_an_out_of_reach_object_escalates_even_on_a_good_residual(self) -> None:
+        # The object sits outside the planted envelope: no hand-only generation can serve it,
+        # however close this one came.
+        self.assertEqual(end_pose.decide_next(kind="step", residual_m=0.09, escalated=False,
+                                              gen=1, elapsed_s=1.0, generated=1), "escalate")
+
+    def test_a_reached_object_does_not_escalate_because_the_pose_was_a_step(self) -> None:
+        # Success trumps the classification. The hand is on the object; stepping now would
+        # walk away from a grab that already works.
+        self.assertEqual(end_pose.decide_next(kind="step", residual_m=0.05, escalated=False,
+                                              gen=1, elapsed_s=1.0, generated=1), "stop")
+
+    def test_the_root_goal_gate_is_10_cm(self) -> None:
+        self.assertEqual(end_pose.ROOT_GOAL_RESIDUAL_M, 0.10)
+
+    def test_the_time_budget_alone_is_saturated(self) -> None:
+        # A chain that has spent its 8 s has no room for one more root goal.
+        self.assertEqual(end_pose.decide_next(kind="planted", residual_m=0.25, escalated=False,
+                                              gen=1, elapsed_s=end_pose.STEP_CHAIN_S,
+                                              generated=1), "saturated")
+
+    def test_a_residual_on_the_success_boundary_stops(self) -> None:
+        # `<= TRACK_SUCCESS_M` is a success; 8 cm is inside SONIC's own tracking error.
+        self.assertEqual(end_pose.decide_next(kind="planted", residual_m=end_pose.TRACK_SUCCESS_M,
+                                              escalated=False, gen=1, elapsed_s=1.0,
+                                              generated=1), "stop")
+
+    def test_saturating_does_not_override_a_success(self) -> None:
+        self.assertEqual(end_pose.decide_next(kind="planted", residual_m=0.02, escalated=False,
+                                              gen=end_pose.MAX_STEP_GEN, elapsed_s=1.0,
+                                              generated=end_pose.MAX_STEP_GEN), "stop")
+
+
 if __name__ == "__main__":
     unittest.main()

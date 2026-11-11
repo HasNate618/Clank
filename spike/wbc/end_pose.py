@@ -10,12 +10,14 @@ Two gates decide the answer, and both are needed.
   At or above ``PLANTED_RESIDUAL_M`` the object is out of reach from the current feet, so
   the root steps even though the direction was fine.
 
-`step_root` is the placement arithmetic of the design spec §6.4 steps 1-2, pure planar
-geometry: turn until the preferred hand direction points at the object, then put the root
-behind it so that the preferred hand point lands on the object.
+`step_root` is that root-goal placement, pure planar geometry: turn until the preferred hand
+direction points at the object, then put the root behind it so that the preferred hand point
+lands on the object. Under the ARDY adapter the goal is a constraint handed to the generator,
+not a pose authored here, and `decide_next` is the policy that spends it: one root goal, then
+stop with the best residual reached.
 
-Nothing here imports NumPy, MuJoCo or mink: `classify` and `step_root` are stdlib, and the
-solves are the only places a heavy import belongs.
+Nothing here imports NumPy, MuJoCo or mink: `classify`, `step_root` and `decide_next` are
+stdlib, and the solves are the only places a heavy import belongs.
 """
 
 from __future__ import annotations
@@ -26,6 +28,7 @@ PLANTED_YAW_RAD = math.radians(35)
 PLANTED_RESIDUAL_M = 0.05
 TRACK_SUCCESS_M = 0.08
 CLASP_START_M = 0.08
+ROOT_GOAL_RESIDUAL_M = 0.10
 MAX_STEP_M = 1.5
 MAX_STEP_GEN = 4
 STEP_CHAIN_S = 8.0
@@ -62,12 +65,14 @@ def step_root(
     side: str,
     root_xy_guess: tuple[float, float],
 ) -> tuple[tuple[float, float], float]:
-    """Root xy and yaw of a stand whose preferred hand sits on the object.
+    """Root xy and yaw that put the preferred hand on the object: one root goal.
 
-    ``root_xy_guess`` is the current root position, used once for the facing direction;
-    the placement itself does not depend on it. The caller checks the distance with
-    `step_too_far` — this function deliberately does not clamp, because a 3 m unprojection
-    is a bad measurement, not a walk.
+    ``root_xy_guess`` is the current root position, and it sets the facing direction, so the
+    placement does depend on it: two different guesses put the same object at two different
+    roots. Applying the function again from its own result does return that same root, but a
+    single pass can move the root further than ``|HAND_PREF|`` because the yaw itself moves.
+    The caller checks the distance with `step_too_far` — this function deliberately does not
+    clamp, because a 3 m unprojection is a bad measurement, not a walk.
     """
     try:
         pref = HAND_PREF[side]
@@ -85,6 +90,43 @@ def step_root(
 def step_too_far(root_xy: tuple[float, float], guess_xy: tuple[float, float]) -> bool:
     """True when the placement asks the root to travel further than one reach may step."""
     return math.hypot(root_xy[0] - guess_xy[0], root_xy[1] - guess_xy[1]) > MAX_STEP_M
+
+
+def decide_next(
+    *,
+    kind: str,
+    residual_m: float,
+    escalated: bool,
+    gen: int,
+    elapsed_s: float,
+    generated: int,
+) -> str:
+    """"escalate", "stop" or "saturated" for a generation whose hand residual is known.
+
+    ``kind`` is `classify`'s answer for the object, ``residual_m`` the distance from the
+    achieved hand to the object, ``escalated`` whether a root goal has already been spent,
+    ``generated`` how many clips the chain has produced, ``elapsed_s`` how long it has run and
+    ``gen`` the attempt index the caller prints; the budget rule reads ``generated``.
+
+    Success is checked first. A hand on the object stops even when `classify` called the pose
+    a step: walking away from a grab that works is the one failure the chain cannot recover
+    from. Otherwise an object outside the planted envelope, or a residual over
+    ``ROOT_GOAL_RESIDUAL_M``, wants a root goal — but one, so a spent root goal, a spent
+    generation budget or a spent chain timeout answers "saturated" and the caller reports the
+    best residual it reached instead of asking again. Anything left is "stop": a planted
+    reach a few centimetres short is inside the generator's own spread, and chasing it would
+    spend a generation on sampling noise.
+
+    Design spec §6.4's chain vocabulary also includes "generate"; v1 has no rule that emits
+    it. The first generation is unconditional and this decision is only asked after one.
+    """
+    if residual_m <= TRACK_SUCCESS_M:
+        return "stop"
+    if kind == "step" or residual_m > ROOT_GOAL_RESIDUAL_M:
+        if escalated or generated >= MAX_STEP_GEN or elapsed_s >= STEP_CHAIN_S:
+            return "saturated"
+        return "escalate"
+    return "stop"
 
 
 def solve_planted(*args: object, **kwargs: object) -> tuple[float, ...]:
