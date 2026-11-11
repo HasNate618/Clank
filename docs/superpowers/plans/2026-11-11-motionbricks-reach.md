@@ -543,7 +543,7 @@ def test_executor_does_not_import_the_generator(self) -> None:
 
 Run: `python3 -m unittest tests.test_mb_play -v`
 
-Expected: FAIL until the helper exists / grep is red on current executor (grep should already PASS for motionbricks_gen; that's fine — the seq helper fails).
+Expected: FAIL until the helper exists / grep is red on current executor the grep should already PASS for the generator names; that is fine — the seq helper fails).
 
 - [ ] **Step 3: Implement session_dir playback in `sonic_executor.py` and pass `out` from `body_view.py`**
 
