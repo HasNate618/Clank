@@ -116,9 +116,10 @@ history = last N achieved poses
 
 ## 7. Open questions, and the experiment that settles each
 
-1. **Does ARDY's denoiser fit beside the game?** Measure peak VRAM at batch 1 / horizon 52 / bf16, `separated` vs `nocfg`, text on CPU, game up and game down. *(game-down spike, one session)*
+1. **Does ARDY's denoiser fit beside the game?** Weights are known: `nvidia/ARDY-G1-RP-25FPS-Horizon52` is 775 MB total (`denoiser.safetensors` 632 MB, `tokenizer.safetensors` 143 MB), public and ungated `[REPO: HF API, 2026-11-11]`. So the open part is only activations at batch 1 / horizon 52 / bf16, `separated` vs `nocfg`. *(game-down spike, one session)*
 2. **Is constraint-only generation usable?** Same constrained reach with text vs zero text; compare hand-constraint adherence and how human the path looks. *(same spike)*
-3. **Is ARDY's G1 output in our qpos layout?** ARDY's plain G1 rep is explicit-root + latent body, but it also ships a KimodoRep variant; confirm the export is 36 floats in hardware order before any packing work. `[REPO: ardy/model/registry.py + motion_rep/reps/]`
+3. **Is ARDY's G1 output in our qpos layout?** **Answered before the spike.** `MujocoQposConverter` exports "root (pelvis, 7 = translation + rotation) + 29 dof joints (29)", z-up, +X forward, right-handed `[REPO: ardy/exports/mujoco.py:21-32]` — our pose36 exactly. ARDY's *internal* space is y-up/z-forward over 34 joints, and the converter owns that change, so Tasks 1 and 4 plug in unchanged.
+6. **Is the still-frame path needed at all?** `scripts/generate.py --model g1 --duration N --constraints x.json` writes both ARDY npz and a MuJoCo qpos CSV `[REPO: scripts/generate.py:303-316]`, so the first constrained generated reach is a CLI call, not a bridge script. The CLI has no text-free flag, which is why the text-free arm needs a short library call instead.
 4. **25 → 50 Hz resampling:** our Task 4 already parameterises `src_hz`; verify the velocities, not just the positions, because SONIC's look-ahead compares both.
 5. **Does SONIC track ARDY motion as well as MotionBricks motion?** Unchanged from the spec's kill criterion: >15 cm means stop, not fall back to the cruise.
 
