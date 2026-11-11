@@ -47,6 +47,10 @@
         <span id="state" class="badge">stopped</span>
         <button id="start" class="btn btn-go" disabled>Start</button>
         <button id="stop" class="btn btn-halt" disabled>Stop</button>
+        <!-- JobBot asks the player to press the controller's menu button; nothing on the robot
+             can reach it, so this asks the relay for one press. -->
+        <button id="menu-press" class="btn" type="button"
+                aria-label="Press the controller menu button" disabled>Menu</button>
         <button id="mute-audio" class="btn btn-icon btn-audio" type="button" aria-label="Mute game audio" disabled>
           <svg class="icon icon-on" viewBox="0 0 24 24" aria-hidden="true">
             <path d="M4 9.5h3.2L12 5.6v12.8L7.2 14.5H4z"/>

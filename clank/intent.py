@@ -46,14 +46,18 @@ SKILLS = (
     "strike",
     "dodge",
     "twitch",
+    "menu",
 )
 
 SIDES = ("none", "left", "right")
 
+#: `menu` is the controller's system button, which exists per hand, so it takes a side - the
+#: robot cannot press it with a finger, so it is a request to the relay rather than a motion.
+#:
 #: Skills that address one hand. `hold`/`look`/`twitch` do not, and a side on one
 #: of those is rejected rather than ignored - a caller that believes it grabbed
 #: something with `hold` has a bug worth seeing.
-SIDE_SKILLS = ("reach", "grab", "release", "place", "fire", "strike", "dodge")
+SIDE_SKILLS = ("reach", "grab", "release", "place", "fire", "strike", "dodge", "menu")
 
 SOURCES = ("human", "vlm", "planner", "script")
 

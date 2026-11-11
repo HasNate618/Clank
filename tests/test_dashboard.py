@@ -19,6 +19,7 @@ from clank.body_preview import BodyPreview
 from clank.config import load_config
 from clank.dashboard import DashboardHandler, DashboardServer, OverlayBoard
 from clank.manual_input import ManualInputError, ManualInputUnavailable
+from clank import pose_relay
 from clank.orchestrator import ConflictError, MODES, PreflightError, SessionManager
 
 
@@ -872,3 +873,61 @@ class OverlayBoardTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class MenuRouteTestCase(unittest.TestCase):
+    """POST /api/menu is the dashboard's press of the controller's menu button.
+
+    The button is not on the body: no joint of the simulated G1 can press it, so the request goes
+    to the relay as a file and the relay turns it into a short system_click. This test pins that
+    the dashboard writes a request and never pretends to have pressed a button itself.
+    """
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.cfg = load_config(None, base_dir=Path(self.tmp.name))
+        self.base = Path(self.tmp.name) / "static"
+        self.base.mkdir(exist_ok=True)
+        self.manager = FakeManager(self.base)
+        self.click_file = Path(self.tmp.name) / "relay-click.json"
+
+    def _post(self, doc: dict | None = None) -> tuple[int, dict]:
+        server = DashboardServer(("127.0.0.1", 0), self.manager, self.cfg, self.base)
+        port = server.server_address[1]
+        thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.05},
+                                  daemon=True)
+        thread.start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+        with patch.object(pose_relay, "DEFAULT_CLICK_FILE", str(self.click_file)):
+            conn.request("POST", "/api/menu", json.dumps(doc or {}).encode(),
+                         {"Content-Type": "application/json"})
+            response = conn.getresponse()
+            raw = response.read()
+            conn.close()
+        try:
+            return response.status, json.loads(raw)
+        except json.JSONDecodeError:
+            return response.status, {"raw": raw.decode(errors="replace")}
+
+    def test_a_press_writes_a_request_for_the_relay(self) -> None:
+        status, doc = self._post()
+        self.assertEqual(status, 200, doc)
+        self.assertTrue(doc.get("accepted"))
+        saved = json.loads(self.click_file.read_text())
+        self.assertEqual(saved["hand"], "right")
+        self.assertIsInstance(saved["seq"], int)
+        self.assertGreater(saved["seq"], 0)
+
+    def test_the_hand_can_be_chosen(self) -> None:
+        status, _ = self._post({"hand": "left"})
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(self.click_file.read_text())["hand"], "left")
+
+    def test_an_unknown_hand_is_rejected_before_anything_is_written(self) -> None:
+        status, doc = self._post({"hand": "both"})
+        self.assertEqual(status, 400)
+        self.assertIn("unknown hand", doc.get("error", ""))
+        self.assertFalse(self.click_file.exists())

@@ -118,8 +118,11 @@ class PlanParser(ChatPatchMixin, unittest.TestCase):
 
 class PlannerSkills(unittest.TestCase):
     def test_motor_tools_are_a_subset_of_the_intent_schema(self) -> None:
+        # `menu` is in both: it is a motor tool the model may choose and a legal Intent, because
+        # the controller's system button is a real thing to press - it just cannot be reached by
+        # a finger, so the adapter sends it as a request instead of a motion.
         self.assertEqual(set(brain.MOTOR_SKILLS),
-                         {"hold", "look", "reach", "grab", "release"})
+                         {"hold", "look", "reach", "grab", "release", "menu"})
         self.assertLessEqual(set(brain.MOTOR_SKILLS), set(SKILLS))
 
     def test_sense_tools_are_not_intent_skills(self) -> None:
@@ -230,6 +233,23 @@ class PlannerSkills(unittest.TestCase):
             case.tearDown()
         self.assertFalse(result.ok)
         self.assertIn("rest", result.error)
+
+
+class MenuSkill(unittest.TestCase):
+    """JobBot asks for the menu button early. Nothing on the body can press it."""
+
+    def test_the_constitution_offers_menu_with_a_hand(self) -> None:
+        self.assertIn('"menu"', brain.CONSTITUTION)
+        self.assertIn("menu    press the controller menu button", brain.CONSTITUTION)
+
+    def test_a_menu_plan_assembles_into_a_legal_intent(self) -> None:
+        from clank.intent import validate_intent
+
+        decision = brain.assemble(Plan(skill="menu", side="right"), None, seq=0, t_mono_ns=0)
+        self.assertTrue(decision.accepted, decision.reason)
+        self.assertEqual(decision.intent.skill, "menu")
+        self.assertEqual(decision.intent.side, "right")
+        self.assertEqual(validate_intent(decision.intent), "")
 
 
 class WorkingMemoryTests(unittest.TestCase):

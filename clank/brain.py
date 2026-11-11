@@ -68,7 +68,7 @@ SENSE_SKILLS = ("locate",)
 #: stills and every hand action came back `release`; offered as `find` it was chosen on the frame
 #: where the card was clearest. Same tool, so the alias costs nothing and hides no decision.
 SENSE_ALIASES = {"find": "locate", "search": "locate"}
-MOTOR_SKILLS = ("hold", "look", "reach", "grab", "release")
+MOTOR_SKILLS = ("hold", "look", "reach", "grab", "release", "menu")
 PLANNER_SKILLS = MOTOR_SKILLS + SENSE_SKILLS
 
 #: The words the constitution promises the model will be told after each action.
@@ -159,6 +159,7 @@ grab it
 - reach   move one hand toward a named thing you have located
 - grab    close one hand
 - release open one hand
+- menu    press the controller menu button; name the hand
 
 While holding something, reach moves it with that hand.
 
@@ -166,11 +167,11 @@ After find you are told present or not_visible. After a hand action you are \
 told done, saturated, or timeout, and you see a new image.
 
 Reply with one JSON object and nothing else. All three keys are always present:
-{"skill":"hold"|"look"|"find"|"reach"|"grab"|"release",\
+{"skill":"hold"|"look"|"find"|"reach"|"grab"|"release"|"menu",\
 "side":"none"|"left"|"right","target": <noun string or null>}
 
 side is "none" for hold, look and find, and is "left" or "right" for reach, \
-grab and release.
+grab, release and menu.
 
 Do what the voice asked. Do not invent extra chores. Find a thing before you reach for it. If find said it is not there, look. If you are unsure, hold.
 

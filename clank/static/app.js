@@ -747,6 +747,8 @@ function applyControls(state) {
   audioButton.disabled = actionInFlight || !running || !audio.available;
   const body = state.body || null;
   const bodyRunning = Boolean(body && body.running);
+  // The menu button needs a running session: without one there is no relay to ask.
+  $("menu-press").disabled = actionInFlight || !running;
   $("body-start").disabled = actionInFlight || !body || !body.enabled || bodyRunning;
   $("body-stop").disabled = actionInFlight || !body || !bodyRunning;
 }
@@ -1037,6 +1039,22 @@ $("mode-toggle").onclick = () => {
 };
 
 $("mute-audio").onclick = () => runAction(() => post("/api/audio/mute", { muted: !(lastState?.audio?.muted) }));
+
+// One press of the controller's menu button. It is a request to the relay file, so it works
+// whichever pose mode is running - including `manual`, where the body is not driving anything.
+$("menu-press").onclick = async () => {
+  const button = $("menu-press");
+  button.disabled = true;
+  try {
+    await post("/api/menu", { hand: "right" });
+    button.classList.add("btn-fired");
+    setTimeout(() => button.classList.remove("btn-fired"), 220);
+  } catch (err) {
+    button.title = `menu press failed: ${err.message}`;
+  } finally {
+    button.disabled = false;
+  }
+};
 
 $("theme-toggle").onclick = () => {
   const next = currentTheme() === "light" ? "dark" : "light";

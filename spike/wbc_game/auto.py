@@ -48,11 +48,11 @@ import reach_vr  # noqa: E402
 
 import math  # noqa: E402
 
-from clank import brain, brainlog, ears  # noqa: E402
+from clank import brain, brainlog, ears, pose_relay  # noqa: E402
 from clank.body import Pose  # noqa: E402
 from clank.brain import BrainConfig, Frame  # noqa: E402
 from clank.depth_stream import Stream  # noqa: E402
-from clank.pixel3d import point_from_pixel  # noqa: E402
+from clank.player_scale import read as read_player_scale  # noqa: E402
 from clank.projection import Fov  # noqa: E402
 
 HERE = pathlib.Path(__file__).resolve().parent
@@ -250,13 +250,17 @@ def sense(target: str, memory: brain.WorkingMemory, stamp: str):
         # Two questions, two samples. The *median* around the pixel says whether this is an
         # object at all (a sign on a far wall measures metres and is refused); the *nearest*
         # is the card itself, a thin plane standing in front of that wall.
-        centre = point_from_pixel(depth_frame, pixel[0] / size[0], pixel[1] / size[1],
-                                  camera, FOV)
+        # Both go through the declared player scale: a session told to report 1.43x would
+        # otherwise place every sighting 1.43x past the object.
+        declared = read_player_scale()
+        centre = declared.pixel_point(depth_frame, pixel[0] / size[0], pixel[1] / size[1],
+                                      camera, FOV)
         if centre is not None:
             metres = min(math.dist(centre, reach_vr.wrist("left")),
                          math.dist(centre, reach_vr.wrist("right")))
-        point = point_from_pixel(depth_frame, pixel[0] / size[0], pixel[1] / size[1],
-                                 camera, FOV, nearest=True, min_m=reach_vr.MIN_SURFACE_M)
+        point = declared.pixel_point(depth_frame, pixel[0] / size[0], pixel[1] / size[1],
+                                    camera, FOV, nearest=True,
+                                    min_m=reach_vr.MIN_SURFACE_M)
         if point is not None:
             side = "left" if point[1] > 0.0 else "right"
     outcome = "present"
@@ -387,6 +391,13 @@ def one_turn(say: str = "", pattern: str = ears.DEFAULT_PATTERN,
         yaw_deg = math.degrees(intent.yaw_rad or 0.0)
         look(yaw_deg, "right")
         brainlog.log("act", f"look({yaw_deg:+.0f} deg)")
+        return spoken
+    if skill == "menu":
+        # JobBot asks a player to press the controller's menu button, and no joint of the
+        # simulated body can press it: the press goes out on the wire as a short system_click
+        # from the relay, which is the same path the dashboard button uses.
+        request = pose_relay.request_click(intent.side)
+        brainlog.log("act", f"menu({intent.side})", seq=request.get("seq"))
         return spoken
     if skill == "release":
         reach_vr.send(verb=f"open_{intent.side}")

@@ -378,6 +378,7 @@ def fill(
     curl: tuple[float, float] = (0.0, 0.0),
     trigger: tuple[float, float] = (0.0, 0.0),
     trigger_click: tuple[bool, bool] = (False, False),
+    system_click: tuple[bool, bool] = (False, False),
     fov: tuple[float, float] | None = None,
     ipd_m: float = 0.063,
 ) -> RemoteData:
@@ -449,6 +450,10 @@ def fill(
         c.trigger_value.x = trigger[i]
         c.trigger_touch = trigger[i] > 0.0
         c.trigger_click = bool(trigger_click[i])
+        # The menu button. The remote driver maps this bit to XRT_INPUT_INDEX_SYSTEM_CLICK
+        # (`r_device.c`, inputs[0]), which is the Index controller's menu click - the button
+        # JobBot asks a player to press and the one thing here that cannot come from the body.
+        c.system_click = bool(system_click[i])
         c.thumbstick.x = 0.0
         c.thumbstick.y = 0.0
     return d

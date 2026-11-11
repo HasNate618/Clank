@@ -20,6 +20,7 @@ from .config import Config
 from .depth_stream import bmp, latest
 from .manual_input import ManualInputError, ManualInputUnavailable
 from .orchestrator import ConflictError, PreflightError, SessionManager
+from .pose_relay import request_click
 from .processes import tail_stream
 
 
@@ -263,6 +264,21 @@ class DashboardHandler(BaseHTTPRequestHandler):
             except Exception:
                 return self._error(500, "internal server error")
             return self._json({"accepted": True, "armed": bool(armed)})
+        if path == "/api/menu":
+            # The menu button lives on the controller, not on the body: no joint of the
+            # simulated G1 can press it, and JobBot asks a player to press it early. So the
+            # dashboard asks the relay for one press, and the relay turns that into a short
+            # system_click on the wire (XRT_INPUT_INDEX_SYSTEM_CLICK).
+            if not self._origin_allowed():
+                return self._error(403, "cross-origin input rejected")
+            hand = body.get("hand", "right")
+            if not isinstance(hand, str) or hand not in ("left", "right"):
+                return self._error(400, f"unknown hand: {hand}")
+            try:
+                request = request_click(hand)
+            except OSError as exc:
+                return self._error(503, f"cannot write the press request: {exc}")
+            return self._json({"accepted": True, **request})
         if path == "/api/body/start":
             body = self.server.body
             if body is None:

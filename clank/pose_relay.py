@@ -35,8 +35,10 @@ from pathlib import Path
 from typing import Any
 
 try:  # both shapes work: `-m clank.pose_relay` and a direct file run
+    from . import player_scale as player_scale_file
     from . import wire
 except ImportError:  # pragma: no cover - only when executed as a script
+    import player_scale as player_scale_file  # type: ignore[no-redef]
     import wire  # type: ignore[no-redef]
 
 #: How old body_state.json may be before the relay reports it stale, seconds.
@@ -199,6 +201,75 @@ class YawFile:
             return self.rad
         self.rad = math.radians(value)
         return self.rad
+
+
+#: How long a requested press stays down. Long enough for the game to sample it at 60-90 Hz
+#: from a relay sending ~50 Hz packets, short enough that it reads as a click and not a hold.
+CLICK_HOLD_S = 0.15
+
+#: Where a press request lives. Someone else writes it - the dashboard button, or the brain
+#: choosing the `menu` skill - and the relay turns it into packets.
+DEFAULT_CLICK_FILE = "~/.local/state/Clank/relay-click.json"
+
+
+def request_click(hand: str = "right", path: str | os.PathLike[str] | None = None,
+                  hold_s: float = CLICK_HOLD_S) -> dict:
+    """Ask the relay to press the controller's menu button once.
+
+    The menu button is on the controller, not on the body: no joint of the simulated G1 can press
+    it, and JobBot asks for it early ("hit the menu button"). So a press is a request in a file
+    that the relay polls, and the relay holds the bit down for `hold_s` so a 60-90 Hz game sees it.
+    """
+    target = Path(os.path.expanduser(path or DEFAULT_CLICK_FILE))
+    target.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "seq": time.time_ns(),
+        "hand": hand if hand in ("left", "right") else "right",
+        "hold_s": float(hold_s),
+    }
+    raw = json.dumps(payload).encode("utf-8")
+    tmp = target.with_suffix(target.suffix + f".{os.getpid()}.tmp")
+    tmp.write_bytes(raw)
+    os.replace(tmp, target)
+    return payload
+
+
+class ClickFile:
+    """Turns a new press request into a short click the game can see.
+
+    It is deliberately not a level: a file left behind must not hold the menu button down, or the
+    game would sit in a menu nobody can leave. Only the change of a request's sequence number
+    starts a new press, so the relay can poll as fast as it writes packets.
+    """
+
+    def __init__(self, path: str | os.PathLike[str] | None,
+                 hold_s: float = CLICK_HOLD_S) -> None:
+        self.path = Path(os.path.expanduser(path)) if path else None
+        self.hold_s = hold_s
+        self._seen: int | None = None
+        self._until = 0.0
+        self._hand = "right"
+
+    def pressed(self, now: float) -> tuple[bool, bool]:
+        """(left, right) for this packet."""
+        if self.path is not None:
+            try:
+                raw = json.loads(self.path.read_text())
+            except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+                raw = None
+            if isinstance(raw, dict):
+                seq = raw.get("seq")
+                if isinstance(seq, int) and not isinstance(seq, bool) and seq != self._seen:
+                    self._seen = seq
+                    hand = raw.get("hand")
+                    self._hand = hand if hand in ("left", "right") else "right"
+                    hold = raw.get("hold_s")
+                    hold = float(hold) if isinstance(hold, (int, float)) and not isinstance(
+                        hold, bool) else self.hold_s
+                    self._until = now + (hold if hold > 0 else self.hold_s)
+        if now < self._until:
+            return (self._hand == "left", self._hand == "right")
+        return (False, False)
 
 
 class PacketSource:
@@ -403,17 +474,34 @@ def run(host: str, port: int, state_path: Path, log_path: Path | None,
         player_scale: float = 1.0,
         player_pivot: tuple[float, float, float] = (0.0, 0.0, 0.0),
         player_scale_head: bool = True,
-        yaw_file: str | None = DEFAULT_YAW_FILE) -> int:
+        yaw_file: str | None = DEFAULT_YAW_FILE,
+        click_file: str | None = DEFAULT_CLICK_FILE) -> int:
     wire.assert_layout()
     source = PacketSource(
         StateSource(state_path), yaw_offset_rad=yaw_offset_rad,
         player_scale=player_scale, player_pivot=player_pivot,
         player_scale_head=player_scale_head, yaw_file=yaw_file or None,
     )
+    clicks = ClickFile(click_file or None)
     sock = connect(host, port)
     print(f"pose_relay: connected {host}:{port}", flush=True)
     print("pose_relay: handshake ok", flush=True)
     print(f"pose_relay: state {state_path} at {hz:g} Hz", flush=True)
+    # Declared on disk as well as to the game. Every point derived from the depth stream
+    # is in game space, so anything that unprojects a pixel has to know how big the
+    # player was when the frame was taken; assuming 1.0 aims 1.43x too far and reads as a
+    # grounding failure. Written even when unscaled, because a file left by an earlier
+    # session would otherwise lie about this one.
+    declared = player_scale_file.write(
+        player_scale_file.PlayerScale(
+            scale=player_scale,
+            pivot=player_pivot,
+            head_scaled=player_scale_head,
+            yaw_offset_deg=math.degrees(yaw_offset_rad),
+        ),
+        state_path.parent,
+    )
+    print(f"pose_relay: player scale declared to {declared}", flush=True)
     if yaw_offset_rad:
         # Printed because a capture is only interpretable if you know which heading
         # the poses were emitted under.
@@ -491,6 +579,9 @@ def run(host: str, port: int, state_path: Path, log_path: Path | None,
             grip_field = grip if grab_mode in ("squeeze", "both") else (0.0, 0.0)
             curl_field = grip if grab_mode in ("curl", "both") else (0.0, 0.0)
             click = edge.update(fire)
+            # The menu button: a request in a file becomes a short press here, because no joint
+            # of the simulated body can reach a controller button and JobBot asks for it.
+            menu = clicks.pressed(now)
             packet = wire.fill(
                 wire.blank_packet(),
                 poses,
@@ -498,6 +589,7 @@ def run(host: str, port: int, state_path: Path, log_path: Path | None,
                 curl=curl_field,
                 trigger=fire,
                 trigger_click=click,
+                system_click=menu,
                 fov=fov_rad,
             )
             stream.write(bytes(packet))
@@ -555,6 +647,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--yaw-offset-deg", type=float, default=0.0, dest="yaw_offset_deg",
                     help="the robot's heading in the virtual room, degrees, positive "
                          "toward its left; chooses the facing rather than walking it")
+    ap.add_argument("--click-file", default=DEFAULT_CLICK_FILE, dest="click_file",
+                    help="menu-button press requests (empty string disables)")
     ap.add_argument("--yaw-file", default=DEFAULT_YAW_FILE, dest="yaw_file",
                     help="a JSON file whose yaw_offset_deg overrides the flag while the "
                          "session runs, so the brain can aim the robot without a restart; "
@@ -635,7 +729,11 @@ def main(argv: list[str] | None = None) -> int:
                yaw_offset_rad=math.radians(args.yaw_offset_deg),
                fov_rad=fov_rad, player_scale=args.player_scale,
                player_pivot=pivot,
-               player_scale_head=(args.player_scale_head == "on"))
+               player_scale_head=(args.player_scale_head == "on"),
+               # Both were parsed and then dropped until 2026-11-10: `--yaw-file` silently did
+               # nothing, which is why an operator could set a heading and see no change.
+               yaw_file=(args.yaw_file or None),
+               click_file=(args.click_file or None))
 
 
 if __name__ == "__main__":

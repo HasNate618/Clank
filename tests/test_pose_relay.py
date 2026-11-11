@@ -279,6 +279,8 @@ class RecordingDriver(FakeDriver):
         super().__init__()
         self.last_squeeze = (0.0, 0.0)
         self.last_trigger = (0.0, 0.0)
+        self.last_system = (False, False)
+        self.system_seen = False
 
     def run(self) -> None:
         conn, _ = self.listener.accept()
@@ -303,6 +305,8 @@ class RecordingDriver(FakeDriver):
                         packet.left.trigger_value.x,
                         packet.right.trigger_value.x,
                     )
+                    self.last_system = (packet.left.system_click, packet.right.system_click)
+                    self.system_seen = self.system_seen or any(self.last_system)
         finally:
             conn.close()
             self.listener.close()
@@ -684,3 +688,60 @@ class PlayerScaleTests(unittest.TestCase):
         for bad in (0.0, -1.43, float("nan"), float("inf")):
             with self.assertRaises(ValueError):
                 self._source(bad)
+
+
+class MenuClickTests(unittest.TestCase):
+    """The menu button is on the controller, not on the body: a request, then a short press."""
+
+    def setUp(self) -> None:
+        holder = tempfile.TemporaryDirectory()
+        self.addCleanup(holder.cleanup)
+        self.path = Path(holder.name) / "click.json"
+
+    def test_the_wire_carries_the_system_bit(self) -> None:
+        packet = wire.fill(
+            wire.blank_packet(),
+            {"head": ((0.0, 0.0, 1.2), (0.0, 0.0, 0.0, 1.0)),
+             "left": ((0.1, 0.2, 0.0), (0.0, 0.0, 0.0, 1.0)),
+             "right": ((0.1, -0.2, 0.0), (0.0, 0.0, 0.0, 1.0))},
+            system_click=(False, True),
+        )
+        self.assertFalse(packet.left.system_click)
+        self.assertTrue(packet.right.system_click)
+
+    def test_a_request_is_one_short_press(self) -> None:
+        click = pose_relay.ClickFile(self.path, hold_s=0.15)
+        self.assertEqual(click.pressed(0.0), (False, False))
+        pose_relay.request_click("left", path=self.path, hold_s=0.15)
+        self.assertEqual(click.pressed(0.0), (True, False))
+        self.assertEqual(click.pressed(0.10), (True, False))
+        self.assertEqual(click.pressed(0.20), (False, False), "a press is not a level")
+
+    def test_one_request_is_not_a_press_per_packet(self) -> None:
+        # Otherwise a single click would fire the menu again and again at 50 Hz.
+        pose_relay.request_click("right", path=self.path, hold_s=0.15)
+        click = pose_relay.ClickFile(self.path, hold_s=0.15)
+        self.assertEqual(click.pressed(0.0), (False, True))
+        self.assertEqual(click.pressed(0.30), (False, False))
+        self.assertEqual(click.pressed(9.0), (False, False))
+
+    def test_a_malformed_request_is_not_a_press(self) -> None:
+        self.path.write_text("{not json", encoding="utf-8")
+        self.assertEqual(pose_relay.ClickFile(self.path).pressed(0.0), (False, False))
+
+    def test_an_absent_file_is_not_a_press(self) -> None:
+        self.assertEqual(pose_relay.ClickFile(self.path).pressed(0.0), (False, False))
+
+    def test_the_relay_puts_the_click_in_a_packet(self) -> None:
+        driver = RecordingDriver()
+        driver.start()
+        with tempfile.TemporaryDirectory() as raw:
+            state_path = Path(raw) / "body_state.json"
+            state_path.write_text(json.dumps(sample_state()), encoding="utf-8")
+            click_path = Path(raw) / "click.json"
+            pose_relay.request_click("right", path=click_path)
+            pose_relay.run("127.0.0.1", driver.port, state_path, None,
+                           duration=0.4, hz=50.0, click_file=str(click_path))
+            driver.closed.wait(5)
+        self.assertTrue(driver.system_seen, "the menu click never reached the wire")
+        self.assertEqual(driver.last_system, (False, False), "the press was released")
