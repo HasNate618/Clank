@@ -72,3 +72,46 @@ this model. Two ways forward, and the choice is a design decision, not a bug fix
   which is A wearing a longer coat.
 
 Both need the choreography seed deleted first: it is the single largest cause of the wrong verb.
+
+## The question shape wins, and it is the whole result
+
+Same four live stills, same instruction, same endpoint, two question shapes. **The model is
+competent at saying what it wants and incompetent at picking from a list.**
+
+| asked | replies |
+| --- | --- |
+| "pick one of hold/look/find/reach/grab/release" | `hold`, `release`, `release`, `look` — **0 grabs in 4** |
+| "what are you trying to do next?" | `"take the JobBot card"`, `"take the JobBot card"`, `"take the JobBot card"`, `"take the card"` — **4 of 4 correct** |
+
+So the live chooser asks for the goal in words and reads the body's vocabulary out of *the model's
+own sentence* (`skill_from_goal`). That is not the old parser: `task_intent` read **JobBot's**
+instruction, which made the model decoration. Here the model reads the instruction *and the still*
+and states its decision; the mapping only decodes it into a skill the adapter can compile.
+
+Two smaller findings from the same run:
+
+- **The `object` field is not the noun.** The goal was "take the JobBot card" while `object` said
+  `"JobBot"`, and locate went looking for the summoner. The noun now comes from the goal sentence,
+  which gives `jobbot card` - and locate's stoplist strips `jobbot`, so it matches the card.
+- **"menu" in the action list costs the card task its answer.** With the menu action offered, "take
+  my card" came back `menu(card)`; without it, `look`/`grab`. One extra action captures an unrelated
+  instruction on this model, so it is not in the list at all. The menu button is reached by the
+  goal phrase ("press the menu button" -> `menu`) and by the dashboard button.
+
+## Live, 2026-11-10
+
+The whole chain, with the line typed so the game's own menu could stay where it was:
+
+```text
+heard: Hey, Hillman, take my card.
+think: plan: grab(jobbot card) (side=right)
+act:   locate(jobbot card)   -> present, 0.37 m
+result: grab(card)           -> reach saturated 107 mm short, hand closed
+operator: the card was grabbed and JobBot spoke
+```
+
+The reach still ends ~100 mm short and the game grabs anyway: the hand closes inside the stream at
+the nearest surface the depth buffer reports, and the grab radius is the game's, not the arm's. The
+diary called it "failed (code=2)" because the exit code is the arm's and the confirmation was
+skipped under `--say`; confirmation now runs every time, because JobBot reacts to the game and not
+to how the instruction arrived.

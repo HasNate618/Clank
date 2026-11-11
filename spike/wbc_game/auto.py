@@ -230,6 +230,20 @@ def grab_pixel(x: float, y: float, side: str, camera: Pose | None = None,
     return subprocess.call(argv)
 
 
+def _number(value: object, default: float = 0.0) -> float:
+    """A float from a value another process wrote, or `default`.
+
+    The body state and locate's reply are both written by code we control, but a half-written
+    packet must not kill the loop that is watching the game - and a NaN read as a distance would
+    put a reach somewhere nonsense.
+    """
+    try:
+        out = float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return default
+    return out if math.isfinite(out) else default
+
+
 def sense(target: str, memory: brain.WorkingMemory, stamp: str):
     """Run locate on a fresh still, gate it against depth, and remember what it found.
 
@@ -290,13 +304,14 @@ def sense(target: str, memory: brain.WorkingMemory, stamp: str):
         return sighting, None
     assert pixel is not None      # "present" means locate gave a pixel and the gate passed it
     mark(png, pixel, STATE / f"marked-{stamp}.png")
-    return sighting, ((float(pixel[0]), float(pixel[1])), png, camera, side)
+    return sighting, ((_number(pixel[0]), _number(pixel[1])), png, camera, side)
 
 
 def hands_holding() -> tuple[str, str]:
     """Which hands are closed, from the body's own state rather than from a guess."""
     closure = reach_vr.state().get("closure") or [0.0, 0.0]
-    return tuple("holding" if float(c) >= 0.5 else "empty" for c in closure)  # type: ignore[return-value]
+    held = ["holding" if _number(c) >= 0.5 else "empty" for c in closure][:2]
+    return (held + ["empty", "empty"])[:2]  # type: ignore[return-value]
 
 
 def one_turn(say: str = "", pattern: str = ears.DEFAULT_PATTERN,
@@ -360,7 +375,11 @@ def one_turn(say: str = "", pattern: str = ears.DEFAULT_PATTERN,
             last = brain.last_line("locate", "none", target, found.outcome)
             continue
         intent = thought.decision.intent
-        if intent.skill in ("reach", "grab") and target:
+        # What the model ASKED for, not what the refusal handed back: a plan for an unlocated
+        # object assembles into a hold, so reading the intent here would skip the search and
+        # quietly turn "grab the card" into "do nothing". MEASURED 2026-11-10.
+        asked = thought.plan.skill or ""
+        if asked in ("reach", "grab") and target:
             known = memory.find(target)
             if known is None or not known.present:
                 # The model chose the act; the body has to find the thing before it can do it.
@@ -428,21 +447,22 @@ def one_turn(say: str = "", pattern: str = ears.DEFAULT_PATTERN,
                  marked=f"marked-{stamp}.png")
     if skill != "grab":
         return spoken
-    # The game says whether it worked. JobBot moves on to the cartridges once the card is
-    # taken, and repeats himself if it is not - the only oracle that sees the grab itself.
-    if not say:
-        spoken_after = confirm(pattern)
-        if spoken_after:
-            moved_on = "cartridge" in spoken_after.lower()
-            brainlog.log(
-                "result",
-                "the card is in my hand - JobBot moved on to the cartridges"
-                if moved_on else f"JobBot said something else: {spoken_after[:90]}",
-                ok=moved_on,
-            )
-        else:
-            brainlog.log("result", f"no word from JobBot after the grab; reach said code {code}",
-                         ok=False)
+    # The game says whether it worked, and it is asked every time - including on a typed line,
+    # because JobBot reacts to the *game* and not to how the instruction arrived. MEASURED
+    # 2026-11-10: with the confirmation skipped under --say, the diary wrote "grab failed
+    # (code=2)" for a grab the game had accepted and the operator watched succeed.
+    spoken_after = confirm(pattern)
+    if spoken_after:
+        moved_on = "cartridge" in spoken_after.lower()
+        brainlog.log(
+            "result",
+            "the card is in my hand - JobBot moved on to the cartridges"
+            if moved_on else f"JobBot said something else: {spoken_after[:90]}",
+            ok=moved_on,
+        )
+    else:
+        brainlog.log("result", f"no word from JobBot after the grab; reach said code {code}",
+                     ok=False)
     if code == 2:
         brainlog.log("think", f"the {thought.plan.target or 'thing'} is out of reach - "
                               "the body cannot turn")

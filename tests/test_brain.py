@@ -238,19 +238,17 @@ class PlannerSkills(unittest.TestCase):
 class MenuSkill(unittest.TestCase):
     """JobBot asks for the menu button early. Nothing on the body can press it."""
 
-    def test_the_menu_action_is_offered_only_when_the_voice_asks_for_it(self) -> None:
-        # MEASURED 2026-11-10: with the menu line always in the list, "take my card" came back
-        # as menu(card). One extra action captures an unrelated instruction on this model, so the
-        # action exists exactly when the instruction names it.
-        self.assertNotIn('"menu"', brain.CONSTITUTION)
-        asked = brain.constitution_for("press the menu button")
-        self.assertIn('"menu"', asked)
-        self.assertIn("press the controller menu button", asked)
-        self.assertNotIn('"menu"', brain.constitution_for("Hey, take my card."))
+    def test_the_words_press_the_menu_button_mean_the_menu_skill(self) -> None:
+        # The mapping is code and it is measured: a goal that names the controller button is not
+        # a reach, and "press" alone would otherwise fall through to the default.
+        self.assertEqual(brain.skill_from_goal("press the menu button"), "menu")
+        self.assertEqual(brain.skill_from_goal("press the menu button on the right"), "menu")
+        self.assertEqual(brain.skill_from_goal("take the card"), "grab")
 
     def test_a_menu_instruction_reaches_the_model_through_think(self) -> None:
         class PressReply(ChatPatchMixin, unittest.TestCase):
-            reply = '{"skill":"menu","side":"right","target":"menu button"}'
+            reply = ('{"goal": "press the menu button", "object": "menu button", '
+                     '"destination": "none", "side": "right"}')
 
         case = PressReply("run")
         case.setUp()
@@ -258,12 +256,10 @@ class MenuSkill(unittest.TestCase):
             thought = brain.think(
                 brain.BrainConfig(), brain.DEFAULT_SEED, fake_frame(),
                 "press the menu button", [], brain.WorkingMemory())
-            system = case.chat_calls[0]["messages"][0]["content"]
         finally:
             case.tearDown()
         self.assertEqual(thought.plan.skill, "menu")
         self.assertEqual(thought.decision.intent.skill, "menu")
-        self.assertIn('"menu"', system)
 
     def test_a_menu_plan_assembles_into_a_legal_intent(self) -> None:
         from clank.intent import validate_intent
@@ -348,58 +344,68 @@ class AssembleLocate(unittest.TestCase):
 
 
 class ThinkTests(ChatPatchMixin, unittest.TestCase):
-    """Think is the chooser: PLAN plus ASSEMBLE, and nothing else. It never locates."""
+    """Think is the chooser, and the shape of the question is the measurement.
 
-    def run_think(self, reply: str, heard: str, memory=None):
+    MEASURED 2026-11-10 on four live stills with the same instruction: asked to pick from the
+    action list, this model answered hold or release on 4 of 4 and never grab; asked what it is
+    trying to do, it answered "take the JobBot card" on 4 of 4. So the model states a goal and
+    `skill_from_goal` reads the vocabulary out of the model's own words.
+    """
+
+    take_card = ('{"goal": "take the JobBot card", "object": "card", '
+                 '"destination": "none", "side": "right"}')
+
+    def run_think(self, reply: str, heard: str, memory=None, **kw):
         self.reply = reply
         return brain.think(
             brain.BrainConfig(), "", fake_frame(), heard, [],
-            memory if memory is not None else brain.WorkingMemory())
+            memory if memory is not None else brain.WorkingMemory(), **kw)
 
-    def test_take_my_card_can_choose_locate(self) -> None:
-        thought = self.run_think(
-            '{"skill":"locate","side":"none","target":"card"}',
-            "Hey, Hillman, take my card.")
-        self.assertEqual(thought.sense, "locate")
-        self.assertEqual(thought.plan.target, "card")
-        self.assertEqual(thought.decision.intent.skill, "hold")
-        self.assertEqual(thought.decision.note, "locate")
+    def test_take_my_card_chooses_grab_of_the_card(self) -> None:
+        thought = self.run_think(self.take_card, "Hey, Hillman, take my card.")
+        self.assertEqual(thought.plan.skill, "grab")
+        # The noun comes from the model's goal sentence, not its `object` field: measured live,
+        # object said "JobBot" and locate went looking for the summoner. locate's own stoplist
+        # strips jobbot, so "jobbot card" matches the card.
+        self.assertEqual(thought.plan.target, "jobbot card")
+        self.assertIn("take the JobBot card", thought.plan.note)
 
     def test_reach_without_memory_is_not_located(self) -> None:
-        thought = self.run_think(
-            '{"skill":"reach","side":"right","target":"card"}', "take my card")
-        self.assertIsNone(thought.sense)
+        thought = self.run_think(self.take_card, "take my card")
         self.assertIn("not_located", thought.decision.reason)
+        self.assertEqual(thought.decision.intent.skill, "hold")
 
-    def test_reach_after_remembering_emits_reach(self) -> None:
+    def test_a_sighting_turns_the_same_goal_into_a_grab_with_a_pixel(self) -> None:
         mem = brain.WorkingMemory()
-        mem.remember("card", brain.Sighting(
-            noun="card", present=True, pixel=(0.8, 0.4)))
-        thought = self.run_think(
-            '{"skill":"reach","side":"right","target":"card"}', "take my card", mem)
-        self.assertIsNone(thought.sense)
-        self.assertEqual(thought.decision.intent.skill, "reach")
+        mem.remember("card", brain.Sighting(noun="card", present=True, pixel=(0.8, 0.4)))
+        thought = self.run_think(self.take_card, "take my card", mem)
+        self.assertEqual(thought.decision.intent.skill, "grab")
         self.assertEqual(thought.decision.intent.pixel, (0.8, 0.4))
 
+    def test_a_menu_instruction_becomes_the_menu_skill(self) -> None:
+        thought = self.run_think(
+            '{"goal": "press the menu button", "object": "menu button", '
+            '"destination": "none", "side": "right"}', "press the menu button")
+        self.assertEqual(thought.plan.skill, "menu")
+        self.assertEqual(thought.decision.intent.skill, "menu")
+
     def test_think_does_not_send_audio(self) -> None:
-        self.run_think('{"skill":"hold","side":"none","target":null}', "take my card")
+        self.run_think(self.take_card, "take my card")
         content = self.chat_calls[0]["messages"][-1]["content"]
         self.assertNotIn("input_audio", [part["type"] for part in content])
 
-    def test_the_prompt_is_the_constitution_not_a_skill_enum(self) -> None:
-        self.run_think('{"skill":"hold","side":"none","target":null}', "take my card")
-        system = self.chat_calls[0]["messages"][0]["content"]
-        self.assertEqual(system, brain.CONSTITUTION)
-        self.assertNotIn("grab|place|reach|release", system)
+    def test_the_question_is_not_a_skill_enum(self) -> None:
+        self.run_think(self.take_card, "take my card")
+        text = self.user_text()
+        self.assertNotIn("grab|place|reach|release", text)
+        self.assertIn("take my card", text)
 
-    def test_the_last_line_reaches_the_model(self) -> None:
-        self.reply = '{"skill":"hold","side":"none","target":null}'
-        brain.think(brain.BrainConfig(), "", fake_frame(), "take my card", [],
-                    brain.WorkingMemory(),
-                    last="locate none target=card \u2192 not_visible")
-        self.assertIn("not_visible", self.user_text())
-
-
+    def test_the_live_block_travels_with_the_question(self) -> None:
+        self.run_think(self.take_card, "take my card",
+                       last="locate none target=card → not_visible", left="holding")
+        text = self.user_text()
+        self.assertIn("not_visible", text)
+        self.assertIn("left=holding", text)
 class PromptText(unittest.TestCase):
     def test_the_seed_carries_no_choreography(self) -> None:
         # MEASURED 2026-11-10: a seed naming the cartridge, the slot and the lever overrode what

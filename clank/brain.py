@@ -182,27 +182,6 @@ means the held thing will go into the slot if you release. A full hand cannot \
 grab; use the other hand or release.\
 """
 
-#: The controller's menu button, offered only when the voice asks for it.
-#:
-#: MEASURED 2026-11-10, same still, "Hey, Hillman, take my card.": with the menu line in the
-#: action list the model answered `menu(card)`; without it, `look right` / `grab card`. One extra
-#: action is enough to capture an unrelated instruction on this model, so the action is offered
-#: when the instruction names it and not otherwise - and then "press the menu button" answers
-#: `menu(right)`, which is what the tool exists for.
-MENU_SKILL_LINE = "- menu    press the controller menu button; name the hand"
-_MENTIONS_MENU = re.compile(r"\bmenu\b", re.IGNORECASE)
-
-
-def constitution_for(heard: str) -> str:
-    """The constitution, with the menu action offered only when the voice asks for it."""
-    if not _MENTIONS_MENU.search(heard or ""):
-        return CONSTITUTION
-    text = CONSTITUTION.replace(
-        "- release open one hand\n", f"- release open one hand\n{MENU_SKILL_LINE}\n")
-    text = text.replace('"grab"|"release",', '"grab"|"release"|"menu",')
-    return text.replace("grab and release.", "grab, release and menu.")
-
-
 #: Identity and nothing else. MEASURED 2026-11-10: the seed that carried the walkthrough
 #: ("use the store clerk cartridge ... pull the lever") overrode what JobBot actually said - asked
 #: to take his card, the model answered `release ... cartridge` on three different stills and under
@@ -661,6 +640,9 @@ def plan(
 #: saying what it wants and bad at picking from our enum, so we let it talk and
 #: do the picking ourselves.
 _SKILL_WORDS = (
+    # `menu` first: "press the menu button" contains "press", and a goal that names the controller
+    # button is not a reach. MEASURED 2026-11-10 against the goal prompt.
+    ("menu", ("menu button", "press menu", "the menu")),
     ("place", ("insert", "place", "put", "slot", "load", "seat")),
     ("grab", ("take", "grab", "pick", "lift")),
     ("release", ("release", "let go", "drop")),
@@ -1401,8 +1383,40 @@ def think(
     target for it, the model's `locate` would be decoration.
     """
     live = live_block(heard, left, right, yaw_rad, glow, last, ghost=ghost)
-    plan_result = plan(config, seed, frame, live, transcript=history,
-                       default_side=default_side, system=constitution_for(heard))
+    # The question shape is the measurement. MEASURED 2026-11-10, four live stills, the same
+    # instruction: asked to pick from the action list this model answered `hold` or `release` on
+    # 4 of 4 and never `grab`, while asked what it is trying to do it answered "take the JobBot
+    # card" on 4 of 4. So the model states the goal in its own words and `skill_from_goal` reads
+    # the body's vocabulary out of *the model's* sentence - not out of JobBot's, which is what
+    # made the old loop a parser.
+    said = (f'JobBot said: "{heard.strip()}"' if heard.strip()
+            else "You have not been told anything yet.")
+    # The live block travels with the situation: which hands are holding, the glow, and what the
+    # last action was told are exactly the context a choice needs, and NEXT_STEP_PROMPT has a slot
+    # for it. Without this the model reasons about the scene with no memory of the last outcome.
+    situation = f"{said}\n\n{live}"
+    step = next_step(config, frame, situation, default_side=default_side)
+    if step.error:
+        plan_result = Plan(raw=step.raw, error=step.error, prompt_ms=step.prompt_ms,
+                           decode_ms=step.decode_ms)
+    else:
+        # The object noun comes from the model's own sentence, not from its `object` field:
+        # MEASURED 2026-11-10 the goal was "take the JobBot card" while `object` said "JobBot",
+        # and locate searched for a summoner rather than for the thing he is holding. `place`
+        # keeps the destination, because a cartridge cannot be put into an object.
+        _, noun = task_intent(step.goal)
+        target = step.target
+        if step.skill != "place" and noun:
+            target = noun
+        plan_result = Plan(
+            skill=step.skill,
+            side=step.side if step.skill in PLANNER_SIDE_SKILLS else "none",
+            target=target,
+            raw=step.raw,
+            note=f"goal: {step.goal}",
+            prompt_ms=step.prompt_ms,
+            decode_ms=step.decode_ms,
+        )
     decision = assemble(plan_result, None, seq, t_mono_ns, left=left, right=right,
                         glow=glow, ghost=ghost, memory=memory, look_step=look_step)
     sense = None
