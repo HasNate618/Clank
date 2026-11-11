@@ -129,3 +129,38 @@ Tasks 1–4 and 7 are unaffected and worth finishing as written. The decision po
 
 - If ARDY is pursued: Task 5 becomes "author constraints, and keep mink only as a reachability check"; Task 6 becomes an ARDY adapter; Task 8 loses the step chain.
 - If ARDY fails its spike: Task 5 changes to "Kimodo authors the still poses" instead of mink, and the rest of the plan stands as written.
+
+---
+
+## 9. ARDY on this machine — first measurements (2026-11-11)
+
+Run on the RTX 4060 Laptop (8 GB, driver 610.57.04) with the GPU to itself, `torch 2.11.0+cu128`,
+`ARDY-G1-RP-25FPS-Horizon52`, text tower absent. Probe: `spike/ardy/probe_g1.py`.
+
+NixOS prerequisite, and it is easy to lose an hour to: `libcuda.so.1` lives under
+`/run/opengl-driver/lib` and is not on the loader path, so torch reports `cuda False` with a
+perfectly good driver until `LD_LIBRARY_PATH=/run/opengl-driver/lib`.
+
+| Quantity | Measured |
+|---|---|
+| Weights resident | **0.93 GB** |
+| Peak VRAM, one 52-frame window | **0.94 GB** allocated / 0.96 GB reserved |
+| Generate, 52 frames (2.08 s of motion), 10 steps | **0.07–0.20 s** |
+| Hand residual, `cfg_weight=(1, 2)`, zero text | **60.3 mm** |
+| Hand residual, `cfg_weight=(1, 4)` | 68.3 mm |
+| Hand residual, `cfg_weight=(2, 0)` (scalar default) | 869.8 mm |
+| Root waypoint adherence, target −0.80 m in z | **−0.790 m** |
+| qpos export | `(1, 52, 36)` — our pose36 exactly |
+
+So §7.1 is answered: **0.94 GB peak, comfortably inside the ~2.6 GB the game leaves free**, and
+generation is 10–30× faster than the motion it produces. §7.2 is answered in the sense that matters
+most: constraints are followed, and 60 mm of adherence is the same order as SONIC's own tracking
+error, so the residual a plan has to close is the tracker's, not the generator's.
+
+One trap, and it is silent: with `cfg_type="separated"`, a scalar `cfg_weight` sets the **constraint**
+guidance weight to **zero** (`ardy_model.py:274-279`; `w_text, w_cstr = cfg_weight, 0.0`). A
+constrained run under the default therefore ignores its constraints and returns 870 mm. Pass
+`cfg_weight=(text, constraint)` — two values — or constraints are decoration.
+
+`num_denoising_steps` must be ≤ `num_base_steps` (10 for this checkpoint, `config.yaml`); 25 or 50
+trip a device-side assert rather than a clean error.
