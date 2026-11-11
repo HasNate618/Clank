@@ -142,6 +142,21 @@ def heading_angle(pose36: Sequence[float]) -> float:
     return math.atan2(rot[1][0], rot[0][0])
 
 
+def rotation_angle_deg(
+    first: Sequence[Sequence[float]], second: Sequence[Sequence[float]]
+) -> float:
+    """The angle, in degrees, that `second` has to turn to become `first`.
+
+    The rotation term of the FK round trip. A joint *anchor* does not move when the joint spins
+    about its own axis, so a wrong axis or sign on a leaf joint (`*_wrist_yaw`, `*_ankle_roll`)
+    is invisible to a position-only comparison - and `hand_constraint` pins the hand's global
+    rotation, so such a bug would bias every reach. `trace(first^T @ second)` is the cosine, and
+    the clamp keeps a matrix that is only orthonormal to float precision from raising.
+    """
+    cosine = (math.fsum(first[i][k] * second[i][k] for i in range(3) for k in range(3)) - 1.0) / 2.0
+    return math.degrees(math.acos(max(-1.0, min(1.0, cosine))))
+
+
 def world_root(pose36: Sequence[float]) -> tuple[float, float, float]:
     """The root in ARDY world metres, height zeroed.
 
@@ -381,9 +396,9 @@ def generate(
     that many frames regardless, so a different count would pin the hand at the wrong one.
 
     Returns `(frames, metrics)`, the frames being pose36 rows (`g1_pack` order, 25 Hz) and the
-    metrics `{"seconds", "peak_vram_gb", "hand_residual_m", "fk_roundtrip_m"}`. Both
-    distances are measured, not assumed, so a caller can decide whether another generation is
-    worth it.
+    metrics `{"seconds", "peak_vram_gb", "hand_residual_m", "fk_roundtrip_m",
+    "fk_roundtrip_deg"}`. Every number is measured, not assumed, so a caller can decide whether
+    another generation is worth it.
     """
     context = _rows(pose36_context)
     if history_features is not None:
@@ -468,13 +483,22 @@ def generate(
         # wrong joint order, hinge axis or rotation offset - any of those biases every reach
         # while the residual still looks small. Most of the number that comes out is ARDY's
         # own export loss (see the probe), so it catches gross errors, not small ones.
-        our_joints = _motion_pose(tuple(qpos[0, last_frame].tolist()), skeleton, converter)[
-            "posed_joints"
-        ][0, 0]
+        our_pose = _motion_pose(tuple(qpos[0, last_frame].tolist()), skeleton, converter)
+        our_joints = our_pose["posed_joints"][0, 0]
         ardy_joints = output["posed_joints"][0, last_frame].to(
             device=our_joints.device, dtype=our_joints.dtype
         )
         fk_roundtrip = float(torch.linalg.norm(our_joints - ardy_joints, dim=-1).max())
+        # Position alone cannot see a leaf joint turned about the wrong axis: its anchor does
+        # not move. The rotation can, and it is what `hand_constraint` pins.
+        fk_roundtrip_deg = max(
+            rotation_angle_deg(mine, theirs)
+            for mine, theirs in zip(
+                our_pose["global_rot_mats"][0, 0].tolist(),
+                output["global_rot_mats"][0, last_frame].tolist(),
+                strict=True,
+            )
+        )
 
     hand = skeleton.bone_index[skeleton.right_hand_joint_names[0]]
     landed = output["posed_joints"][0, last_frame, hand]
@@ -487,5 +511,6 @@ def generate(
         "peak_vram_gb": (torch.cuda.max_memory_allocated() / 1e9) if device == "cuda" else None,
         "hand_residual_m": residual,
         "fk_roundtrip_m": fk_roundtrip,
+        "fk_roundtrip_deg": fk_roundtrip_deg,
     }
     return frames, metrics

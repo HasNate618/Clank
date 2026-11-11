@@ -10,14 +10,17 @@ itself:
 * the world frame of the exported clip: frame 0 must be at the body's own root and heading, or
   the 50 Hz body jumps when the clip is deposited, and SONIC spends the first second unwinding
   it (`reach_ardy` deposits clips into the live `mjData`),
-* the round trip of a generated frame through the module's own `_motion_pose` FK. The residual
-  is measured against a target `_motion_pose` itself built, so a joint-mapping error cancels
-  out of it and biases every reach while the residual still looks small; this is the only
-  number that sees such an error. Its gate is 30 mm rather than the 5 mm a mapping error would
-  deserve, because ARDY's exporter collapses each joint to one atan2: its own `posed_joints`
-  sit up to 16 mm from MuJoCo's FK of the qpos it wrote itself (3.8 deg of off-axis rotation in
-  the decoded local rotations), and `spike/ardy/verify_fk.py` is the proof that none of that
-  gap is ours - it is 0.00 mm.
+* the round trip of a generated frame through the module's own `_motion_pose` FK, in position
+  and in rotation. The residual is measured against a target `_motion_pose` itself built, so a
+  joint-mapping error cancels out of it and biases every reach while the residual still looks
+  small; this is the only number that sees such an error. Its gate is 30 mm rather than the 5
+  mm a mapping error would deserve, because ARDY's exporter collapses each joint to one atan2:
+  its own `posed_joints` sit up to 16 mm from MuJoCo's FK of the qpos it wrote itself (3.8 deg
+  of off-axis rotation in the decoded local rotations), and `spike/ardy/verify_fk.py` is the
+  proof that none of that gap is ours - it is 0.00 mm. The rotation term is there because a
+  joint's *anchor* does not move when a leaf joint turns about its own axis, so a wrong axis or
+  sign on `*_wrist_yaw` / `*_ankle_roll` would be invisible above; `hand_constraint` pins the
+  hand's global rotation, so such a bug would bias every reach.
 
 Plus the out-of-reach case, where a `root2d` path has to move the body *and* keep the hand on
 its target - two constraints that silently fight if the hand's own root pin disagrees with the
@@ -51,6 +54,9 @@ STAND_ROOT = (0.6, 0.0, 0.793)
 STAND_HEADING = 0.8
 #: Where the stand is in the game's world, as MuJoCo (x forward, y left, z up) metres.
 ROOT_FRAME_GATE_M = 0.25
+#: The clip's frame-0 root height against the stand's 0.793 m: measured 5-11 mm over 18
+#: probe runs, so the planar tolerance was over 20x too loose for it.
+HEIGHT_FRAME_GATE_M = 0.05
 HEADING_FRAME_GATE_RAD = 0.25
 RESIDUAL_GATE_M = 0.10
 #: `_motion_pose` is checked against ARDY's own `posed_joints`: 19.4 mm on a measured clip, of
@@ -60,6 +66,13 @@ RESIDUAL_GATE_M = 0.10
 #: this catches a gross mapping error - wrong joint order, axis or offset transpose, which is
 #: hundreds of mm - and not a bias under 30 mm.
 FK_ROUNDTRIP_GATE_M = 0.030
+#: The same export loss in rotation: measured 2.0-10.5 deg max joint over 36 generated windows
+#: (18 probe runs, typically 2.5-5, the root goal's wider motion being the high end). A leaf
+#: joint on the wrong axis or sign moves its global rotation by roughly its own angle or twice
+#: it - the clips' right wrist alone travels 26-74 deg of roll and 14-25 deg of yaw - so the bug
+#: this exists for is tens of degrees and 20 is 1.9x the noise floor seen, not a threshold that
+#: flakes.
+FK_ROUNDTRIP_GATE_DEG = 20.0
 SECONDS_GATE = 1.0
 VRAM_GATE_GB = 2.0
 #: Of a 0.6 m root goal: enough to show the path is followed, far below it if ignored (0.03).
@@ -132,6 +145,10 @@ def main() -> int:
     parser.add_argument("--steps", type=int, default=10)
     parser.add_argument("--out", type=Path, default=OUT_DIR)
     args = parser.parse_args()
+    # Before any generation: the FK clip is written straight after the first GPU call, and
+    # `np.savez` does not create parents - a fresh `--out` would otherwise raise
+    # FileNotFoundError after the GPU work and before a single number is printed.
+    args.out.mkdir(parents=True, exist_ok=True)
 
     import torch  # pyright: ignore[reportMissingImports]
 
@@ -167,9 +184,11 @@ def main() -> int:
     print(f"  clip frame 0: root offset {checks['root_offset_m'] * 1000:.0f} mm, "
           f"height offset {checks['height_offset_m'] * 1000:.0f} mm, "
           f"heading offset {math.degrees(checks['heading_offset_rad']):.1f} deg")
-    print(f"  fk roundtrip {metrics['fk_roundtrip_m'] * 1000:.1f} mm max joint "
-          f"(gate {FK_ROUNDTRIP_GATE_M * 1000:.0f} mm; ours is 0.00 mm - verify: "
-          f"spike/e3/.venv/bin/python spike/ardy/verify_fk.py {fk_clip})")
+    print(f"  fk roundtrip {metrics['fk_roundtrip_m'] * 1000:.1f} mm max joint, "
+          f"{metrics['fk_roundtrip_deg']:.1f} deg max rotation "
+          f"(gates {FK_ROUNDTRIP_GATE_M * 1000:.0f} mm / {FK_ROUNDTRIP_GATE_DEG:.0f} deg; "
+          f"ours is 0.00 mm - verify: spike/e3/.venv/bin/python spike/ardy/verify_fk.py "
+          f"{fk_clip})")
     report["hand_only"] = {**metrics, **checks}
 
     if len(frames) != ardy_gen.ARDY_HORIZON:
@@ -183,13 +202,17 @@ def main() -> int:
                         f"{RESIDUAL_GATE_M * 1000:.0f} mm")
     if checks["root_offset_m"] >= ROOT_FRAME_GATE_M:
         failures.append(f"clip starts {checks['root_offset_m']:.2f} m from the body")
-    if checks["height_offset_m"] >= ROOT_FRAME_GATE_M:
-        failures.append(f"clip starts {checks['height_offset_m'] * 1000:.0f} mm above/below the body")
+    if checks["height_offset_m"] >= HEIGHT_FRAME_GATE_M:
+        failures.append(f"clip starts {checks['height_offset_m'] * 1000:.0f} mm above/below the "
+                        f"body")
     if abs(checks["heading_offset_rad"]) >= HEADING_FRAME_GATE_RAD:
         failures.append(f"clip starts {math.degrees(checks['heading_offset_rad']):.1f} deg off heading")
     if metrics["fk_roundtrip_m"] >= FK_ROUNDTRIP_GATE_M:
         failures.append(f"fk roundtrip {metrics['fk_roundtrip_m'] * 1000:.1f} mm >= "
                         f"{FK_ROUNDTRIP_GATE_M * 1000:.0f} mm")
+    if metrics["fk_roundtrip_deg"] >= FK_ROUNDTRIP_GATE_DEG:
+        failures.append(f"fk roundtrip {metrics['fk_roundtrip_deg']:.1f} deg >= "
+                        f"{FK_ROUNDTRIP_GATE_DEG:.0f} deg")
     if metrics["seconds"] >= SECONDS_GATE:
         failures.append(f"generation took {metrics['seconds']:.2f} s >= {SECONDS_GATE:.1f} s")
     if metrics["peak_vram_gb"] is not None and metrics["peak_vram_gb"] >= VRAM_GATE_GB:
@@ -209,7 +232,8 @@ def main() -> int:
     print(f"root goal {ROOT_GOAL_M:.2f} m: {goal_metrics['seconds']:.3f} s, "
           f"hand residual {goal_metrics['hand_residual_m'] * 1000:.1f} mm, "
           f"root travelled {travelled:+.3f} m")
-    print(f"  fk roundtrip {goal_metrics['fk_roundtrip_m'] * 1000:.1f} mm max joint")
+    print(f"  fk roundtrip {goal_metrics['fk_roundtrip_m'] * 1000:.1f} mm max joint, "
+          f"{goal_metrics['fk_roundtrip_deg']:.1f} deg max rotation")
     report["root_goal"] = {**goal_metrics, "forward_m": ROOT_GOAL_M, "travelled_m": travelled}
 
     if travelled < ROOT_GATE_M:
@@ -220,9 +244,11 @@ def main() -> int:
     if goal_metrics["fk_roundtrip_m"] >= FK_ROUNDTRIP_GATE_M:
         failures.append(f"root goal fk roundtrip {goal_metrics['fk_roundtrip_m'] * 1000:.1f} mm "
                         f">= {FK_ROUNDTRIP_GATE_M * 1000:.0f} mm")
+    if goal_metrics["fk_roundtrip_deg"] >= FK_ROUNDTRIP_GATE_DEG:
+        failures.append(f"root goal fk roundtrip {goal_metrics['fk_roundtrip_deg']:.1f} deg "
+                        f">= {FK_ROUNDTRIP_GATE_DEG:.0f} deg")
 
     report["failures"] = failures
-    args.out.mkdir(parents=True, exist_ok=True)
     path = args.out / "probe_ardy_reach.json"
     path.write_text(json.dumps(report, indent=1) + "\n")
     print(f"report: {path}")

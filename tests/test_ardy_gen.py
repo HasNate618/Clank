@@ -55,6 +55,12 @@ def yaw_quat(angle: float) -> tuple[float, float, float, float]:
     return (0.0, 0.0, math.sin(angle / 2.0), math.cos(angle / 2.0))
 
 
+def rot_z(angle: float) -> tuple[tuple[float, float, float], ...]:
+    """A rotation matrix of `angle` about z, the axis a yaw hinge turns on."""
+    c, s = math.cos(angle), math.sin(angle)
+    return ((c, -s, 0.0), (s, c, 0.0), (0.0, 0.0, 1.0))
+
+
 class ConstantsTest(unittest.TestCase):
     def test_cfg_weight_is_a_pair_not_a_scalar(self) -> None:
         self.assertEqual(ardy_gen.CFG_WEIGHT, (1.0, 2.0))
@@ -110,6 +116,30 @@ class RootFrameTest(unittest.TestCase):
 
     def test_heading_angle_wraps_at_half_a_turn(self) -> None:
         self.assertAlmostEqual(abs(ardy_gen.heading_angle(pose36(quat=yaw_quat(math.pi)))), math.pi)
+
+
+class RotationAngleTest(unittest.TestCase):
+    def test_the_same_rotation_is_zero_degrees(self) -> None:
+        self.assertAlmostEqual(ardy_gen.rotation_angle_deg(rot_z(0.8), rot_z(0.8)), 0.0)
+
+    def test_a_quarter_turn_is_ninety_degrees_either_way(self) -> None:
+        self.assertAlmostEqual(
+            ardy_gen.rotation_angle_deg(rot_z(math.pi / 2), rot_z(0.0)), 90.0
+        )
+        self.assertAlmostEqual(
+            ardy_gen.rotation_angle_deg(rot_z(0.0), rot_z(math.pi / 2)), 90.0
+        )
+
+    def test_a_flipped_leaf_joint_reads_twice_its_angle(self) -> None:
+        # What a wrong hinge sign looks like: 0.3 rad the other way is 0.6 rad apart. This is
+        # the error the position-only round trip cannot see - a wrist yaw's anchor never moves.
+        self.assertAlmostEqual(
+            ardy_gen.rotation_angle_deg(rot_z(0.3), rot_z(-0.3)), math.degrees(0.6), places=4
+        )
+
+    def test_a_matrix_that_is_not_exactly_orthonormal_is_clamped(self) -> None:
+        scaled = ((2.0, 0.0, 0.0), (0.0, 2.0, 0.0), (0.0, 0.0, 2.0))
+        self.assertEqual(ardy_gen.rotation_angle_deg(scaled, rot_z(0.0)), 0.0)
 
 
 class RootWaypointsTest(unittest.TestCase):
