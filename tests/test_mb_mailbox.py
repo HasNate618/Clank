@@ -13,9 +13,11 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import pathlib
 import tempfile
 import unittest
+import unittest.mock
 
 WBC = pathlib.Path(__file__).resolve().parents[1] / "spike" / "wbc"
 _SPEC = importlib.util.spec_from_file_location("mb_mailbox_test", WBC / "mb_mailbox.py")
@@ -72,6 +74,15 @@ class Pose36Ring(Mailbox):
         self.assertEqual(ring, [pose(2.0)])
         self.assertEqual([row[0] for row in mb_mailbox.read_pose36(self.dir)["poses"]], [2.0])
 
+    def test_prev_defaults_to_none_and_reads_the_file(self) -> None:
+        # The 50 Hz call site passes four arguments; the default must rebuild the ring
+        # from the file it is about to replace.
+        mb_mailbox.write_pose36(self.dir, pose(1.0), seq=1, t_mono_ns=10)
+        mb_mailbox.write_pose36(self.dir, pose(2.0), seq=2, t_mono_ns=20)
+        read = mb_mailbox.read_pose36(self.dir)
+        self.assertEqual(read["seq"], 2)
+        self.assertEqual([row[0] for row in read["poses"]], [1.0, 2.0])
+
     def test_payload_keys_are_the_context_contract(self) -> None:
         mb_mailbox.write_pose36(self.dir, pose(1.0), seq=7, t_mono_ns=70, prev=None)
         raw = json.loads((self.dir / mb_mailbox.POSE36_NAME).read_bytes())
@@ -91,6 +102,13 @@ class Pose36Ring(Mailbox):
         path.write_bytes(json.dumps(short_row).encode())
         self.assertIsNone(mb_mailbox.read_pose36(self.dir))
         path.write_bytes(json.dumps([1, 2, 3]).encode())
+        self.assertIsNone(mb_mailbox.read_pose36(self.dir))
+
+    def test_empty_ring_reads_none(self) -> None:
+        # The writer never emits `{"poses": []}`; accepting it would hand a caller a
+        # valid-looking context whose `ring[-1]` raises IndexError.
+        payload = {"seq": 3, "t_mono_ns": 30, "hz": 50, "poses": []}
+        (self.dir / mb_mailbox.POSE36_NAME).write_bytes(json.dumps(payload).encode())
         self.assertIsNone(mb_mailbox.read_pose36(self.dir))
 
     def test_wrong_length_pose_is_refused(self) -> None:
@@ -147,6 +165,23 @@ class Atomic(Mailbox):
     def test_write_leaves_no_temp_file_behind(self) -> None:
         mb_mailbox.write_pose36(self.dir, pose(1.0), seq=1, t_mono_ns=10, prev=None)
         self.assertEqual([p.name for p in self.dir.iterdir()], [mb_mailbox.POSE36_NAME])
+
+    def test_temp_name_carries_the_pid(self) -> None:
+        # Observed, not inferred: a shared temp name also writes the file and cleans up
+        # after itself, and only the recorded source path shows whether two writers can
+        # collide. Two writers sharing one tmp is the FileNotFoundError storm.
+        replaced: list[pathlib.Path] = []
+        real_replace = os.replace
+
+        def record(src: pathlib.Path, dst: pathlib.Path) -> None:
+            replaced.append(pathlib.Path(src))
+            real_replace(src, dst)
+
+        with unittest.mock.patch.object(os, "replace", side_effect=record):
+            mb_mailbox.write_pose36(self.dir, pose(1.0), seq=1, t_mono_ns=10, prev=None)
+        self.assertEqual(
+            replaced, [self.dir / f"{mb_mailbox.POSE36_NAME}.{os.getpid()}.tmp"]
+        )
 
     def test_another_writers_temp_file_does_not_block(self) -> None:
         # The temp name carries the pid: a shared one let each writer's replace()

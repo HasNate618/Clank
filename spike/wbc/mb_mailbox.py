@@ -77,7 +77,7 @@ def write_pose36(
     pose: Sequence[float],
     seq: int,
     t_mono_ns: int,
-    prev: list | None,
+    prev: list | None = None,
 ) -> list:
     """Append one achieved pose to the context ring and return the new ring.
 
@@ -106,7 +106,9 @@ def read_pose36(session_dir: Path) -> dict | None:
     if data is None:
         return None
     poses = data.get("poses")
-    if not isinstance(poses, list) or not all(_is_pose_row(row) for row in poses):
+    if not isinstance(poses, list) or not poses:
+        return None
+    if not all(_is_pose_row(row) for row in poses):
         return None
     if not isinstance(data.get("seq"), int) or not isinstance(data.get("t_mono_ns"), int):
         return None
