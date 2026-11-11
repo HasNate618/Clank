@@ -140,8 +140,11 @@ def last_line(
     return f"{skill} {side} target={target or 'null'} → {outcome}"
 
 
-#: Skills that address one hand.
-PLANNER_SIDE_SKILLS = ("reach", "grab", "release")
+#: Skills that address one hand. `menu` belongs here: the controller's system button exists per
+#: hand, and MEASURED 2026-11-10 the model answers `{"skill":"menu","target":"card"}` with no side,
+#: which the side rule then refused while the loop ran it anyway. Defaulting the hand is the same
+#: call this parser already makes for a reach.
+PLANNER_SIDE_SKILLS = ("reach", "grab", "release", "menu")
 
 #: Judged on the recording: a 30 s intro at 1 frame/s leaves ~30 turns of slack.
 DEFAULT_TIMEOUT_S = 30.0
@@ -159,7 +162,6 @@ grab it
 - reach   move one hand toward a named thing you have located
 - grab    close one hand
 - release open one hand
-- menu    press the controller menu button; name the hand
 
 While holding something, reach moves it with that hand.
 
@@ -167,18 +169,39 @@ After find you are told present or not_visible. After a hand action you are \
 told done, saturated, or timeout, and you see a new image.
 
 Reply with one JSON object and nothing else. All three keys are always present:
-{"skill":"hold"|"look"|"find"|"reach"|"grab"|"release"|"menu",\
+{"skill":"hold"|"look"|"find"|"reach"|"grab"|"release",\
 "side":"none"|"left"|"right","target": <noun string or null>}
 
 side is "none" for hold, look and find, and is "left" or "right" for reach, \
-grab, release and menu.
+grab and release.
 
 Do what the voice asked. Do not invent extra chores. Find a thing before you reach for it. If find said it is not there, look. If you are unsure, hold.
 
-Grab only when glow is yes. A yellow ghost means the held thing will go into \
-the slot if you release. A full hand cannot grab; use the other hand or \
-release.\
+Grab when glow is yes or unknown; do not grab when glow is no. A yellow ghost \
+means the held thing will go into the slot if you release. A full hand cannot \
+grab; use the other hand or release.\
 """
+
+#: The controller's menu button, offered only when the voice asks for it.
+#:
+#: MEASURED 2026-11-10, same still, "Hey, Hillman, take my card.": with the menu line in the
+#: action list the model answered `menu(card)`; without it, `look right` / `grab card`. One extra
+#: action is enough to capture an unrelated instruction on this model, so the action is offered
+#: when the instruction names it and not otherwise - and then "press the menu button" answers
+#: `menu(right)`, which is what the tool exists for.
+MENU_SKILL_LINE = "- menu    press the controller menu button; name the hand"
+_MENTIONS_MENU = re.compile(r"\bmenu\b", re.IGNORECASE)
+
+
+def constitution_for(heard: str) -> str:
+    """The constitution, with the menu action offered only when the voice asks for it."""
+    if not _MENTIONS_MENU.search(heard or ""):
+        return CONSTITUTION
+    text = CONSTITUTION.replace(
+        "- release open one hand\n", f"- release open one hand\n{MENU_SKILL_LINE}\n")
+    text = text.replace('"grab"|"release",', '"grab"|"release"|"menu",')
+    return text.replace("grab and release.", "grab, release and menu.")
+
 
 #: Identity and nothing else. MEASURED 2026-11-10: the seed that carried the walkthrough
 #: ("use the store clerk cartridge ... pull the lever") overrode what JobBot actually said - asked
@@ -509,6 +532,7 @@ def plan(
     transcript: list[str] | None = None,
     wav: bytes | None = None,
     default_side: str = "right",
+    system: str | None = None,
 ) -> Plan:
     """Ask for one action given one still and the recent speech.
 
@@ -532,7 +556,7 @@ def plan(
     content.append({"type": "text", "text": "\n\n".join(blocks)})
 
     reply = _chat(config, [
-        {"role": "system", "content": CONSTITUTION},
+        {"role": "system", "content": system if system is not None else CONSTITUTION},
         {"role": "user", "content": content},
     ])
     if reply.error:
@@ -1378,7 +1402,7 @@ def think(
     """
     live = live_block(heard, left, right, yaw_rad, glow, last, ghost=ghost)
     plan_result = plan(config, seed, frame, live, transcript=history,
-                       default_side=default_side)
+                       default_side=default_side, system=constitution_for(heard))
     decision = assemble(plan_result, None, seq, t_mono_ns, left=left, right=right,
                         glow=glow, ghost=ghost, memory=memory, look_step=look_step)
     sense = None

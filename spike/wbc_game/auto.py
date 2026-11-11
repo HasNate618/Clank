@@ -380,6 +380,12 @@ def one_turn(say: str = "", pattern: str = ears.DEFAULT_PATTERN,
 
     if intent is None or thought is None:
         return spoken
+    if not thought.decision.accepted and intent.skill not in ("hold", "rest"):
+        # A refused plan is not an action. MEASURED 2026-11-10: a menu press with no hand was
+        # refused by assemble and then executed here anyway, which is the loop doing something
+        # the brain did not validly ask for - the one class of bug this design cannot tolerate.
+        brainlog.log("act", f"hold ({thought.decision.reason})")
+        return spoken
     skill = intent.skill
     # `thought` cannot be None here, and saying so once keeps every later `thought.plan` honest
     # instead of a chain of "is not a known attribute of None" warnings that hide a real one.

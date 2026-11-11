@@ -238,9 +238,32 @@ class PlannerSkills(unittest.TestCase):
 class MenuSkill(unittest.TestCase):
     """JobBot asks for the menu button early. Nothing on the body can press it."""
 
-    def test_the_constitution_offers_menu_with_a_hand(self) -> None:
-        self.assertIn('"menu"', brain.CONSTITUTION)
-        self.assertIn("menu    press the controller menu button", brain.CONSTITUTION)
+    def test_the_menu_action_is_offered_only_when_the_voice_asks_for_it(self) -> None:
+        # MEASURED 2026-11-10: with the menu line always in the list, "take my card" came back
+        # as menu(card). One extra action captures an unrelated instruction on this model, so the
+        # action exists exactly when the instruction names it.
+        self.assertNotIn('"menu"', brain.CONSTITUTION)
+        asked = brain.constitution_for("press the menu button")
+        self.assertIn('"menu"', asked)
+        self.assertIn("press the controller menu button", asked)
+        self.assertNotIn('"menu"', brain.constitution_for("Hey, take my card."))
+
+    def test_a_menu_instruction_reaches_the_model_through_think(self) -> None:
+        class PressReply(ChatPatchMixin, unittest.TestCase):
+            reply = '{"skill":"menu","side":"right","target":"menu button"}'
+
+        case = PressReply("run")
+        case.setUp()
+        try:
+            thought = brain.think(
+                brain.BrainConfig(), brain.DEFAULT_SEED, fake_frame(),
+                "press the menu button", [], brain.WorkingMemory())
+            system = case.chat_calls[0]["messages"][0]["content"]
+        finally:
+            case.tearDown()
+        self.assertEqual(thought.plan.skill, "menu")
+        self.assertEqual(thought.decision.intent.skill, "menu")
+        self.assertIn('"menu"', system)
 
     def test_a_menu_plan_assembles_into_a_legal_intent(self) -> None:
         from clank.intent import validate_intent
