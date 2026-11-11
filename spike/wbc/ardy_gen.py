@@ -28,8 +28,10 @@ the demo fills from its own previously generated *feature* tensor; a pose36 -> f
 encoder does not exist (`motion_rep` has no `encode`), so `generate` starts from the body's
 current root and heading instead (`init_global_translation`, `init_first_heading_angle`) and
 lets SONIC absorb the pose offset, since it starts from the live `mjData` regardless.
-`history_features` is accepted for the chained case the demo does exercise; nothing here
-passes it yet.
+`generate` therefore refuses `history_features` rather than accepting a tensor it would
+misread: ARDY returns `init_history_len + gen_horizon_len` frames, while the hand pin and the
+residual are indexed at `num_frames - 1`, which is then the last *history* frame - so a
+history would silently measure and pin the wrong frame instead of erroring.
 
 NixOS: torch needs `LD_LIBRARY_PATH=/run/opengl-driver/lib`, or it reports `cuda False` on a
 working driver and everything runs on the CPU instead.
@@ -87,6 +89,34 @@ def check_steps(steps: int, num_base_steps: int) -> int:
         raise ValueError(
             f"num_denoising_steps must be between 1 and {limit}, the checkpoint's denoising "
             f"schedule; {count} would trip a CUDA device-side assert rather than an error"
+        )
+    return count
+
+
+def check_num_frames(
+    num_frames: int, gen_horizon_len: int, num_frames_per_token: int
+) -> int:
+    """The window length, or `ValueError` naming the checkpoint's horizon and token size.
+
+    ARDY returns `gen_horizon_len` frames for a window whatever `num_frames` says, and asserts
+    a whole number of tokens inside `autoregressive_step` (`ardy_model.py:736`) while building
+    its future mask from the token count. Any other frame count is therefore either an
+    `AssertionError` from deep inside the model or a full-horizon clip with the hand pinned at
+    the wrong frame, so it is refused here first.
+    """
+    horizon = int(gen_horizon_len)
+    per_token = int(num_frames_per_token)
+    count = int(num_frames)
+    if count != horizon:
+        raise ValueError(
+            f"num_frames must be the checkpoint's generated horizon, {horizon}: ARDY always "
+            f"returns {horizon} frames for a window, so {count} would pin the hand at frame "
+            f"{count - 1} of a {horizon}-frame clip"
+        )
+    if count % per_token != 0:
+        raise ValueError(
+            f"num_frames must be a multiple of {per_token}, the checkpoint's frames per token; "
+            f"autoregressive_step asserts that and builds its future mask from the token count"
         )
     return count
 
@@ -187,7 +217,6 @@ def load_ardy(device: str = "cuda") -> Any:
     Text is a single pooled 4096-vector per sample in this checkpoint, and an empty prompt is
     already turned into zeros (`ardy_model.py:325`), so the tower buys nothing here.
     """
-    import torch  # pyright: ignore[reportMissingImports]
     from ardy.model import load_model  # pyright: ignore[reportMissingImports]
 
     model = _MODELS.get(device)
@@ -348,17 +377,30 @@ def generate(
     way the body faces. `root_forward_m` adds a root path - the out-of-reach case, where the
     body has to step towards the object as well as raise its hand.
 
+    `num_frames` must be the checkpoint's own horizon (`check_num_frames`): ARDY generates
+    that many frames regardless, so a different count would pin the hand at the wrong one.
+
     Returns `(frames, metrics)`, the frames being pose36 rows (`g1_pack` order, 25 Hz) and the
-    metrics `{"seconds", "peak_vram_gb", "hand_residual_m"}` - the residual is measured, not
-    assumed, so a caller can decide whether another generation is worth it.
+    metrics `{"seconds", "peak_vram_gb", "hand_residual_m", "fk_roundtrip_m"}`. Both
+    distances are measured, not assumed, so a caller can decide whether another generation is
+    worth it.
     """
     context = _rows(pose36_context)
+    if history_features is not None:
+        raise NotImplementedError(
+            "history_features is not supported yet: ARDY continues from its own feature tensor "
+            "and the pose36 -> feature encoder does not exist (motion_rep has no encode); pass "
+            "None and let SONIC absorb the pose offset"
+        )
 
     import torch  # pyright: ignore[reportMissingImports]
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
     model = load_ardy(device)
     count = check_steps(steps, model.diffusion.num_base_steps)
+    horizon = check_num_frames(
+        num_frames, model.gen_horizon_len, model.num_frames_per_token
+    )
     skeleton = _skeleton()
     converter = _converter(skeleton)
 
@@ -366,7 +408,7 @@ def generate(
     pose = _motion_pose(latest, skeleton, converter)
     start_xy = (float(pose["root_positions"][0, 0, 0]), float(pose["root_positions"][0, 0, 2]))
     heading = heading_angle(latest)
-    last_frame = num_frames - 1
+    last_frame = horizon - 1
 
     # The hand constraint pins the root at its own frame from the pose it was built on; when a
     # root path exists the two must agree or the path is ignored (measured: 0.03 m travelled
@@ -375,36 +417,32 @@ def generate(
     goals: list = []
     if root_forward_m is not None:
         _, points = root_waypoints(
-            num_frames, root_forward_m, start_xy=start_xy, heading=heading
+            horizon, root_forward_m, start_xy=start_xy, heading=heading
         )
         root_2d = torch.tensor([points[-1]], dtype=torch.float32)
         goals = root_goal_constraint(
-            skeleton, num_frames, root_forward_m, start_xy=start_xy, heading=heading
+            skeleton, horizon, root_forward_m, start_xy=start_xy, heading=heading
         )
     constraints = hand_constraint(skeleton, pose, hand_delta, frame=last_frame, root_2d=root_2d)
     target = hand_target(skeleton, pose, hand_delta)
 
-    lengths = torch.tensor([num_frames], device=device)
+    lengths = torch.tensor([horizon], device=device)
     observed_motion, motion_mask = model.motion_rep.create_conditions_from_constraints_batched(
         constraints + goals, lengths, to_normalize=True, device=device
     )
     text_feat = zero_text(device)
     text_pad_mask = torch.ones(1, 1, dtype=torch.bool, device=device)
-    if history_features is None:
-        # No history: the window is generated around the body's own root and heading, so the
-        # exported qpos is already in the game's world frame and the tracker has no jump.
-        init_translation = torch.tensor([world_root(latest)], dtype=torch.float32, device=device)
-        init_heading = torch.tensor([heading], dtype=torch.float32, device=device)
-    else:
-        init_translation = None
-        init_heading = None
+    # No history: the window is generated around the body's own root and heading, so the
+    # exported qpos is already in the game's world frame and the tracker has no jump.
+    init_translation = torch.tensor([world_root(latest)], dtype=torch.float32, device=device)
+    init_heading = torch.tensor([heading], dtype=torch.float32, device=device)
 
     if device == "cuda":
         torch.cuda.reset_peak_memory_stats()
     started = time.perf_counter()
     with torch.no_grad():
         motion = model.autoregressive_step(
-            num_frames=num_frames,
+            num_frames=horizon,
             num_denoising_steps=count,
             motion_mask=motion_mask,
             observed_motion=observed_motion,
@@ -424,6 +462,19 @@ def generate(
         qpos = converter.dict_to_qpos(
             as_tensors, device, root_quat_w_first=False, numpy=False
         )
+        # `_motion_pose` builds the hand target the residual below is measured against, so a
+        # systematic error in its FK cancels out of that residual. Round-tripping the last
+        # generated frame back through it against ARDY's own posed joints is what catches a
+        # wrong joint order, hinge axis or rotation offset - any of those biases every reach
+        # while the residual still looks small. Most of the number that comes out is ARDY's
+        # own export loss (see the probe), so it catches gross errors, not small ones.
+        our_joints = _motion_pose(tuple(qpos[0, last_frame].tolist()), skeleton, converter)[
+            "posed_joints"
+        ][0, 0]
+        ardy_joints = output["posed_joints"][0, last_frame].to(
+            device=our_joints.device, dtype=our_joints.dtype
+        )
+        fk_roundtrip = float(torch.linalg.norm(our_joints - ardy_joints, dim=-1).max())
 
     hand = skeleton.bone_index[skeleton.right_hand_joint_names[0]]
     landed = output["posed_joints"][0, last_frame, hand]
@@ -435,5 +486,6 @@ def generate(
         "seconds": seconds,
         "peak_vram_gb": (torch.cuda.max_memory_allocated() / 1e9) if device == "cuda" else None,
         "hand_residual_m": residual,
+        "fk_roundtrip_m": fk_roundtrip,
     }
     return frames, metrics

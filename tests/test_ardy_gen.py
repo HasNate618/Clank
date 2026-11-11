@@ -137,6 +137,31 @@ class RootWaypointsTest(unittest.TestCase):
         self.assertAlmostEqual(points[-1][1], -0.6)
 
 
+class CheckNumFramesTest(unittest.TestCase):
+    """ARDY always returns its horizon and asserts whole tokens, so `generate` refuses first."""
+
+    def test_the_checkpoints_horizon_is_allowed(self) -> None:
+        self.assertEqual(ardy_gen.check_num_frames(52, 52, 4), 52)
+
+    def test_a_shorter_window_is_refused_naming_the_horizon(self) -> None:
+        # 40 would come back as a 52-frame clip with the hand pinned at frame 39.
+        with self.assertRaises(ValueError) as caught:
+            ardy_gen.check_num_frames(40, 52, 4)
+        self.assertIn("52", str(caught.exception))
+        self.assertIn("40", str(caught.exception))
+
+    def test_a_window_off_the_token_grid_never_reaches_the_models_assert(self) -> None:
+        # `autoregressive_step` asserts this itself, one layer too deep to catch in Python.
+        with self.assertRaises(ValueError) as caught:
+            ardy_gen.check_num_frames(50, 52, 4)
+        self.assertIn("52", str(caught.exception))
+
+    def test_the_token_guard_names_the_divisor(self) -> None:
+        with self.assertRaises(ValueError) as caught:
+            ardy_gen.check_num_frames(52, 52, 5)
+        self.assertIn("5", str(caught.exception))
+
+
 class ContextValidationTest(unittest.TestCase):
     """`generate` checks the context before it imports torch, so these stay stdlib-cheap."""
 
@@ -147,6 +172,19 @@ class ContextValidationTest(unittest.TestCase):
     def test_a_short_pose_is_refused(self) -> None:
         with self.assertRaises(ValueError):
             ardy_gen.generate([(0.0,) * 35], hand_delta=(0.0, 0.15, 0.35), root_forward_m=None)
+
+    def test_history_features_are_refused_rather_than_misread(self) -> None:
+        # ARDY returns init_history_len + gen_horizon_len frames while the hand pin and the
+        # residual are indexed at num_frames - 1: a history would silently pin the last
+        # history frame, so there is no encoder and the argument is not accepted.
+        with self.assertRaises(NotImplementedError) as caught:
+            ardy_gen.generate(
+                [pose36()],
+                hand_delta=(0.0, 0.15, 0.35),
+                root_forward_m=None,
+                history_features=object(),
+            )
+        self.assertIn("encoder", str(caught.exception))
 
 
 class LazyImportTest(unittest.TestCase):
