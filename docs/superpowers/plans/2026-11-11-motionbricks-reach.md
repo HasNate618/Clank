@@ -294,14 +294,14 @@ Message: `add pose36 and clip-play mailbox as session json files`
 - Produces:
 
 ```python
-SRC_HZ = 30
+SRC_HZ = 25          # ARDY-G1 runs at 25 fps; 30 was MotionBricks
 DST_HZ = 50
 LOOKAHEAD = 10
 LOOKAHEAD_STEP = 5  # 0.9 s at 50 Hz
 
 def lerp(a: float, b: float, t: float) -> float
 def slerp_xyzw(q0, q1, t) -> tuple[float, float, float, float]
-def resample_pose36(frames: Sequence[Sequence[float]], src_hz: float = 30.0, dst_hz: float = 50.0) -> list[tuple[float, ...]]
+def resample_pose36(frames: Sequence[Sequence[float]], src_hz: float = SRC_HZ, dst_hz: float = DST_HZ) -> list[tuple[float, ...]]
 def sonic_dict(frames50: Sequence[Sequence[float]]) -> dict
     # keys jp, jv, bp, bq, n. jp (n,29) CSV order; jv finite-diff, last row copied;
     # bp (n,14,3) zeros except [:,0] = root xyz; bq (n,14,4) identity wxyz except [:,0] = xyzw_to_wxyz(root)
@@ -316,11 +316,15 @@ def clip_tick(frame: int, n: int) -> tuple[int, bool]
 - [ ] **Step 1: Write the failing tests** in `tests/test_mb_clip.py`
 
 ```python
-def test_resample_30_to_50_length(self) -> None:
-    # 30 frames @ 30 Hz = 1.0 s -> 50 frames. Unit xyzw (0,0,0,1).
-    frames = [(i / 30, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0) + (0.0,) * 29 for i in range(30)]
+def test_resample_25_to_50_length(self) -> None:
+    # 25 frames @ 25 Hz (ARDY) = 1.0 s -> 50 frames. Unit xyzw (0,0,0,1).
+    frames = [(i / 25, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0) + (0.0,) * 29 for i in range(25)]
     out = clip_from_gen.resample_pose36(frames)
     self.assertEqual(len(out), 50)
+
+def test_resample_30_to_50_still_supported(self) -> None:
+    frames = [(i / 30, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0) + (0.0,) * 29 for i in range(30)]
+    self.assertEqual(len(clip_from_gen.resample_pose36(frames, src_hz=30.0)), 50)
     self.assertAlmostEqual(out[0][0], frames[0][0])
     self.assertAlmostEqual(out[-1][0], frames[-1][0], places=5)
 
