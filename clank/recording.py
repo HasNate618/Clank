@@ -49,6 +49,15 @@ TICK_S = 0.01
 AUDIO_FLUSH_S = 1.0
 #: Threads are joined in bounded slices; a wedged writer must not hang a run.
 THREAD_JOIN_S = 2.0
+#: A depth stream that has raised on this many reads running has died, not
+#: blinked: at the 10 ms tick that is a third of a second of no picture.
+STREAM_ERROR_LIMIT = 30
+
+#: The threads that write the encoders' pipes, and the encoders each one holds.
+#: A writer wedged in a full pipe takes its own encoders down, and only its own.
+PUMP_THREAD = "clank-recording"
+AUDIO_THREAD = "clank-recording-audio"
+WEDGED_SOURCES = {PUMP_THREAD: ("game", "robot"), AUDIO_THREAD: ("audio",)}
 
 
 def composite_argv(
@@ -111,7 +120,11 @@ class Recorder:
     - ``ok``: it produced at least one frame or block, so its part is playable;
     - ``missing``: there was nothing to record (no depth stream, no body tile,
       no capture device), so its part is absent and the composite pads it;
-    - ``failed``: it was tried and broke (no encoder, a dead pipe).
+    - ``failed``: it was tried and broke (no encoder, a dead pipe, a depth
+      stream that stopped answering).
+
+    ``notes`` carries one line per source that gave a reason, whether or not the
+    source recovered: a read error that came and went still explains a gap.
 
     ``stream_factory`` and ``capture`` default to None, which means the source
     is not available in this process: the caller that owns a live stack passes
@@ -139,6 +152,7 @@ class Recorder:
         self._robot_period = 1.0 / cfg.recording.robot_fps
 
         self._audio_lock = threading.Lock()
+        self._tick_lock = threading.Lock()  # one tick at a time, whoever pumps
         self._idle = threading.Event()   # set by stop() to wake every wait
         self._stopped = threading.Event()
         self._threads: list[threading.Thread] = []
@@ -153,6 +167,7 @@ class Recorder:
         self._notes: dict[str, str] = {}
 
         self._color: bytes | None = None
+        self._color_errors = 0
         self._tile: bytes | None = None
         self._tile_stamp: tuple[int, int] | None = None
         self._peak = 0
@@ -197,9 +212,9 @@ class Recorder:
         self._start_audio()
         self._write_manifest("recording")
         if self._sources["game"] == "ok" or self._sources["robot"] == "ok":
-            self._start_thread(self._pump_loop, "clank-recording")
+            self._start_thread(self._pump_loop, PUMP_THREAD)
         if self._sources["audio"] == "ok":
-            self._start_thread(self._audio_loop, "clank-recording-audio")
+            self._start_thread(self._audio_loop, AUDIO_THREAD)
 
     def pump(self, seconds: float) -> None:
         """Run the pictures' schedule for ``seconds`` of wall time.
@@ -210,14 +225,20 @@ class Recorder:
         again. A rawvideo or image2pipe feed is constant-rate, so a drop would
         shorten the part and slide every later frame away from the diary event
         that names it.
+
+        The tick is serialised: a second caller waits for the one in progress
+        and then finds the slots it consumed already taken, so a frame is never
+        written twice and the part is as long as the run however many pumps
+        there are.
         """
         deadline = self._clock() + max(0.0, float(seconds))
         while not self._stopped.is_set():
             now = self._clock()
             if now >= deadline:
                 return
-            self._game_tick(now)
-            self._robot_tick(now)
+            with self._tick_lock:
+                self._game_tick(now)
+                self._robot_tick(now)
             self._idle.wait(min(max(deadline - now, 0.0), TICK_S))
 
     def stop(self) -> dict:
@@ -233,15 +254,19 @@ class Recorder:
         self._stopped.set()
         self._idle.set()
         stuck = self._join_threads(THREAD_JOIN_S)
-        if stuck:
-            # A writer wedged in a full pipe: kill its encoder so the write ends
-            # with EPIPE rather than waiting on an ffmpeg that is not reading.
-            for name in SOURCES:
+        wedged = {thread.name for thread in stuck}
+        # A writer wedged in a full pipe: kill the encoders it holds so its write
+        # ends with EPIPE rather than waiting on an ffmpeg that is not reading.
+        # A source whose writer finished keeps its encoder and its part.
+        for thread_name in wedged:
+            for name in WEDGED_SOURCES.get(thread_name, ()):
                 self._kill_encoder(name)
+        if stuck:
             self._join_threads(1.0)
-        else:
+        if PUMP_THREAD not in wedged:
             self._flush_tile()
-        self._flush_audio()
+        if AUDIO_THREAD not in wedged:
+            self._flush_audio()
         for name in SOURCES:
             self._close_stdin(name)
         for name in SOURCES:
@@ -439,8 +464,9 @@ class Recorder:
         try:
             frame = self._stream.read(timeout=0.0, after_seq=self._seq, flip=False)
         except (OSError, ValueError) as exc:
-            self._note("game", f"the depth stream stopped answering: {exc}")
+            self._note_color_error(exc)
             return None
+        self._color_errors = 0
         if not frame:
             return None
         self._seq = int(frame.get("seq") or 0)
@@ -448,6 +474,22 @@ class Recorder:
         if not color or len(color) != GAME_WIDTH * GAME_HEIGHT * 4:
             return None
         return color
+
+    def _note_color_error(self, exc: Exception) -> None:
+        """A read that raised is a note at first and a failed source at the bound.
+
+        One bad read is a blink: the note keeps the reason for the gap, and the
+        run carries on. A stream that has raised on every read for
+        `STREAM_ERROR_LIMIT` ticks is dead, and padding its last frame forever
+        under ``ok`` would report a still picture as a healthy recording.
+        """
+        self._color_errors += 1
+        detail = f"the depth stream stopped answering: {exc}"
+        if self._color_errors >= STREAM_ERROR_LIMIT and self._sources["game"] == "ok":
+            self._sources["game"] = "failed"
+            detail = (f"the depth stream stopped answering "
+                      f"{self._color_errors} reads in a row: {exc}")
+        self._note("game", detail)
 
     def _newest_tile(self) -> Path | None:
         directory = Path(self.cfg.paths.session_root) / "body"
@@ -638,8 +680,7 @@ class Recorder:
             "audio_peak": int(self._peak),
             "encoder": self._encoder,
             "parts": parts,
-            "notes": {name: text for name, text in self._notes.items()
-                      if text and self._sources[name] != "ok"},
+            "notes": {name: text for name, text in self._notes.items() if text},
             "error": self._error,
         }
         self._manifest = doc

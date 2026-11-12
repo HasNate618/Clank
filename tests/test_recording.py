@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import struct
 import tempfile
+import threading
+import time
 import unittest
 from dataclasses import replace
 from pathlib import Path
@@ -121,6 +123,19 @@ esac
 exit 0
 """
 
+#: The game's encoder never reads its pipe, so the frame writer fills it and
+#: blocks there. The audio and robot encoders behave.
+WEDGED_FFMPEG = """#!/bin/sh
+for a in "$@"; do out="$a"; done
+case "$out" in
+  *-version) echo "wedged-ffmpeg 0"; exit 0 ;;
+esac
+case " $* " in
+  *" rawvideo "*) exec sleep 300 ;;
+esac
+cat > "$out"
+"""
+
 class FakeProc:
     def wait(self, timeout=None) -> int:
         return 0
@@ -168,8 +183,11 @@ class FakeStream:
         self.seq = 0
         self.flips: list[bool] = []
         self.closed = False
+        #: Set once a read is in progress: the frame tick has begun.
+        self.reading = threading.Event()
 
     def read(self, timeout: float = 5.0, after_seq: int = 0, flip: bool = True) -> dict | None:
+        self.reading.set()
         self.flips.append(flip)
         if self.seq >= self.frames * 2:
             return None
@@ -185,6 +203,66 @@ class FakeStream:
 
     def close(self) -> None:
         self.closed = True
+
+
+class BrokenStream(FakeStream):
+    """A depth stream whose reads raise, the way a closed mmap's do.
+
+    `failures` reads fail and every later one behaves, so one fake covers both
+    the blink the recorder notes and the death it has to report.
+    """
+
+    def __init__(self, failures: int = 1) -> None:
+        super().__init__(frames=1)
+        self.failures = failures
+
+    def read(self, timeout: float = 5.0, after_seq: int = 0, flip: bool = True) -> dict | None:
+        if self.failures <= 0:
+            return super().read(timeout, after_seq, flip)
+        self.failures -= 1
+        self.reading.set()
+        raise OSError("mmap closed")
+
+
+class SteppingClock:
+    """A clock the test owns: every read advances it by one step.
+
+    `Recorder(clock=...)` exists so a test can decide the schedule instead of
+    waiting for it. A pump then stops when *this* clock passes its deadline, so
+    the number of due frames is the same on every machine.
+    """
+
+    def __init__(self, step: float = 0.02) -> None:
+        self.t = 0.0
+        self.step = step
+
+    def __call__(self) -> float:
+        self.t += self.step
+        return self.t
+
+
+class ExclusiveStream(FakeStream):
+    """A depth stream that counts any two frame ticks let in at the same time.
+
+    A read is held open for a millisecond, which is the window in which a second
+    pump, ticking on its own, would reach this stream too. The count is of
+    violations that really happened, so it cannot cry wolf: it can only miss.
+    """
+
+    def __init__(self) -> None:
+        super().__init__(frames=1)
+        self.inside = threading.Lock()
+        self.violations = 0
+
+    def read(self, timeout: float = 5.0, after_seq: int = 0, flip: bool = True) -> dict | None:
+        if not self.inside.acquire(blocking=False):
+            self.violations += 1
+            return super().read(timeout, after_seq, flip)
+        try:
+            time.sleep(0.001)
+            return super().read(timeout, after_seq, flip)
+        finally:
+            self.inside.release()
 
 
 class FakeStreamFactory:
@@ -227,7 +305,10 @@ class RecorderTests(unittest.TestCase):
     def test_start_records_and_stop_composes_a_manifest(self):
         rec = Recorder(self.cfg, self.run_dir, stream_factory=self.streams, capture=FakeCapture)
         rec.start()
-        self.assertEqual(read_manifest(self.run_dir)["state"], "recording")
+        recording_manifest = read_manifest(self.run_dir)
+        if recording_manifest is None:
+            self.fail("start() must leave a manifest behind")
+        self.assertEqual(recording_manifest["state"], "recording")
         rec.pump(0.4)
         manifest = rec.stop()
         self.assertEqual(manifest["state"], "composing")
@@ -272,20 +353,88 @@ class RecorderTests(unittest.TestCase):
         self.assertIsNone(manifest["error"])
 
     def test_a_frame_that_did_not_arrive_is_written_again_when_it_is_due(self):
-        rec = Recorder(self.cfg, self.run_dir, stream_factory=self.streams, capture=FakeCapture)
+        """The part's length is the schedule's, exactly: one frame per slot.
+
+        The clock is this test's and it drives the only pump. The recorder's own
+        thread would otherwise supply the same frames off the same clock, so the
+        counts would be true whether or not this pump wrote anything at all.
+        """
+        clock = SteppingClock()
+        rec = Recorder(self.cfg, self.run_dir, stream_factory=self.streams,
+                       capture=FakeCapture, clock=clock)
+        rec._start_thread = lambda target, name: None   # this test drives the only pump
         rec.start()
-        rec.pump(0.4)
+        rec.pump(0.38)
         rec.stop()
         frame = GAME_WIDTH * GAME_HEIGHT * 4
         game = (self.run_dir / "parts" / "game.mp4").stat().st_size
-        self.assertEqual(game % frame, 0)
-        # The stream published one frame; 0.4 s at 15 fps is six slots. Fewer
-        # would mean the file is short and every later diary seek is wrong.
-        self.assertGreaterEqual(game // frame, 6)
+        # The start slot is 0.02 s in and the pump reaches 0.40 s: six slots at
+        # 15 fps, and not one frame more for the hand-driven pump beside the
+        # schedule.
+        self.assertEqual(game, 6 * frame)
         tile = len(self.tile.read_bytes())
         robot = (self.run_dir / "parts" / "robot.mp4").stat().st_size
-        self.assertEqual(robot % tile, 0)
-        self.assertGreaterEqual(robot // tile, 4)  # 0.4 s at 10 fps
+        # Four slots at 10 fps over the same 0.40 s, and the tile stop() writes
+        # so a run shorter than a tick still has the robot's picture.
+        self.assertEqual(robot, 5 * tile)
+
+    def test_a_depth_stream_that_keeps_raising_is_not_recorded_as_a_success(self):
+        stream = BrokenStream(failures=10**6)
+        rec = Recorder(self.cfg, self.run_dir, stream_factory=lambda: stream,
+                       capture=FakeCapture)
+        rec.start()
+        # How many ticks pump() gets out of a duration is the wall clock's, so
+        # the bound is driven one tick at a time.
+        now = rec._started_monotonic
+        for tick in range(recording.STREAM_ERROR_LIMIT + 1):
+            rec._game_tick(now + tick * rec._period)
+        manifest = rec.stop()
+        self.assertEqual(manifest["sources"]["game"], "failed")
+        self.assertIn("stopped answering", manifest["notes"]["game"])
+        self.assertNotIn("game", manifest["parts"])
+        self.assertEqual(manifest["state"], "composing")
+
+    def test_a_read_error_is_in_the_manifest_even_when_the_stream_recovers(self):
+        stream = BrokenStream(failures=1)
+        rec = Recorder(self.cfg, self.run_dir, stream_factory=lambda: stream,
+                       capture=FakeCapture)
+        rec.start()
+        rec.pump(0.2)
+        manifest = rec.stop()
+        # One failed read is a note, not a failure: the stream answered again
+        # and the picture kept coming. The note survives so the reason for the
+        # gap is not lost.
+        self.assertEqual(manifest["sources"]["game"], "ok")
+        self.assertIn("stopped answering", manifest["notes"]["game"])
+
+    def test_two_pumps_never_write_into_the_tick_at_the_same_time(self):
+        stream = ExclusiveStream()
+        rec = Recorder(self.cfg, self.run_dir, stream_factory=lambda: stream,
+                       capture=FakeCapture, clock=SteppingClock())
+        rec.start()
+        # The recorder's own thread is pumping this same schedule, so this pump
+        # beside it is exactly the second caller the tick lock has to serialise.
+        rec.pump(0.38)
+        rec.stop()
+        self.assertEqual(stream.violations, 0)
+
+    def test_a_wedged_game_writer_leaves_the_audio_track_on_disk(self):
+        wedged = self.base / "wedged-ffmpeg"
+        wedged.write_text(WEDGED_FFMPEG)
+        wedged.chmod(0o755)
+        cfg = replace(self.cfg, recording=replace(self.cfg.recording, ffmpeg=str(wedged)))
+        rec = Recorder(cfg, self.run_dir, stream_factory=self.streams, capture=FakeCapture)
+        rec.start()
+        self.assertTrue(self.streams.made[0].reading.wait(5.0))
+        # The frame writer is now blocked in the game's full pipe, and stays
+        # blocked until stop() kills that encoder. The audio encoder never
+        # stopped reading, so its part is the whole run.
+        manifest = rec.stop()
+        self.assertEqual(manifest["sources"]["audio"], "ok")
+        self.assertIn("audio", manifest["parts"])
+        self.assertGreater((self.run_dir / "parts" / "audio.m4a").stat().st_size, 0)
+        self.assertNotEqual(manifest["sources"]["game"], "ok")
+        self.assertNotIn("game", manifest["parts"])
 
     def test_the_reader_is_not_flipped_and_the_encoders_are_fed_their_pipes(self):
         rec = Recorder(self.cfg, self.run_dir, stream_factory=self.streams, capture=FakeCapture)
