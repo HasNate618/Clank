@@ -1124,6 +1124,10 @@ body.manual-active .manual-panel { border-color: var(--warm); }
 .rec-chip-quiet { color: var(--muted); }
 .rec-empty { color: var(--muted); font: 400 13px/1.5 var(--sans); max-width: 44ch; }
 
+/* The composite is 3.1:1, so it is wide and short by nature. The stage takes
+   its own height instead of stretching to the window, and the leftover space
+   belongs to the page rather than to an empty black card. */
+.rec-stage { align-self: start; }
 .rec-player {
   background: var(--screen);
   border-radius: var(--r-md);
