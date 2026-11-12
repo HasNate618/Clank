@@ -1111,16 +1111,39 @@ def prune(sessions_root: Path, max_total_mb: int, keep: Path | None = None) -> l
 
 
 def list_recordings(sessions_root: Path) -> list[dict]:
-    """Every run that left a manifest, newest first, as the dashboard lists it.
+    """Every run worth listing, newest first: its video if it has one, its diary if not.
 
     ``has_file`` is whether the video is really there and ``has_diary`` whether
     the run left one, so the page can say what a run is missing instead of
-    offering a player that cannot start.
+    offering a player that cannot start. A run with a diary and no manifest is
+    listed with ``state: None``: recording can be off on a machine, or a run can
+    predate the feature, and the diary is half of what this page is for --
+    hiding those runs makes the operator's second requirement unreachable.
     """
     rows: list[dict] = []
     for run_dir, session_dir in _runs(sessions_root):
         manifest = read_manifest(run_dir)
         if manifest is None:
+            diary = run_dir / "brain.jsonl"
+            if not diary.is_file():
+                continue
+            rows.append({
+                "run_id": run_dir.name,
+                "session_id": session_dir.name,
+                "dir": str(run_dir),
+                "state": None,
+                "started_at": _mtime_iso(diary),
+                "ended_at": None,
+                "duration_s": None,
+                "bytes": None,
+                "width": None,
+                "height": None,
+                "fps": None,
+                "audio_peak": None,
+                "error": None,
+                "has_file": False,
+                "has_diary": True,
+            })
             continue
         name = manifest.get("file")
         rows.append({
@@ -1143,6 +1166,20 @@ def list_recordings(sessions_root: Path) -> list[dict]:
     rows.sort(key=lambda row: (str(row.get("started_at") or ""), str(row.get("run_id"))),
               reverse=True)
     return rows
+
+
+def _mtime_iso(path: Path) -> str | None:
+    """When a file was last written, in the manifests' own ISO form.
+
+    A run with a diary and no manifest has no `started_at` of its own, and the
+    diary's mtime is the next honest thing: it is when the run last said
+    something. None if the file cannot be stat'ed, which sorts it out of the way.
+    """
+    try:
+        moment = datetime.fromtimestamp(path.stat().st_mtime, UTC)
+    except OSError:
+        return None
+    return moment.isoformat().replace("+00:00", "Z")
 
 
 def _utc_now() -> str:

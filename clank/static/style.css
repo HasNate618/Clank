@@ -1169,3 +1169,89 @@ body.manual-active .manual-panel { border-color: var(--warm); }
   padding-bottom: 1px;
 }
 .rec-watch:hover { color: var(--text); }
+
+/* ---- The player's own controls -------------------------------------- */
+/* Not the browser's: the rail carries one tick per diary event, so the
+   picture and the text share a single clock and an event can be seen coming. */
+.rec-controls {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  background: var(--card);
+  border-top: 1px solid var(--edge);
+}
+.rec-btn {
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border-radius: 999px;
+  border: 1px solid var(--edge);
+  background: var(--panel);
+  color: var(--text);
+  font: 600 12px/1 var(--sans);
+  cursor: pointer;
+}
+.rec-btn:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+.rec-btn:disabled { opacity: 0.4; cursor: default; }
+.rec-play { background: var(--go); color: var(--go-ink); border-color: transparent; }
+.rec-speed { width: auto; padding: 0 10px; }
+.rec-time {
+  min-width: 3.2em;
+  font: 400 12px/1 var(--mono);
+  color: var(--muted);
+  text-align: center;
+}
+
+/* The rail: a track, the played portion, the head, and the ticks above it. */
+.rec-rail {
+  position: relative;
+  flex: 1;
+  height: 18px;
+  border-radius: 999px;
+  background: var(--bg);
+  border: 1px solid var(--edge);
+  cursor: pointer;
+  touch-action: none;
+}
+.rec-rail:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.rec-rail-fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 0;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent) 45%, transparent);
+}
+.rec-rail-head {
+  position: absolute;
+  top: 50%;
+  left: 0;
+  width: 10px;
+  height: 10px;
+  margin: -5px 0 0 -5px;
+  border-radius: 999px;
+  background: var(--accent);
+  box-shadow: 0 0 0 2px var(--card);
+}
+.rec-ticks { position: absolute; inset: 0; pointer-events: none; }
+.rec-tick {
+  position: absolute;
+  top: -1px;
+  width: 2px;
+  height: 6px;
+  border-radius: 1px;
+  background: var(--muted);
+}
+.rec-tick.kind-heard { background: var(--accent); height: 8px; }
+.rec-tick.kind-think { background: var(--warm); }
+.rec-tick.kind-act { background: var(--accent); }
+.rec-tick.kind-result { background: var(--go); }
+.rec-tick.kind-error { background: var(--halt); height: 8px; }
+
+/* The diary arrives with the picture. Hidden rows keep their space in the DOM
+   so revealing one is a class toggle, not a re-render that moves the scroll. */
+.rec-hidden { display: none; }
+.rec-current { box-shadow: inset 3px 0 0 var(--accent); }
+#recording-video { cursor: pointer; }

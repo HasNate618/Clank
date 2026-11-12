@@ -1055,6 +1055,25 @@ class SessionsRootTests(unittest.TestCase):
         self.assertIn("dashboard exited", rows[-1]["error"])
         self.assertFalse(rows[-1]["has_file"])
 
+    def test_a_run_with_a_diary_and_no_video_is_still_listed(self):
+        self.make_run("101010-aaaaaa", state="ready", file="recording.mp4")
+        diary_only = self.dir_of("091500-cccccc")
+        diary_only.mkdir(parents=True)
+        (diary_only / "brain.jsonl").write_text(
+            '{"kind": "think", "text": "nothing was recorded"}\n', encoding="utf-8"
+        )
+        rows = list_recordings(self.sessions)
+        row = next(item for item in rows if item["run_id"] == "091500-cccccc")
+        self.assertIsNone(row["state"])
+        self.assertFalse(row["has_file"])
+        self.assertTrue(row["has_diary"])
+        # No manifest means no started_at of its own; the diary's mtime is used
+        # so the row sorts and prints a time instead of landing at the bottom.
+        self.assertTrue(row["started_at"])
+        self.assertEqual(
+            {item["run_id"] for item in rows}, {"101010-aaaaaa", "091500-cccccc"}
+        )
+
     def test_the_listing_skips_a_run_with_no_usable_manifest(self):
         self.make_run("101010-aaaaaa", state="ready", file="recording.mp4")
         blank = self.dir_of("101010-bbbbbb")

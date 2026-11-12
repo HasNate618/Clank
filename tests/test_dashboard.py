@@ -704,10 +704,23 @@ class ShippedStaticAssetsTests(unittest.TestCase):
         static = Path(__file__).resolve().parents[1] / "clank" / "static"
         html = (static / "recordings.html").read_text(encoding="utf-8")
         js = (static / "recordings.js").read_text(encoding="utf-8")
-        for element in ("recording-list", "recording-video", "run-diary"):
+        for element in (
+            "recording-list",
+            "recording-video",
+            "run-diary",
+            # Our own transport, not the browser's: the rail carries the diary's ticks.
+            "play-toggle",
+            "rec-rail",
+            "rec-ticks",
+            "speed",
+        ):
             with self.subTest(element=element):
                 self.assertIn(f'id="{element}"', html)
-        self.assertIn("controls", html)
+        # The native chrome would cover the frame and cannot show ticks.
+        self.assertNotIn('<video id="recording-video" controls', html)
+        self.assertIn("revealUpTo", js)      # a diary row appears with its moment
+        self.assertIn("rec-hidden", js)
+        self.assertIn("playbackRate", js)
         self.assertIn("/api/recordings", js)
         self.assertIn("Math.min", js)  # a seek is clamped to the file, both ways
         self.assertIn("Math.max", js)

@@ -54,17 +54,37 @@
 
       <section class="panel rec-stage">
         <h2 id="recording-title">Pick a run</h2>
+        <!-- Our own controls, not the browser's: the rail carries a tick per
+             diary event, so the two panels share one clock and the operator can
+             see an event coming before it lands. -->
         <div class="rec-player">
-          <video id="recording-video" controls preload="metadata" playsinline></video>
+          <!-- preload="auto", not "metadata": with metadata alone the browser decodes
+               no frame and a paused player is a black box until play. At this
+               encoding that costs ~2.6 MB a minute (measured), so a twenty-minute
+               run is tens of megabytes from local disk, not hundreds. -->
+          <video id="recording-video" preload="auto" playsinline></video>
+          <div class="rec-controls" id="rec-controls">
+            <button id="play-toggle" class="rec-btn rec-play" type="button" aria-label="Play">▶</button>
+            <span id="rec-time" class="rec-time">0:00</span>
+            <div id="rec-rail" class="rec-rail" role="slider" tabindex="0"
+                 aria-label="Seek" aria-valuemin="0" aria-valuemax="0" aria-valuenow="0">
+              <div id="rec-rail-fill" class="rec-rail-fill"></div>
+              <div id="rec-rail-head" class="rec-rail-head"></div>
+              <div id="rec-ticks" class="rec-ticks"></div>
+            </div>
+            <span id="rec-duration" class="rec-time">0:00</span>
+            <button id="speed" class="rec-btn rec-speed" type="button"
+                    title="Playback speed" aria-label="Playback speed">1×</button>
+          </div>
         </div>
         <p id="recording-note" class="rec-note" role="status"></p>
         <div id="recording-meta" class="rec-meta"></div>
       </section>
 
       <aside class="panel rec-diary-panel">
-        <h2>Diary</h2>
-        <!-- A row click seeks the video to that moment; the diary is the
-             timeline, so it is the obvious scrubber. -->
+        <h2>Diary <span id="diary-count" class="rec-hint"></span></h2>
+        <!-- The diary arrives with the picture: a row shows when the video
+             reaches its moment, so what you read is what you are watching. -->
         <div id="run-diary" class="brain-messages"></div>
       </aside>
     </main>
