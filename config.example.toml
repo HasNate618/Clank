@@ -41,6 +41,15 @@ xdotool_bin = "xdotool"
 # titles write Player.log.
 game_player_log = "AppData/LocalLow/Owlchemy Labs/Job Simulator/output_log.txt"
 
+# Wiped before every run, relative to the Proton prefix
+# (<compatdata>/<proton_app_id>/pfx), so the job starts at its first frame.
+# Absolute paths and `..` are refused: a wipe must never reach outside the prefix.
+# The Unity log beside these is deliberately kept - a failed run is diagnosed from it.
+game_save_dirs = [
+  "drive_c/users/steamuser/AppData/LocalLow/Owlchemy Labs/Job Simulator/User",
+  "drive_c/users/steamuser/AppData/LocalLow/Unity/Owlchemy Labs_Job Simulator",
+]
+
 # Directory whose bin/linux64/vrclient.so implements OpenVR on top of OpenXR,
 # exported to Proton as VR_OVERRIDE. Empty means "use whatever
 # ~/.config/openvr/openvrpaths.vrpath names". Job Simulator's action manifest
@@ -121,6 +130,31 @@ weston_startup_sec = 20
 # serves one client at a time, so a mode switch can wait for the old one.
 pose_handshake_sec = 25
 stop_sec = 60
+
+[run]
+# One attempt, repeatable while the stack stays up: a new directory, diary and
+# overlay, the game's saves wiped and the game relaunched, the body reset, then
+# the brain loop in its own venv. Both paths stay relative to the repo root.
+brain_python = "spike/e3/.venv/bin/python"
+brain_script = "spike/wbc_game/auto.py"
+
+# What ends a run on its own (auto.py's own default, 15 minutes).
+brain_duration_sec = 900
+
+# A cold game relaunch: Steam must first notice the game process is gone.
+game_restart_timeout_sec = 180
+stop_timeout_sec = 10
+# `rest` commands sent while resetting the body before the run starts.
+rest_ticks = 8
+
+# The planner must be serving this model before a run spends a game restart.
+required_model = "LFM3-Omni"
+# A 2B Q8_0 load takes tens of seconds: that is a wait, not a failure.
+model_timeout_sec = 180
+# Off by default: the model, its arguments and GPU flags are the operator's
+# choice, so the run tells you what to start instead of starting one.
+model_autostart = false
+model_start_cmd = ""
 
 [body]
 # Third-person MuJoCo view beside the game cam. Needs the SONIC venv + weights,

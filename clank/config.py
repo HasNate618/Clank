@@ -27,6 +27,10 @@ class PathsConfig:
     novnc_web_root: str
     game_exe: str
     game_player_log: str
+    #: Directories wiped before every run, relative to the Proton prefix
+    #: (<compatdata>/<proton_app_id>/pfx). Absolute entries and `..` are refused at
+    #: load: a wipe must never reach outside the prefix.
+    game_save_dirs: tuple[str, ...]
     vr_override: str
     pose_client: str
     openxr_active_runtime: str
@@ -115,12 +119,29 @@ class TimeoutsConfig:
 
 
 @dataclass(frozen=True)
+class RunConfig:
+    """One attempt: what resets it, what runs it, and what it needs first."""
+
+    brain_python: str
+    brain_script: str
+    brain_duration_sec: float
+    game_restart_timeout_sec: float
+    stop_timeout_sec: float
+    rest_ticks: int
+    required_model: str
+    model_timeout_sec: float
+    model_autostart: bool
+    model_start_cmd: str
+
+
+@dataclass(frozen=True)
 class Config:
     paths: PathsConfig
     launch: LaunchConfig
     preview: PreviewConfig
     dashboard: DashboardConfig
     timeouts: TimeoutsConfig
+    run: RunConfig
     body: BodyConfig
 
 
@@ -139,6 +160,13 @@ DEFAULTS: dict[str, dict[str, Any]] = {
         # Unity log relative to .../pfx/drive_c/users/steamuser. The dashboard links
         # it. Job Simulator writes output_log.txt; most Unity titles write Player.log.
         "game_player_log": "AppData/LocalLow/Owlchemy Labs/Job Simulator/output_log.txt",
+        # Wiped before every run so the job starts at its first frame. Relative to the
+        # Proton prefix. The Unity log beside them is deliberately not listed: a failed
+        # run is diagnosed from it.
+        "game_save_dirs": (
+            "drive_c/users/steamuser/AppData/LocalLow/Owlchemy Labs/Job Simulator/User",
+            "drive_c/users/steamuser/AppData/LocalLow/Unity/Owlchemy Labs_Job Simulator",
+        ),
         # Directory holding the OpenVR shim's bin/linux64/vrclient.so, exported to
         # Proton as VR_OVERRIDE. Empty leaves ~/.config/openvr/openvrpaths.vrpath in
         # charge. The devShell points this at nixpkgs' opencomposite.
@@ -219,6 +247,28 @@ DEFAULTS: dict[str, dict[str, Any]] = {
         # the driver serves one client at a time, so a switch can wait that long.
         "pose_handshake_sec": 25.0,
         "stop_sec": 60.0,
+    },
+    "run": {
+        # The brain loop runs in its own venv (torch), like the body view. Both paths
+        # stay relative and are resolved by the dashboard's cwd, which is the repo root.
+        "brain_python": "spike/e3/.venv/bin/python",
+        "brain_script": "spike/wbc_game/auto.py",
+        # What ends a run on its own: auto.py's own default, 15 minutes.
+        "brain_duration_sec": 900.0,
+        # A cold game relaunch: Steam must notice the process is gone first.
+        "game_restart_timeout_sec": 180.0,
+        "stop_timeout_sec": 10.0,
+        # How many `rest` commands the body reset sends before the run starts. The clip
+        # answers in under a second and the command's TTL is short, so it is repeated.
+        "rest_ticks": 8,
+        # The planner must be serving this model before a run spends a game restart.
+        "required_model": "LFM3-Omni",
+        # A 2B Q8_0 load takes tens of seconds; that is a wait, not a failure.
+        "model_timeout_sec": 180.0,
+        # Off: the model, arguments and GPU flags are the operator's choice, so the
+        # gate tells them what to start rather than starting one itself.
+        "model_autostart": False,
+        "model_start_cmd": "",
     },
 }
 
@@ -367,6 +417,23 @@ def _validate(cfg: Config) -> None:
         value = getattr(cfg.timeouts, field_name)
         if value <= 0 or not math.isfinite(value):
             raise ConfigError(f"timeouts.{field_name} must be positive")
+    for entry in cfg.paths.game_save_dirs:
+        parts = Path(entry).parts
+        # Relative and inside the prefix: a wipe is the one operation here that
+        # deletes files, so the shape is checked before it can be resolved.
+        if Path(entry).is_absolute() or ".." in parts or not parts:
+            raise ConfigError(
+                "paths.game_save_dirs entries must be relative to the Proton "
+                f"prefix, got {entry!r}"
+            )
+    if cfg.run.brain_duration_sec <= 0 or not math.isfinite(cfg.run.brain_duration_sec):
+        raise ConfigError("run.brain_duration_sec must be positive")
+    for field_name in ("game_restart_timeout_sec", "stop_timeout_sec", "model_timeout_sec"):
+        value = getattr(cfg.run, field_name)
+        if value <= 0 or not math.isfinite(value):
+            raise ConfigError(f"run.{field_name} must be positive")
+    if cfg.run.rest_ticks < 0:
+        raise ConfigError("run.rest_ticks must be >= 0")
 
 
 def validate_config(cfg: Config) -> None:
@@ -459,6 +526,7 @@ def load_config(
         preview=PreviewConfig(**merged["preview"]),
         dashboard=DashboardConfig(**merged["dashboard"]),
         timeouts=TimeoutsConfig(**merged["timeouts"]),
+        run=RunConfig(**merged["run"]),
         body=BodyConfig(**merged["body"]),
     )
     _validate(cfg)

@@ -459,3 +459,51 @@ class BodyPoseFlags(unittest.TestCase):
         self.assertEqual(
             body_pose_flags(body), ["--fov-h-deg", "110", "--fov-v-deg", "78"]
         )
+
+
+class RunConfigTests(unittest.TestCase):
+    def write_toml(self, text: str) -> Path:
+        handle = tempfile.NamedTemporaryFile("w", suffix=".toml", delete=False)
+        with handle:
+            handle.write(text)
+        path = Path(handle.name)
+        self.addCleanup(path.unlink)
+        return path
+
+    def test_run_defaults(self) -> None:
+        cfg = load_config(None, env={})
+        self.assertEqual(cfg.run.brain_duration_sec, 900.0)
+        self.assertEqual(cfg.run.required_model, "LFM3-Omni")
+        self.assertFalse(cfg.run.model_autostart)
+        self.assertEqual(cfg.run.rest_ticks, 8)
+        self.assertEqual(cfg.run.brain_script, "spike/wbc_game/auto.py")
+
+    def test_save_dirs_default_to_the_job_simulator_paths(self) -> None:
+        cfg = load_config(None, env={})
+        self.assertEqual(len(cfg.paths.game_save_dirs), 2)
+        self.assertTrue(cfg.paths.game_save_dirs[0].endswith("Job Simulator/User"))
+        self.assertFalse(Path(cfg.paths.game_save_dirs[0]).is_absolute())
+
+    def test_absolute_save_dir_is_refused(self) -> None:
+        path = self.write_toml('[paths]\ngame_save_dirs = ["/etc"]\n')
+        with self.assertRaisesRegex(ConfigError, "relative to the Proton prefix"):
+            load_config(path, env={})
+
+    def test_parent_escape_in_save_dir_is_refused(self) -> None:
+        path = self.write_toml('[paths]\ngame_save_dirs = ["drive_c/../../x"]\n')
+        with self.assertRaisesRegex(ConfigError, "relative to the Proton prefix"):
+            load_config(path, env={})
+
+    def test_unknown_run_key_is_refused(self) -> None:
+        path = self.write_toml("[run]\nnope = 1\n")
+        with self.assertRaisesRegex(ConfigError, "unknown keys in run"):
+            load_config(path, env={})
+
+    def test_run_duration_must_be_positive(self) -> None:
+        path = self.write_toml("[run]\nbrain_duration_sec = 0\n")
+        with self.assertRaisesRegex(ConfigError, "run.brain_duration_sec"):
+            load_config(path, env={})
+
+    def test_run_env_override(self) -> None:
+        cfg = load_config(None, env={"CLANK_RUN_REQUIRED_MODEL": "LFM3-Omni-2B"})
+        self.assertEqual(cfg.run.required_model, "LFM3-Omni-2B")
