@@ -1049,3 +1049,119 @@ body.manual-active .manual-panel { border-color: var(--warm); }
   button, .panel, .brand-mark, .brand-face, .look, .brain-row, .badge, .log-tail { transition: none; }
   .panel:hover, .brand:hover .brand-mark, .brand:hover .brand-face { transform: none; }
 }
+
+/* ---- Recordings page ------------------------------------------------ */
+/* One page, three columns: the runs choose, the video shows, the diary
+   explains. Same cards and same shadows as the console, because it is the
+   same tool seen from the past rather than the present. */
+.rec-deck {
+  display: grid;
+  grid-template-columns: 320px minmax(0, 1fr) 360px;
+  gap: 12px;
+  min-height: 0;
+}
+.rec-deck .panel { min-height: 0; }
+.rec-hint { font: 600 12px/1 var(--sans); color: var(--muted); }
+
+/* Narrower windows drop the diary under the player rather than squeezing
+   three columns until the video is a stripe. */
+@media (max-width: 1280px) {
+  .rec-deck { grid-template-columns: 260px minmax(0, 1fr); }
+  .rec-diary-panel { grid-column: 1 / -1; }
+}
+@media (max-width: 860px) {
+  .rec-deck { grid-template-columns: minmax(0, 1fr); }
+}
+
+.rec-list {
+  display: grid;
+  gap: 8px;
+  align-content: start;
+  overflow-y: auto;
+  min-height: 0;
+}
+.rec-row {
+  display: grid;
+  gap: 6px;
+  width: 100%;
+  text-align: left;
+  padding: 10px 12px;
+  border-radius: var(--r-md);
+  border: 1px solid var(--edge);
+  background: var(--card);
+  color: var(--text);
+  font: inherit;
+  cursor: pointer;
+}
+.rec-row:hover { border-color: var(--accent); }
+.rec-row[aria-pressed="true"] {
+  border-color: var(--accent);
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+.rec-row-nofile { opacity: 0.78; }
+.rec-row-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  align-items: baseline;
+  font: 600 12px/1.2 var(--mono);
+  color: var(--muted);
+}
+.rec-row-id { color: var(--text); }
+.rec-row-facts { font: 400 12px/1.35 var(--sans); color: var(--muted); }
+.rec-row-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.rec-chip {
+  border-radius: 999px;
+  padding: 2px 8px;
+  font: 600 11px/1.4 var(--sans);
+  background: var(--card);
+  color: var(--muted);
+  border: 1px solid var(--edge);
+}
+.rec-chip-warn { color: var(--warm-ink); background: var(--warm); border-color: transparent; }
+.rec-chip-wait { color: var(--warm-ink); background: color-mix(in srgb, var(--warm) 55%, var(--card)); border-color: transparent; }
+.rec-chip-bad { color: var(--halt-ink); background: var(--halt); border-color: transparent; }
+.rec-chip-quiet { color: var(--muted); }
+.rec-empty { color: var(--muted); font: 400 13px/1.5 var(--sans); max-width: 44ch; }
+
+.rec-player {
+  background: var(--screen);
+  border-radius: var(--r-md);
+  overflow: hidden;
+  border: 1px solid var(--edge);
+}
+.rec-player video {
+  display: block;
+  width: 100%;
+  /* The composite is 1680x540: two 16:9 pictures side by side. Holding that
+     ratio here means the page reserves the right height before the file
+     loads, so nothing jumps under the operator's cursor. */
+  aspect-ratio: 1680 / 540;
+  background: var(--screen);
+}
+.rec-note { margin: 0; min-height: 1.2em; font: 400 12px/1.4 var(--sans); color: var(--muted); }
+.rec-meta { font: 400 12px/1.4 var(--mono); color: var(--muted); }
+
+.rec-diary-panel .brain-messages { overflow-y: auto; max-height: 60vh; }
+.rec-diary-row { cursor: pointer; }
+.rec-diary-row:hover { outline: 1px solid var(--accent); }
+.rec-diary-at {
+  display: inline-block;
+  min-width: 4.2em;
+  margin-right: 6px;
+  font: 400 11px/1.4 var(--mono);
+  color: var(--muted);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .rec-row { transition: none; }
+}
+.rec-watch {
+  margin-left: auto;
+  font: 600 12px/1 var(--sans);
+  color: var(--accent);
+  text-decoration: none;
+  border-bottom: 1px dashed currentColor;
+  padding-bottom: 1px;
+}
+.rec-watch:hover { color: var(--text); }

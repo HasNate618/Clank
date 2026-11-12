@@ -756,6 +756,11 @@ function applyControls(state) {
     : (run && run.id ? `run ${run.id} · ${run.state}` : "");
   $("run-state").title = run && run.error ? run.error : "";
   $("brain-run").textContent = run && run.id ? run.id : "";
+  // The diary is the run's; the recording of that run is one click away,
+  // and it opens on this run rather than on the newest one.
+  $("watch-run").href = run && run.id
+    ? `/recordings?run=${encodeURIComponent(run.id)}`
+    : "/recordings";
   const modeButton = $("mode-toggle");
   const manual = state.mode === "manual";
   // The label names where a press takes you, so it is the destination, not the

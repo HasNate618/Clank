@@ -20,9 +20,14 @@ from unittest.mock import patch
 from clank import dashboard, pose_relay
 from clank.body_preview import BodyPreview
 from clank.config import load_config
-from clank.dashboard import DashboardHandler, DashboardServer, OverlayBoard, shutdown_all
+from clank.dashboard import (
+    DashboardHandler,
+    DashboardServer,
+    OverlayBoard,
+    shutdown_all,
+)
 from clank.manual_input import ManualInputError, ManualInputUnavailable
-from clank.orchestrator import ConflictError, MODES, PreflightError, SessionManager
+from clank.orchestrator import MODES, ConflictError, PreflightError, SessionManager
 
 
 class FakeManager:
@@ -691,6 +696,31 @@ class ShippedStaticAssetsTests(unittest.TestCase):
         text = css.decode()
         self.assertIn("@keyframes clank-spin", text)
         self.assertIn("prefers-reduced-motion", text)
+
+    def test_the_recordings_page_ships_a_list_a_player_and_a_diary(self) -> None:
+        status, body = self.request("/recordings")
+        self.assertEqual(status, 200)
+        self.assertIn(b'recording-list', body)
+        static = Path(__file__).resolve().parents[1] / "clank" / "static"
+        html = (static / "recordings.html").read_text(encoding="utf-8")
+        js = (static / "recordings.js").read_text(encoding="utf-8")
+        for element in ("recording-list", "recording-video", "run-diary"):
+            with self.subTest(element=element):
+                self.assertIn(f'id="{element}"', html)
+        self.assertIn("controls", html)
+        self.assertIn("/api/recordings", js)
+        self.assertIn("Math.min", js)  # a seek is clamped to the file, both ways
+        self.assertIn("Math.max", js)
+        self.assertIn("currentTime", js)
+        self.assertIn("silent", js)  # audio_peak 0 is said out loud
+        self.assertIn("recording_available", js)  # "recording off" is not an empty list
+
+    def test_the_main_page_links_to_the_recordings(self) -> None:
+        _, index = self.request("/")
+        self.assertIn(b'href="/recordings"', index)
+        self.assertIn(b'id="watch-run"', index)
+        _, js = self.request("/app.js")
+        self.assertIn(b"/recordings?run=", js)
 
     def test_vendored_fonts_are_served(self) -> None:
         for name in ("inter-var.woff2", "plex-mono-400.woff2", "plex-mono-600.woff2", "fredoka-600.woff2"):

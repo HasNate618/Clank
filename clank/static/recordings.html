@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Clank — recordings</title>
+  <script>
+    // Same early theme paint as the console, so the two pages never flash at
+    // each other when the operator crosses between them.
+    (function () {
+      var saved = null;
+      try { saved = localStorage.getItem("clank-theme"); } catch (e) { /* private mode */ }
+      var theme = saved ||
+        (matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark");
+      document.documentElement.dataset.theme = theme;
+    })();
+  </script>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <div class="frame">
+    <header class="topbar">
+      <div class="brand">
+        <span class="brand-lockup">
+          <span class="brand-mark">CLANK</span>
+          <span class="brand-plate">recordings</span>
+        </span>
+      </div>
+      <div class="status-cluster">
+        <span id="recording-count"></span>
+      </div>
+      <div class="top-actions">
+        <a class="btn" href="/">Console</a>
+        <button id="theme-toggle" class="btn btn-icon" type="button" aria-label="Switch theme">
+          <svg class="icon icon-sun" viewBox="0 0 24 24" aria-hidden="true">
+            <circle cx="12" cy="12" r="4.4"/>
+            <path class="ray" d="M12 2.6v2.4M12 19v2.4M2.6 12h2.4M19 12h2.4M5.4 5.4l1.7 1.7M16.9 16.9l1.7 1.7M18.6 5.4l-1.7 1.7M7.1 16.9l-1.7 1.7"/>
+          </svg>
+          <svg class="icon icon-moon" viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M20 14.6A8.6 8.6 0 0 1 9.4 4a8.6 8.6 0 1 0 10.6 10.6z"/>
+          </svg>
+        </button>
+      </div>
+    </header>
+
+    <!-- Three columns, and the reason for each: the runs are how you choose,
+         the video is what the run looked like, and the diary is why it did
+         what it did. A run without its diary is a clip; the pair is evidence. -->
+    <main class="rec-deck">
+      <section class="panel rec-list-panel">
+        <h2>Runs <span id="recording-hint" class="rec-hint"></span></h2>
+        <div id="recording-list" class="rec-list" aria-live="polite"></div>
+      </section>
+
+      <section class="panel rec-stage">
+        <h2 id="recording-title">Pick a run</h2>
+        <div class="rec-player">
+          <video id="recording-video" controls preload="metadata" playsinline></video>
+        </div>
+        <p id="recording-note" class="rec-note" role="status"></p>
+        <div id="recording-meta" class="rec-meta"></div>
+      </section>
+
+      <aside class="panel rec-diary-panel">
+        <h2>Diary</h2>
+        <!-- A row click seeks the video to that moment; the diary is the
+             timeline, so it is the obvious scrubber. -->
+        <div id="run-diary" class="brain-messages"></div>
+      </aside>
+    </main>
+  </div>
+  <script src="/recordings.js"></script>
+</body>
+</html>
