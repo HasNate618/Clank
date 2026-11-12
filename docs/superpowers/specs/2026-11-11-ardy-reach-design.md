@@ -132,6 +132,8 @@ There is no still frame to author. The adapter states three things.
 
 **(call)** v1 constrains the hand at the **last frame** of the window and leaves the rest free. If the residual stays above `ROOT_GOAL_RESIDUAL_M = 0.10 m`, escalate once (§6.4) rather than adding mid-window constraints.
 
+**Open defect, verified in the code, fix before any live gate:** the constraint pins the wrist *link* (`right_wrist_yaw_skel`'s anchor), while the game and the clasp both look at the relayed hand, which is that link plus `VR_OFFSETS[:2] = [0.18, ∓0.025, 0]` (`spike/wbc/sonic_runner.py:114-116`). So the residual understates the game-visible error by 0.18 m, and `reach_ardy`'s clasp compares a levered hand against a point the wrist was pinned to, which means `--grab` cannot fire. Details and the fix: `research/reach-architecture-critique.md` §1.
+
 ### 6.3 Feet
 
 Feet stay unconstrained in v1: the model's own foot-contact prior keeps a planted stance for a reach in front of the body, and constraining the feet of a *generated* pose we have not produced yet would constrain them to a pose the generator has not chosen. If live runs show skating, the next step is `left-foot` / `right-foot` at the first and last frames — a constraint, not an IK solve.
@@ -157,7 +159,7 @@ When the object is out of reach, or the first generation lands more than `ROOT_G
 
 ### 7.2 What "reach" means as a constraint
 
-The hand target is the object point in ARDY's model space (y up, z forward), derived by the same conversion the exporter uses in reverse. The wrist **orientation** is inherited from the current pose, not requested: a 6-DoF wrist request is a later refinement, and the measured 45.5 mm positional residual already sits inside SONIC's own tracking error.
+The hand target is the object point in ARDY's model space (y up, z forward), derived by the same conversion the exporter uses in reverse. The wrist **orientation** is currently *constrained* rather than inherited: `hand_constraint` passes `global_joints_rots` through, so `RightHandConstraintSet` pins it as an equality. That is 3 DoF the prior would otherwise spend on looking human (palm-down approach, thumb lead), so either relax it or expect a systematic bias — see `research/reach-architecture-critique.md` §8 (R8).
 
 ### 7.3 Three traps
 
@@ -282,6 +284,29 @@ Short answer: not now, and probably never.
 ## 14. Fallback
 
 If ARDY cannot pass gate 5 or 6 on this machine, the fallback is **MotionBricks live with Kimodo-authored still poses**: Kimodo generates the still frames once from `right-hand` + foot constraints, so they are in-distribution, and MotionBricks in-betweens them at 2.67 ms with no torch in the loop. That is a plan revision, not a code switch — see `research/motion-generators.md` §6.
+
+## 16. Open defects and the architecture critique
+
+Three independent critiques (robotics/control, ML, product) were run against this design on 2026-11-11; the findings,
+the alternatives they ranked, and the correcting measurements are in `research/reach-architecture-critique.md`. The
+parts that change this document:
+
+1. **The graded point is wrong by 0.18 m** — §6.2's warning. Gate 5's 66 mm is wrist-to-wrist; the game-visible error
+   has never been measured, and the clasp gate cannot fire. Fix first.
+2. **The 80 mm threshold is uncalibrated**, and at the declared 1.43× player scale 66 mm of body-space error is ~94 mm
+   in the room. Measure the game's actual grab tolerance before treating 80 mm as a requirement.
+3. **The baseline comparison is not like-for-like** (§3 above quotes the uncorrected cruise; its post-correction case
+   is 34 mm / 2.62 s / 4 reversals), and **path shape — the property this design exists to fix — is not measured by
+   any gate.**
+4. **Proposed decomposition change: generate → track → servo → clasp.** The generator owns shape; the last 8 cm goes
+   to the existing VR servo, which measures 16–37 mm against the generator's 45–80 mm. §6.4's escalation is not part
+   of it.
+5. **Authoring offline is a deployment choice, not a capability loss**, because v1's clip is a pure function of
+   (root, heading, relative target). It also removes the sampling tail, and it is the only route left to §3's look
+   goal — which is measured dead as a live constraint (§8.5).
+
+None of this invalidates the constraint vocabulary or the tracked-playback work; it changes what the demo depends on
+and what gets measured next.
 
 ## 15. Why not the alternatives
 
