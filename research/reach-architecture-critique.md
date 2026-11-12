@@ -74,13 +74,40 @@ changes → one generated window" — as an assertion; no reversal count exists 
 - v1 refuses `history_features` (`spike/wbc/ardy_gen.py:467-474`) and places a canonical stand at the body's root and
   heading. So a generated clip is a **pure function of (root, heading, relative target)** — live generation is an
   offline authoring step being run at the wrong moment, and every grab pays its sampling tail.
-- The generator's adherence is 45.5 mm median with a 45–80 mm spread [MEASURED]. That spread has never been
-  separated into sampling noise and bias, because the probe re-derives the target from *each run's* achieved hand
-  (`spike/wbc_game/probe_ardy_track.py:461-475`). Until it is, "best-of-N will help" is arithmetic on an assumed
-  distribution.
+- The generator's adherence is 45.5 mm median with a 45–80 mm spread [MEASURED]. That spread is **not** sampling
+  noise: 16 identical generations from a frozen pose varied by **3.6 mm** in residual (best of 16 bought 6 mm),
+  while the mean signed error was **57–60 mm** — short along ARDY forward, 15 mm low, 16 mm left. Bias beats noise
+  about 7:1, so the instrument is a measured aim offset, not best-of-N. Details in §4.1.
 - The claim that clip frame 0 is within 1 mm / 0.8° covers the **root**, not the 29 hinges
   (`ardy_gen.frame0_delta`, `:193`). A second grab therefore starts with a step in the whole pose that the tracker
   must absorb — and no gate tests a second grab.
+
+## 4.1 Noise or bias? Measured (2026-11-11) [MEASURED]
+
+`spike/ardy/probe_noise.py` freezes the context, the delta and the target, so only ARDY's sampling
+varies: 16 runs of the standing reach (0.35 m forward, 0.15 m up).
+
+| | value |
+| --- | --- |
+| median / min / max residual | 163.5 / 157.1 / 168.2 mm |
+| stdev across runs | **3.6 mm** |
+| mean signed error | (17, -13, -56) mm ARDY = **60.6 mm of bias** |
+| best of 16 | 157.1 mm - **6 mm** better than the median |
+
+The 45-80 mm spread across *targets* is target-dependent bias plus the export loss, not diffusion noise.
+**Best-of-N is dead as a fix;** a fixed aim offset is the right instrument, in the same discipline as
+`reach_vr`'s measured `Z_GAIN`. The bias has a consistent sign: the glove lands short of the requested
+displacement.
+
+Two defects were found by running it:
+
+1. **`generate` compared a glove to a wrist target.** `hand_target` returned the wrist link plus the delta
+   while the residual had already been switched to measure the glove, so the reported number carried one
+   whole lever of target mismatch: 160 mm reported against a 60 mm reality. Now `glove_target` (the point
+   the residual means) and `wrist_target` (its own target, for `wrist_residual_m`) are separate, and ARDY's
+   number agrees with our own FK of the exported clip to within the export loss (46.8 vs 58.1 mm).
+2. **The lever's direction is confirmed.** Our FK's glove and ARDY's differ by 8-18 mm across runs, which is
+   the export loss - not the 100+ mm a wrong `MUJOCO_TO_ARDY` on the lever would give.
 
 ## 5. Recommended decomposition: generate → track → servo → clasp
 
@@ -155,8 +182,8 @@ This supersedes the §14 fallback: ARDY as the author, not Kimodo. No new licenc
 1. **Fix §1** (the lever). Without it gate 6 measures nothing.
 2. **Measure the game's grab tolerance** (§2). Half a day; redefines "accurate enough".
 3. **Measure path shape** (§3) on existing clips plus cruise controls.
-4. **Separate noise from bias** in the generator spread: freeze one pose36, ten identical generations, report
-   mean ± σ and the mean signed error. Decides whether best-of-N or a fixed offset is the instrument.
+4. ~~**Separate noise from bias** in the generator spread.~~ **Done (§4.1):** bias, 7:1. Apply a measured
+   aim offset; best-of-N is not the instrument.
 5. **Servo closure** (§5) behind a flag, then its discriminator.
 6. **Gate 6**, with the cruise re-run first as a control so the swap is a comparison rather than a cliff.
 7. **Offline library** (§6) — deployment and the look.

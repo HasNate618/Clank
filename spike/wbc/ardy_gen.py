@@ -435,16 +435,31 @@ def hand_constraint(
     ]
 
 
-def hand_target(skeleton, pose: dict, hand_delta: Sequence[float]) -> tuple[float, float, float]:
-    """The wrist-link point `hand_constraint` pins: `pose`'s hand plus `hand_delta`.
+def glove_target(skeleton, pose: dict, hand_delta: Sequence[float]) -> tuple[float, float, float]:
+    """The **glove** point a reach is aiming at: `pose`'s glove plus `hand_delta`.
 
-    `hand_delta` is the displacement that lands the **glove** on the object (`glove_position`,
-    not `hand_position`). A translation moves the wrist and the glove by the same amount, and the
-    constraint pins the wrist's rotation separately, so the wrist point is the right place to
-    apply it - but the caller must have measured the delta from the glove.
+    The glove, not the wrist link, because that is the point the game grabs with and therefore the
+    point `hand_delta` was measured from (`glove_position`). A translation moves the wrist and the
+    glove by the same amount, so the same delta is what `hand_constraint` applies to the wrist -
+    but the number a residual is compared to has to be the glove, or the residual carries one
+    whole lever of a target mismatch (measured: 160 mm reported against a 60 mm reality).
     """
-    hand = skeleton.right_hand_joint_names[0]
-    x, y, z = pose["posed_joints"][0, -1, skeleton.bone_index[hand]].tolist()
+    joint = skeleton.bone_index[skeleton.right_hand_joint_names[0]]
+    wrist = pose["posed_joints"][0, -1, joint].tolist()
+    rotation = pose["global_rot_mats"][0, -1, joint].reshape(-1).tolist()
+    x, y, z = glove_point(wrist, rotation, "right")
+    dx, dy, dz = (float(value) for value in hand_delta)
+    return (x + dx, y + dy, z + dz)
+
+
+def wrist_target(skeleton, pose: dict, hand_delta: Sequence[float]) -> tuple[float, float, float]:
+    """The wrist link the same `hand_delta` asks for, so `wrist_residual_m` has its own target.
+
+    Comparing the wrist to the *glove* target instead would read ~0.18 m of lever as error - which
+    is exactly the confusion `glove_target` exists to end.
+    """
+    joint = skeleton.bone_index[skeleton.right_hand_joint_names[0]]
+    x, y, z = pose["posed_joints"][0, -1, joint].tolist()
     dx, dy, dz = (float(value) for value in hand_delta)
     return (x + dx, y + dy, z + dz)
 
@@ -576,7 +591,8 @@ def generate(
             skeleton, horizon, root_forward_m, start_xy=start_xy, heading=heading
         )
     constraints = hand_constraint(skeleton, pose, hand_delta, frame=last_frame, root_2d=root_2d)
-    target = hand_target(skeleton, pose, hand_delta)
+    target = glove_target(skeleton, pose, hand_delta)
+    link_target = wrist_target(skeleton, pose, hand_delta)
 
     lengths = torch.tensor([horizon], device=device)
     observed_motion, motion_mask = model.motion_rep.create_conditions_from_constraints_batched(
@@ -640,7 +656,9 @@ def generate(
     hand = skeleton.bone_index[skeleton.right_hand_joint_names[0]]
     landed = output["posed_joints"][0, last_frame, hand]
     wrist_residual = float(
-        torch.linalg.norm(landed - torch.tensor(target, device=landed.device, dtype=landed.dtype))
+        torch.linalg.norm(
+            landed - torch.tensor(link_target, device=landed.device, dtype=landed.dtype)
+        )
     )
     # The number that means something is where the **glove** landed: the relay reports the hand
     # 0.18 m out from the wrist link, so a wrist that hits the target has the hand 0.18 m past it.
