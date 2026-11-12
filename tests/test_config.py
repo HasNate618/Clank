@@ -507,3 +507,25 @@ class RunConfigTests(unittest.TestCase):
     def test_run_env_override(self) -> None:
         cfg = load_config(None, env={"CLANK_RUN_REQUIRED_MODEL": "LFM3-Omni-2B"})
         self.assertEqual(cfg.run.required_model, "LFM3-Omni-2B")
+
+
+class RecordingConfigTests(RunConfigTests):  # inherits write_toml
+    def test_defaults_describe_a_small_watchable_recording(self):
+        cfg = load_config(None, env={})
+        self.assertTrue(cfg.recording.enabled)
+        self.assertEqual(cfg.recording.fps, 15)
+        self.assertEqual(cfg.recording.robot_fps, 10)
+        self.assertEqual(cfg.recording.crf, 28)
+        self.assertEqual(cfg.recording.preset, "veryfast")
+        self.assertEqual(cfg.recording.ffmpeg, "ffmpeg")
+        self.assertFalse(cfg.recording.keep_parts)
+        self.assertEqual(cfg.recording.max_total_mb, 20480)
+
+    def test_a_run_can_record_off(self):
+        cfg = load_config(self.write_toml("[recording]\nenabled = false\n"), env={})
+        self.assertFalse(cfg.recording.enabled)
+
+    def test_zero_or_negative_rates_are_refused(self):
+        for bad in ("fps = 0", "robot_fps = -1", "crf = 60", "max_total_mb = -1"):
+            with self.subTest(bad=bad), self.assertRaises(ConfigError):
+                load_config(self.write_toml(f"[recording]\n{bad}\n"), env={})

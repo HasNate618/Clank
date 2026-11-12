@@ -136,6 +136,20 @@ class RunConfig:
 
 
 @dataclass(frozen=True)
+class RecordingConfig:
+    """Per-run video recording: what encodes it and what disk it may use."""
+
+    enabled: bool
+    fps: int
+    robot_fps: int
+    crf: int
+    preset: str
+    ffmpeg: str
+    keep_parts: bool
+    max_total_mb: int
+
+
+@dataclass(frozen=True)
 class Config:
     paths: PathsConfig
     launch: LaunchConfig
@@ -144,6 +158,7 @@ class Config:
     timeouts: TimeoutsConfig
     run: RunConfig
     body: BodyConfig
+    recording: RecordingConfig
 
 
 DEFAULTS: dict[str, dict[str, Any]] = {
@@ -273,6 +288,25 @@ DEFAULTS: dict[str, dict[str, Any]] = {
         # gate tells them what to start rather than starting one itself.
         "model_autostart": False,
         "model_start_cmd": "",
+    },
+    "recording": {
+        # A run records itself to video; the encoder pipeline is a later task,
+        # so these settings exist before anything consumes them.
+        "enabled": True,
+        # MEASURED: 30 fps costs 24.1 MB/min of the game's colour stream; 15 is
+        # watchable and halves it.
+        "fps": 15,
+        # The body view's own rate is lower - the third-person tile is evidence,
+        # not cinema.
+        "robot_fps": 10,
+        # H.264 CRF 28 at the above rates keeps a run in the tens of MB.
+        "crf": 28,
+        "preset": "veryfast",
+        "ffmpeg": "ffmpeg",
+        # Per-run parts are joined and deleted by default; keep them to debug.
+        "keep_parts": False,
+        # A ceiling across all recordings, so the disk does not fill silently.
+        "max_total_mb": 20480,
     },
 }
 
@@ -440,6 +474,18 @@ def _validate(cfg: Config) -> None:
         raise ConfigError("run.rest_ticks must be >= 0")
     if cfg.run.body_timeout_sec <= 0:
         raise ConfigError("run.body_timeout_sec must be > 0")
+    for field_name in ("fps", "robot_fps"):
+        value = getattr(cfg.recording, field_name)
+        if value <= 0:
+            raise ConfigError(f"recording.{field_name} must be positive")
+    if not 1 <= cfg.recording.crf <= 51:
+        raise ConfigError("recording.crf must be between 1 and 51")
+    if cfg.recording.max_total_mb < 0:
+        raise ConfigError("recording.max_total_mb must be >= 0")
+    for field_name in ("preset", "ffmpeg"):
+        value = getattr(cfg.recording, field_name)
+        if not value.strip():
+            raise ConfigError(f"recording.{field_name} must not be empty")
 
 
 def validate_config(cfg: Config) -> None:
@@ -534,6 +580,7 @@ def load_config(
         timeouts=TimeoutsConfig(**merged["timeouts"]),
         run=RunConfig(**merged["run"]),
         body=BodyConfig(**merged["body"]),
+        recording=RecordingConfig(**merged["recording"]),
     )
     _validate(cfg)
     return cfg

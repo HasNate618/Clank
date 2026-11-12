@@ -159,6 +159,25 @@ model_timeout_sec = 180
 model_autostart = false
 model_start_cmd = ""
 
+[recording]
+# Each run records itself to video; the encoder pipeline is a later task, so
+# these settings exist before anything consumes them.
+enabled = true
+# MEASURED: at 30 fps the game's colour stream costs 24.1 MB/min; 15 fps is
+# still watchable and roughly halves it.
+fps = 15
+# The body view records at its own, lower rate: the third-person tile is
+# evidence, not cinema.
+robot_fps = 10
+# H.264 rate control: CRF 28 at these rates keeps a run in the tens of MB.
+crf = 28
+preset = "veryfast"
+ffmpeg = "ffmpeg"
+# Per-run parts are joined and deleted by default; keep them to debug a bad join.
+keep_parts = false
+# A ceiling across all recordings, so the disk does not fill silently.
+max_total_mb = 20480
+
 [body]
 # Third-person MuJoCo view beside the game cam. Needs the SONIC venv + weights,
 # so it is off in a bare checkout. `autostart` starts it with the dashboard.
