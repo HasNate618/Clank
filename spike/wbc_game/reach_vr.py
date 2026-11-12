@@ -60,10 +60,11 @@ sys.path.insert(0, str(REPO))
 from clank.body import Pose  # noqa: E402
 from clank.depth_stream import Stream  # noqa: E402
 from clank.player_scale import read as read_player_scale  # noqa: E402
-from clank.workspace import clamp_wrist  # noqa: E402
 from clank.projection import Fov, project_point  # noqa: E402
+from clank.workspace import clamp_wrist  # noqa: E402
 
 SOCK = Path.home() / ".local/state/Clank/sessions/body/control.sock"
+STATE = Path.home() / ".local/state/Clank/sessions/body/body_state.json"
 
 #: The body view deletes and recreates `SOCK` whenever it restarts - a run resets it, and
 #: the sidecar also restarts on its own - and `ready()` sends its first `rest` the moment a
@@ -71,7 +72,6 @@ SOCK = Path.home() / ".local/state/Clank/sessions/body/control.sock"
 #: loop died 0.2 s into the run, twice. A missing socket is a reason to wait, exactly as
 #: `state()` treats a missing state file.
 SOCK_WAIT_S = 20.0
-STATE = Path.home() / ".local/state/Clank/sessions/body/body_state.json"
 FOV = Fov.from_degrees(70.0, 70.0, 57.11, 57.11)
 
 FLAG_FALL_RISK = 1 << 2

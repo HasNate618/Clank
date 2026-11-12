@@ -124,7 +124,17 @@ sessions/<session-id>/runs/<HHMMSS>-<6 hex>/
   is `LocalLow/Owlchemy Labs/Job Simulator/User/JobSimulatorSave.save.bak-<time>` (the
   only file there), and `LocalLow/Unity/Owlchemy Labs_Job Simulator/` is 22 MB of
   per-play state. `output_log.txt` beside them is kept — a failed run is diagnosed from
-  it. There is no Steam Cloud copy: the game is a non-Steam shortcut.
+  it. There is no Steam Cloud copy: the game is a non-Steam shortcut. **Verified live
+  the same day:** after a wipe the relaunched game spoke JobBot's opening line again
+  ("Hello human, welcome to the job simulator... Here's my card"), so the wipe really
+  does put the job back at its first frame.
+- **A game restart costs 5.2 s, not the 20-40 s it was guessed at** (measured: wipe at
+  `15:31:57.827`, game restarted at `15:32:03.008`). A whole run reaches `running` in
+  ~25 s of which most is the body reset.
+- **A refusal must be free.** With nothing on `:11434` the run failed in **0.03 s**, the
+  game's pids were unchanged, and `run.json` held the reason. That is the gate's whole
+  point: the message names the llama.cpp server and goes to the error line, not a
+  tooltip.
 - **`restart_game()` resets the OpenXR log parser first.** `_launch_game` waits for the
   new client's `application_name` line in `monado.log`; with the killed game still in
   the parser, that wait returns instantly and the run starts against a dead window.
@@ -135,6 +145,19 @@ sessions/<session-id>/runs/<HHMMSS>-<6 hex>/
 - The body reset is `BodyPreview.stop/start` + `rest` × `run.rest_ticks`, not a session
   concern: the body view is deliberately outside the session manager. A run works with
   the body disabled.
+- **The body view's control socket is the fragile part of a run, and it cost two live
+  runs.** `BodyPreview.start()` returns as soon as the process spawns; MuJoCo and the
+  weights load after that. Worse, a spawn that finds the *dying* viewer still holding
+  `sessions/body/control.sock` prints "another body view is already listening" and
+  exits at once — so the old process answers the first `rest` and then unlinks the
+  socket as it goes. Three defences, all measured:
+  - the run waits for the socket, then **restarts a child that died** (bounded at four
+    starts) rather than calling a reset that the old process acknowledged;
+  - `run.body_timeout_sec` (120 s) bounds the wait;
+  - `reach_vr.send` retries a refused or missing socket for `SOCK_WAIT_S` (20 s), the
+    same doctrine as the Monado hub's "a quiet socket is not a failure, it is a queue".
+    Without that retry the brain loop died 0.2 s into the run, twice, on `ready()`.
+  The sidecar is stable once up: 1178/1178 connects over 60 s, one inode, no gaps.
 - `python3 -m clank.brainlog --tail` still reads the global diary, which runs no longer
   write; pass `--path sessions/<id>/runs/<run>/brain.jsonl` for a run, or use
   `GET /api/brain/messages?run=<id>`.
