@@ -682,6 +682,7 @@ class ShippedStaticAssetsTests(unittest.TestCase):
         self.assertIn("/api/run/stop", code)
         self.assertIn("run-spinner", code)
         self.assertIn("run.detail", code)
+        self.assertIn("run.error", code)
 
     def test_spinner_is_styled_and_respects_reduced_motion(self) -> None:
         _, css = self.request("/style.css")
@@ -1020,7 +1021,8 @@ class RunRouteTests(unittest.TestCase):
         self.base = Path(self.temp.name)
         self.manager = FakeManager(self.base)
         self.manager.state = "running"
-        self.cfg = load_config(None, env={})
+        cfg = load_config(None, env={})
+        self.cfg = replace(cfg, paths=replace(cfg.paths, session_root=str(self.base)))
         self.run_dir = self.base / "session" / "runs" / "101010-a1b2c3"
         self.run_dir.mkdir(parents=True)
         self.diary = self.run_dir / "brain.jsonl"
@@ -1091,6 +1093,22 @@ class RunRouteTests(unittest.TestCase):
         self.server.run = None
         status, _ = self.request("POST", "/api/run/start", {})
         self.assertEqual(status, 503)
+
+    def test_session_stop_stops_the_run_first(self) -> None:
+        order: list[str] = []
+        self.fake_run.stop = lambda: order.append("run")
+        self.server.manager.stop = lambda: order.append("stack")
+        status, _ = self.request("POST", "/api/session/stop", {})
+        self.assertEqual(status, 202)
+        # Steam must not be shut down underneath a run that is about to restart or
+        # restart-monitor the game: the run goes first.
+        self.assertEqual(order, ["run", "stack"])
+
+    def test_past_run_opens_without_a_current_session(self) -> None:
+        self.server.manager.snapshot = lambda: {**self.manager.snapshot(), "session_dir": None}
+        status, body = self.request("GET", "/api/brain/messages?run=101010-a1b2c3")
+        self.assertEqual(status, 200)
+        self.assertEqual(body["messages"][0]["text"], "this run only")
 
     def test_brain_messages_read_the_run_diary(self) -> None:
         status, body = self.request("GET", "/api/brain/messages")

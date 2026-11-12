@@ -59,6 +59,9 @@ class FakeBody:
     def control_path(self) -> Path:
         return Path("/nonexistent/body-control.sock")
 
+    def preflight(self) -> str:
+        return ""
+
 
 class FakeChild:
     def __init__(self) -> None:
@@ -332,6 +335,72 @@ class RunManagerTests(RunHarness):
         self.assertNotIn("VIRTUAL_ENV", env)
         self.assertEqual(Path(self.spawn_kwargs["log_path"]).name, "brain.log")
 
+    def test_phases_include_preparing(self) -> None:
+        run = self.make()
+        seen: list[str] = []
+        original = run._set_phase
+
+        def record(state):
+            seen.append(state.value)
+            original(state)
+
+        run._set_phase = record
+        run.start()
+        self.assertEqual(self.wait_state("running"), "running")
+        self.assertEqual(seen[:4], ["preparing", "game", "body", "brain"])
+
+    def test_run_json_records_the_duration(self) -> None:
+        run = self.make()
+        run.start()
+        self.assertEqual(self.wait_state("running"), "running")
+        self.child.alive_flag = False
+        self.assertTrue(run.wait_idle(5))
+        data = json.loads((Path(run.snapshot()["dir"]) / "run.json").read_text())
+        self.assertIsInstance(data["duration_s"], float)
+        self.assertGreaterEqual(data["duration_s"], 0.0)
+
+    def test_stop_terminates_the_child_before_returning(self) -> None:
+        run = self.make()
+        run.start()
+        self.assertEqual(self.wait_state("running"), "running")
+        run.stop()
+        # Synchronous: the monitor's next tick is up to 0.5 s away, and the stack
+        # may be shutting Steam down inside that window.
+        self.assertTrue(self.child.stopped)
+
+    def test_a_run_directory_failure_leaves_the_manager_usable(self) -> None:
+        blocker = self.base / "blocked"
+        blocker.write_text("not a directory")
+        cfg = replace(self.cfg, paths=replace(self.cfg.paths, session_root=str(blocker)))
+        run = RunManager(
+            self.manager,
+            cfg,
+            body=self.body,
+            overlay=self.overlay,
+            probe=lambda: brain.ServerStatus(up=True, status="ok", model="LFM3-Omni"),
+            spawn=self.spawn,
+        )
+        self.addCleanup(run.wait_idle, 2)
+        with self.assertRaises(run_mod.RunError):
+            run.start()
+        self.assertIn(run.snapshot()["state"], ("idle", "failed"))
+        # Not a wedged manager: a second attempt fails the same way, it does not
+        # claim "a run is already active" forever.
+        with self.assertRaises(run_mod.RunError):
+            run.start()
+
+    def test_a_stopped_stack_cancels_the_run(self) -> None:
+        def stop_the_stack() -> str:
+            self.manager.state_value = "stopped"
+            return ""
+
+        self.body.start = stop_the_stack
+        run = self.make()
+        run.start()
+        self.assertTrue(run.wait_idle(5))
+        self.assertEqual(run.snapshot()["state"], "idle")
+        self.assertEqual(self.spawned, [])
+
     def test_stop_reports_a_stopped_child_as_a_stop_not_a_failure(self) -> None:
         run = self.make()
         run.start()
@@ -344,6 +413,15 @@ class RunManagerTests(RunHarness):
 
 
 class PreflightTests(RunHarness):
+    def test_a_broken_body_view_is_refused_before_anything_starts(self) -> None:
+        from clank.run import RunError
+
+        self.body.preflight = lambda: "body python not found: /nonexistent"
+        run = self.make()
+        with self.assertRaises(RunError):
+            run.start()
+        self.assertEqual(self.manager.calls, [])
+
     def test_missing_brain_python_is_refused_before_anything_starts(self) -> None:
         from clank.run import RunError
 

@@ -983,7 +983,10 @@ function render(state) {
   updatePreviewWait(state);
   syncPreviewOverlay();
   updateManualUi(state);
-  applyServerError(state.last_error);
+  // A refused run's reason (the model server is down, the game would not
+  // relaunch) is the run's error, and it is the only instruction the operator
+  // gets: it belongs on the error line, not in a title attribute.
+  applyServerError(state.last_error || (state.run && state.run.error) || null);
 
   renderHealth(state);
   bodySync();

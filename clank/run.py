@@ -141,6 +141,14 @@ class RunManager:
         ):
             if not Path(value).exists():
                 return f"run.{name} not found: {value}"
+        # A body that cannot start is a run that cannot act, and its own preflight
+        # is free: checking it here refuses before a game restart rather than after.
+        body = self._body
+        check = getattr(body, "preflight", None)
+        if check is not None:
+            problem = check()
+            if problem:
+                return f"body view cannot start: {problem}"
         return ""
 
     def snapshot(self) -> dict:
@@ -152,11 +160,7 @@ class RunManager:
             if busy and not detail:
                 detail = PHASE_DETAILS.get(phase, "")
             ended = self._ended_at
-            duration = None
-            if self._started_monotonic is not None:
-                end = time.monotonic() if ended is None else self._ended_monotonic
-                if end is not None:
-                    duration = round(max(0.0, end - self._started_monotonic), 2)
+            duration = self._duration()
             return {
                 "state": state,
                 "phase": phase,
@@ -266,7 +270,20 @@ class RunManager:
             )
         # The record exists before any wait: a run refused by the model gate is
         # still evidence, and `run.json` is where its reason belongs.
-        self._ensure_run_dir(run_dir)
+        try:
+            self._ensure_run_dir(run_dir)
+        except RunError as exc:
+            # Without this the state stays CHECKING for ever: every later start
+            # would answer "a run is already active" and the spinner would turn.
+            with self._lock:
+                self._state = RunState.FAILED
+                self._phase = RunState.FAILED
+                self._detail = ""
+                self._error = str(exc)
+                self._ended_at = _now()
+                self._ended_monotonic = time.monotonic()
+            self._idle.set()
+            raise
         self._thread.start()
 
     def stop(self) -> None:
@@ -290,6 +307,7 @@ class RunManager:
     def _worker(self, generation: int, run_dir: Path) -> None:
         try:
             self._gate(generation)
+            self._set_phase(RunState.PREPARING)
             self._open_run(run_dir)
             self._check_cancel(generation)
 
@@ -303,6 +321,8 @@ class RunManager:
 
             self._set_phase(RunState.BRAIN)
             child = self._start_brain(run_dir)
+            with self._lock:
+                self._child = child
             self._set_phase(RunState.RUNNING)
             self._monitor(generation, child, run_dir)
         except (_Cancelled, Aborted):
@@ -316,6 +336,11 @@ class RunManager:
 
     def _check_cancel(self, generation: int) -> None:
         if generation != self._generation or self._cancel.is_set():
+            raise _Cancelled()
+        # The stack can be shut down from outside this object (curl, the
+        # orchestrator's own shutdown). A run that kept walking its phases would
+        # spawn a brain loop against a game that is already gone.
+        if self._manager.snapshot().get("state") != "running":
             raise _Cancelled()
 
     def _set_phase(self, state: RunState) -> None:
@@ -447,6 +472,15 @@ class RunManager:
             self._overlay.clear()
         self._write_run_json()
 
+    def _duration(self) -> float | None:
+        """Seconds from start to now (or to the end), None before the first start."""
+        if self._started_monotonic is None:
+            return None
+        end = self._ended_monotonic
+        if end is None:
+            end = time.monotonic()
+        return round(max(0.0, end - self._started_monotonic), 2)
+
     def _write_run_json(self) -> None:
         run_dir = self._dir
         if run_dir is None:
@@ -454,6 +488,7 @@ class RunManager:
         with self._lock:
             payload = {
                 "run_id": self._id,
+                "duration_s": self._duration(),
                 "session_id": self._session_id,
                 "started_at": self._started_at,
                 "ended_at": self._ended_at,

@@ -252,6 +252,14 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 return self._error(500, "internal server error")
             return self._json({"accepted": True}, status=202)
         if path == "/api/session/stop":
+            # The run goes first, and not just on process exit: `stop()` ends the
+            # brain child inline, so Steam is never shut down while a loop that
+            # drives it is still alive. `shutdown_all` waits for idle; here the
+            # request must not block, and the stack's own lifecycle lock already
+            # keeps an in-flight game restart and the teardown in order.
+            run = self.server.run
+            if run is not None:
+                run.stop()
             try:
                 self.server.manager.stop()
             except Exception:
@@ -481,10 +489,17 @@ class DashboardHandler(BaseHTTPRequestHandler):
         if not RUN_ID_RE.fullmatch(str(run_id)):
             return None
         session_dir = self.server.manager.snapshot().get("session_dir")
-        if not session_dir:
-            return None
-        path = Path(session_dir) / "runs" / str(run_id) / "brain.jsonl"
-        return path if path.is_file() else None
+        if session_dir:
+            path = Path(session_dir) / "runs" / str(run_id) / "brain.jsonl"
+            if path.is_file():
+                return path
+        # A dashboard restarted with the stack stopped has no session directory,
+        # but the run it is showing is still on disk: find it by its pinned id.
+        root = Path(self.server.config.paths.session_root)
+        for candidate in root.glob(f"*/runs/{run_id}/brain.jsonl"):
+            if candidate.is_file():
+                return candidate
+        return None
 
     def _font(self, name: str) -> None:
         # Only the vendored font directory is served, and never a traversal.
