@@ -149,6 +149,22 @@ yaw_offset_deg = 0.0
 # research/fov-declaration.md.
 fov_h_deg = 0.0
 fov_v_deg = 0.0
+# How big the emulated player is REPORTED to the game: 1.0 is the robot as it is.
+# Job Simulator's room is laid out for an adult and the G1 is 1.32 m, so at 1.0 every
+# object sits about 1.4x further than the arm travels. 1.43 is the measured adult ratio.
+# This scales what the game is told, not the robot; the sim still shows a 1.32 m
+# humanoid, so a capture that shows both views has to say which one is the claim
+# (research/g1-scale.md).
+player_scale = 1.0
+# Where that scale is measured from, in the body's world frame. The resting wrist is
+# the measured choice: required travel is |object - pivot| / scale. A pivot at the
+# floor lifts the hand faster than it lengthens the arm and makes reaches longer.
+# Give it as a string "x,y,z" or an array; [0.0, 0.0, 0.0] is the floor.
+player_pivot = [0.0, 0.0, 0.0]
+# Scale the camera with the hands. Measured both ways: with the head left alone the
+# camera stays where every depth measurement was taken and only the hands grow; with
+# it scaled the game's whole view moves, which is what an adult-sized player looks like.
+player_scale_head = true
 # false = physics and verb buttons only, with no third-person image. Use it when
 # the graphics stack is unavailable; the body stays drivable and observable.
 render = true

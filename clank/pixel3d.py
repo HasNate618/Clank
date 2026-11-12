@@ -114,6 +114,8 @@ def point_from_pixel(
     head_scale: float = 1.0,
     nearest: bool = False,
     min_m: float = 0.0,
+    pivot: Sequence[float] | None = None,
+    hands_scale: float | None = None,
 ) -> tuple[float, float, float] | None:
     """The root-relative point under normalised `(u, v)`, or None.
 
@@ -133,11 +135,39 @@ def point_from_pixel(
     the same number in one configuration and a silent 1.43x error in the other. It is
     named for what it actually undoes.
 
+    `pivot` and `hands_scale` are the same transform written out. `clank.wire` sizes the
+    emulated player about a pivot: what the game is shown is
+    `pivot + scale * (point - pivot)`. Undoing that is two steps, and they are not the
+    same step when the head is not scaled:
+
+    * the **camera** the stream was rendered from may itself have moved, so the head has to
+      be composed before unprojecting - that is `head_scale` (game camera) about `pivot`;
+    * the **hands** may be scaled even when the camera is not (`--player-scale-head off`),
+      so the point the object sits at has to be divided about the same `pivot` to become a
+      robot-frame target - that is `hands_scale`.
+
+    With `pivot` unset it is the eye, and composing about the eye is algebraically the same
+    as dividing the depth, which is what this function used to do - so the old behaviour is
+    exactly the default. With `hands_scale` unset it follows `head_scale`, which is the
+    case when the whole player is scaled and both steps are the same number.
+
     Returns None when the depth has no answer there, so a caller cannot silently place a
     hand on a guess.
     """
     if not math.isfinite(head_scale) or head_scale <= 0.0:
         raise ValueError(f"head_scale must be finite and positive, got {head_scale!r}")
+    if hands_scale is None:
+        hands_scale = head_scale
+    if not math.isfinite(hands_scale) or hands_scale <= 0.0:
+        raise ValueError(f"hands_scale must be finite and positive, got {hands_scale!r}")
+    eye = (float(head.p[0]), float(head.p[1]), float(head.p[2]))
+    if pivot is None:
+        centre = eye
+    else:
+        wanted = [float(c) for c in pivot]
+        if len(wanted) != 3 or not all(math.isfinite(c) for c in wanted):
+            raise ValueError(f"pivot must be three finite numbers, got {pivot!r}")
+        centre = (wanted[0], wanted[1], wanted[2])
     width = int(frame["width"])
     height = int(frame["height"])
     depth = sample_depth(
@@ -146,4 +176,23 @@ def point_from_pixel(
     )
     if depth is None or not math.isfinite(depth):
         return None
-    return unproject((float(u), float(v)), head, fov, depth / head_scale)
+    camera = head
+    if head_scale != 1.0:
+        camera = Pose(
+            p=(
+                centre[0] + (eye[0] - centre[0]) * head_scale,
+                centre[1] + (eye[1] - centre[1]) * head_scale,
+                centre[2] + (eye[2] - centre[2]) * head_scale,
+            ),
+            q_xyzw=head.q_xyzw,
+        )
+    seen = unproject((float(u), float(v)), camera, fov, depth)
+    if seen is None:
+        return None
+    if hands_scale == 1.0:
+        return seen
+    return (
+        centre[0] + (seen[0] - centre[0]) / hands_scale,
+        centre[1] + (seen[1] - centre[1]) / hands_scale,
+        centre[2] + (seen[2] - centre[2]) / hands_scale,
+    )

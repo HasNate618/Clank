@@ -5,9 +5,17 @@ reach, but the card measured *further* (0.556 m against 0.486). That contradicti
 of the assumptions about what the game does with the reported head height is wrong, and the
 only way to settle it is to move the arm and look at where the hand lands.
 
-The test is the one the whole change exists for: command a reach that would be too short
-unscaled (the card used to sit 0.486 m out) and see whether the hand arrives at the card.
-If the player really is 1.43x bigger, 0.34 m of arm covers 0.486 m of room.
+Two things this now reports that the first version could not:
+
+* the point is unprojected through the camera the game was **actually told about**
+  (`clank.player_scale`, written by the relay), not the robot's own head. Unprojecting with
+  the robot's head while the game renders from a 0.29 m taller one is where the earlier
+  4%-gain figure came from - the object was measured in the wrong frame;
+* the landing is reported in **game space** as well as the robot's. The robot frame says
+  whether the arm arrived; game space is what the capture shows, and `pivot + scale * (hand
+  - pivot)` is the hand the game draws. Those two numbers are the whole question.
+
+Usage: ``probe_scaled_reach.py [PX] [PY]``; the pixel defaults to the JobBot card.
 """
 
 from __future__ import annotations
@@ -25,6 +33,7 @@ sys.path.insert(0, str(REPO))
 from clank.body import Pose  # noqa: E402
 from clank.depth_stream import Stream  # noqa: E402
 from clank.pixel3d import point_from_pixel, sample_depth  # noqa: E402
+from clank.player_scale import read as read_player_scale  # noqa: E402
 from clank.projection import Fov, project_point  # noqa: E402
 from clank.workspace import clamp_offset  # noqa: E402
 
@@ -48,13 +57,27 @@ def send(**kw: object) -> dict:
 
 
 def state() -> dict:
-    return json.loads(STATE.read_text())
+    try:
+        return json.loads(STATE.read_text())
+    except (OSError, json.JSONDecodeError) as exc:
+        # The probe is useless without a live body, and a traceback here would read as a
+        # bug in the probe rather than as "the session is not up".
+        raise SystemExit(f"cannot read body state at {STATE}: {exc}") from exc
+
+
+def game(point: tuple[float, float, float], declared) -> tuple[float, float, float]:
+    """The point the game is shown for a robot-frame one: `pivot + scale * (p - pivot)`."""
+    pivot = declared.pivot
+    return tuple(pivot[k] + (point[k] - pivot[k]) * declared.scale for k in range(3))
 
 
 def main() -> int:
     px, py = (int(sys.argv[1]), int(sys.argv[2])) if len(sys.argv) > 2 else (755, 385)
-    scale = float(sys.argv[3]) if len(sys.argv) > 3 else 1.43
-    up_bias = float(sys.argv[4]) if len(sys.argv) > 4 else 0.0
+
+    declared = read_player_scale()
+    print(f"declared player scale {declared.scale:.3f}x about "
+          f"({declared.pivot[0]:+.3f},{declared.pivot[1]:+.3f},{declared.pivot[2]:+.3f}) "
+          f"head {'scaled' if declared.head_scaled else 'left alone'}")
 
     send(verb="look", yaw_deg=0.0)
     time.sleep(2.5)
@@ -65,25 +88,37 @@ def main() -> int:
 
     with Stream() as stream:
         before = stream.read(timeout=2.0)
+    if before is None:
+        print("no frame from the depth stream")
+        return 1
     cw, ch = int(before["color_width"]), int(before["color_height"])
     head = Pose(p=tuple(state()["head"]["p"]), q_xyzw=tuple(state()["head"]["q_xyzw"]))
     raw = sample_depth(before["depth"], before["width"], before["height"], px / cw, py / ch)
-    card = point_from_pixel(before, px / cw, py / ch, head, FOV, head_scale=1.0)
+    # Robot frame: what the arm has to travel. Game space: where that lands on screen.
+    card = declared.pixel_point(before, px / cw, py / ch, head, FOV)
     if card is None:
         print("no surface there")
         return 1
+    card_game = point_from_pixel(before, px / cw, py / ch, head, FOV,
+                                 head_scale=declared.camera_scale, pivot=declared.pivot,
+                                 hands_scale=1.0)
+    if card_game is None:
+        print("no surface there (game frame)")
+        return 1
     delta = [card[k] - rest[k] for k in range(3)]
     want = math.dist(rest, card)
-    print(f"card raw depth {raw:.3f} m; point {[round(v, 3) for v in card]}")
-    print(f"reach demanded {want:.3f} m at scale {scale}")
+    print(f"raw depth {raw if raw is None else round(raw, 3)} m")
+    print(f"card robot frame {[round(v, 3) for v in card]}  "
+          f"needs {want:.3f} m of arm from rest {[round(v, 3) for v in rest]}")
+    print(f"card game frame  {[round(v, 3) for v in card_game]}")
 
     offset = clamp_offset(*delta, max_m=MAX_M, max_lateral_m=MAX_LATERAL_M)
     if any(abs(offset[k] - delta[k]) > 1e-9 for k in range(3)):
         print(f"  clamped: {[round(v, 3) for v in delta]} -> "
-              f"{[round(v, 3) for v in offset]} (magnitude {math.dist((0,0,0), offset):.3f})")
+              f"{[round(v, 3) for v in offset]} (magnitude {math.dist((0, 0, 0), offset):.3f})")
 
     send(verb="reach", side="right", forward_m=round(offset[0], 4),
-         lateral_m=round(offset[1], 4), up_m=round(offset[2] + up_bias, 4),
+         lateral_m=round(offset[1], 4), up_m=round(offset[2], 4),
          look_yaw_deg=0.0)
     time.sleep(2.2)
     got = tuple(state()["right_hand"]["p"])
@@ -92,8 +127,16 @@ def main() -> int:
     if bool(int(state().get("flags") or 0) & FLAG_FALL_RISK):
         print("  FALL RISK")
 
+    print(f"  robot-frame miss {math.dist(got, card) * 1000:.0f} mm")
+    drawn = game(got, declared)
+    print(f"  game draws the hand at {[round(v, 3) for v in drawn]}, "
+          f"{math.dist(drawn, card_game) * 1000:.0f} mm from the card")
+
     with Stream() as stream:
         after = stream.read(timeout=2.0)
+    if after is None:
+        print("no frame after the reach")
+        return 1
     cw, ch = int(after["color_width"]), int(after["color_height"])
     head = Pose(p=tuple(state()["head"]["p"]), q_xyzw=tuple(state()["head"]["q_xyzw"]))
     hand_px = project_point(head, got, FOV)

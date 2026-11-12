@@ -998,7 +998,7 @@ class OrchestratorTests(unittest.TestCase):
         self.assertEqual(self.manager.snapshot()["survivors"], [])
 
     def test_start_resets_stale_handles_and_game_pids(self) -> None:
-        self.manager._handles = {"ghost": FakeHandle("ghost", 900)}
+        self.manager._handles = {"ghost": FakeHandle("ghost", 900)}  # type: ignore[dict-item]
         self.manager._game_pids = [777]
         self.manager._survivors = ["ghost"]
         self.start()
@@ -1187,6 +1187,7 @@ class OrchestratorTests(unittest.TestCase):
                 thread.join(2)
                 worker = self.manager._thread
                 self.assertIsNotNone(worker)
+                assert worker is not None
                 worker.join(2)
             finally:
                 release.set()
@@ -1412,6 +1413,7 @@ class OrchestratorTests(unittest.TestCase):
             session_dir = Path(self.manager._session_dir or "")
             pointer = self.runner.pointer
             self.assertIsNotNone(pointer)
+            assert pointer is not None
             marker = session_dir / "marker.log"
             marker.write_text("new session\n")
 
@@ -1425,7 +1427,11 @@ class OrchestratorTests(unittest.TestCase):
         self.assertTrue(session_dir.exists())
         self.assertTrue(marker.exists())
         self.assertIsNotNone(self.runner.pointer)
-        self.assertEqual(self.runner.pointer["session"], pointer["session"])
+        # Bound once: `pointer` is a property, so two reads are not the same value to a
+        # type checker and are not guaranteed to be the same pointer either.
+        written = self.runner.pointer
+        assert written is not None
+        self.assertEqual(written["session"], pointer["session"])
         self.assertEqual(self.manager.snapshot()["session_dir"], str(session_dir))
 
     def test_stale_preflight_does_not_remove_successor_socket(self) -> None:
@@ -1613,7 +1619,7 @@ class OrchestratorTests(unittest.TestCase):
             return original_preflight(gen)
 
         def guarded_idle_set() -> None:
-            if not self.manager._lock._is_owned():
+            if not self.manager._lock._is_owned():  # type: ignore[attr-defined]
                 self.assertTrue(allow_idle.wait(5))
             original_idle_set()
             idle_done.set()
@@ -1903,7 +1909,7 @@ class OrchestratorTests(unittest.TestCase):
 
         self.manager._start_generation = 1
         self.manager._state = State.STARTING
-        self.manager._started_at = object()
+        self.manager._started_at = object()  # type: ignore[assignment]
         self.manager._socket_name = "clank-old"
         with (
             patch.object(self.runner, "write_pointer", side_effect=failing_write),
@@ -1936,7 +1942,7 @@ class OrchestratorTests(unittest.TestCase):
                 self.manager._start_generation += 1
                 self.manager._session_id = "session-b"
                 self.manager._session_dir = b_dir
-                self.manager._started_at = b_started
+                self.manager._started_at = b_started  # type: ignore[assignment]
                 self.manager._socket_name = "clank-b"
             self.runner.pointer = b_pointer
             raise RuntimeError("pointer write boom")
@@ -2028,6 +2034,7 @@ class OrchestratorTests(unittest.TestCase):
             thread.join(5)
             worker = self.manager._thread
             self.assertIsNotNone(worker)
+            assert worker is not None
             worker.join(2)
 
         self.assertFalse(thread.is_alive())
@@ -2103,6 +2110,29 @@ class OrchestratorTests(unittest.TestCase):
         argv = self.runner.starts[-1][1]
         self.assertEqual(float(argv[argv.index("--fov-h-deg") + 1]), 110.0)
         self.assertEqual(float(argv[argv.index("--fov-v-deg") + 1]), 78.0)
+
+    def test_body_mode_leaves_the_player_unscaled_by_default(self) -> None:
+        # Undeclared by default, and the relay writes its declaration either way so a
+        # reader can tell "unscaled" from "nobody said".
+        self.start()
+        self.manager.set_mode("body")
+        argv = self.runner.starts[-1][1]
+        self.assertNotIn("--player-scale", argv)
+        self.assertNotIn("--player-pivot", argv)
+        self.assertNotIn("--player-scale-head", argv)
+
+    def test_body_mode_declares_the_configured_player_scale(self) -> None:
+        self.manager.cfg = replace(
+            self.cfg,
+            body=replace(self.cfg.body, player_scale=1.43, player_pivot=(0.1, -0.2, 0.0),
+                         player_scale_head=False),
+        )
+        self.start()
+        self.manager.set_mode("body")
+        argv = self.runner.starts[-1][1]
+        self.assertEqual(argv[argv.index("--player-scale") + 1], "1.43")
+        self.assertEqual(argv[argv.index("--player-pivot") + 1], "0.1,-0.2,0")
+        self.assertEqual(argv[argv.index("--player-scale-head") + 1], "off")
 
     def test_manual_mode_declares_the_configured_field_of_view(self) -> None:
         # The frustum is a property of the session, not the mode: switching into

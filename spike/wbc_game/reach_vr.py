@@ -59,8 +59,8 @@ sys.path.insert(0, str(REPO))
 
 from clank.body import Pose  # noqa: E402
 from clank.depth_stream import Stream  # noqa: E402
+from clank.player_scale import read as read_player_scale  # noqa: E402
 from clank.workspace import clamp_wrist  # noqa: E402
-from clank.pixel3d import point_from_pixel  # noqa: E402
 from clank.projection import Fov, project_point  # noqa: E402
 
 SOCK = Path.home() / ".local/state/Clank/sessions/body/control.sock"
@@ -437,6 +437,10 @@ def main() -> int:
         # is at y = -0.52, i.e. **0.44 m from the right hand** and 0.94 m from the left.
         # The raw head is the correct camera: R^-1(R(head) + R(q) d n) = head + q d n.
         points = []
+        # What the game was told the player's size is. Every depth read is in game metres,
+        # so a session declared at 1.43 needs both halves of the transform (camera and
+        # hands) or the target lands 1.43x past the object.
+        declared = read_player_scale()
         with Stream() as stream:
             for _ in range(3):
                 f = stream.read(timeout=2.0)
@@ -446,8 +450,10 @@ def main() -> int:
                 # lands on the wall behind it as often as on the card. Measured 2026-11-08:
                 # the median put the same card at 0.635 m (arm asked for 120 mm it has not
                 # got) where the nearest surface is 0.50 m and inside the envelope.
-                p3 = point_from_pixel(f, args.px / cw, args.py / ch, camera, FOV,
-                                      nearest=True, min_m=MIN_SURFACE_M)
+                # `min_m` stays in game metres, which is what the stream reports; with a
+                # scaled camera the robot's own glove sits differently in that frame.
+                p3 = declared.pixel_point(f, args.px / cw, args.py / ch, camera, FOV,
+                                          nearest=True, min_m=MIN_SURFACE_M)
                 if p3 is not None:
                     points.append(p3)
                 time.sleep(0.15)
