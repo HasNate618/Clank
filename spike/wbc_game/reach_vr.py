@@ -64,6 +64,13 @@ from clank.workspace import clamp_wrist  # noqa: E402
 from clank.projection import Fov, project_point  # noqa: E402
 
 SOCK = Path.home() / ".local/state/Clank/sessions/body/control.sock"
+
+#: The body view deletes and recreates `SOCK` whenever it restarts - a run resets it, and
+#: the sidecar also restarts on its own - and `ready()` sends its first `rest` the moment a
+#: brain loop starts. Measured live: a connect landing in that gap refused, and the brain
+#: loop died 0.2 s into the run, twice. A missing socket is a reason to wait, exactly as
+#: `state()` treats a missing state file.
+SOCK_WAIT_S = 20.0
 STATE = Path.home() / ".local/state/Clank/sessions/body/body_state.json"
 FOV = Fov.from_degrees(70.0, 70.0, 57.11, 57.11)
 
@@ -137,14 +144,21 @@ VR_OFFSET = (0.18, 0.025, 0.0)
 
 
 def send(**kw: object) -> dict:
-    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
-        s.settimeout(2.0)
-        s.connect(str(SOCK))
-        s.sendall((json.dumps(kw) + "\n").encode())
+    deadline = time.monotonic() + SOCK_WAIT_S
+    while True:
         try:
-            return json.loads(s.recv(255).decode())
-        except (TimeoutError, json.JSONDecodeError):
-            return {}
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
+                s.settimeout(2.0)
+                s.connect(str(SOCK))
+                s.sendall((json.dumps(kw) + "\n").encode())
+                try:
+                    return json.loads(s.recv(255).decode())
+                except (TimeoutError, json.JSONDecodeError):
+                    return {}
+        except (ConnectionRefusedError, FileNotFoundError):
+            if time.monotonic() >= deadline:
+                raise
+            time.sleep(0.2)
 
 
 def state() -> dict:
