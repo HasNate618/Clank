@@ -38,7 +38,7 @@ NVIDIA's G1 deployment is this pairing: a generator emits kinematic motion, SONI
 ### Goals
 
 1. A reach or grab toward a 3D point looks like a person reaching: feet planted when it is in front, a turn or step when it is not, chest toward the object, hand on it.
-2. The camera looks at the grab. G1 has no neck `[MEASURED: research/body-alternatives.md]`, so "look" is waist yaw when planted and root yaw when the body turns.
+2. The camera looks at the grab. G1 has no neck `[MEASURED: research/body-alternatives.md]`, so "look" is waist yaw when planted and root yaw when the body turns. **Measured limit, 2026-11-11: this goal is not reachable for off-axis objects.** The reach and the look compete for the same geometry — see §8.5. The goal stands for objects near the body's facing; elsewhere the honest outcome is a reach.
 3. Generation is live: one ARDY call per window, 0.07–0.20 s for 2.08 s of motion `[MEASURED: §7]`.
 4. The grab closes in the same process as the reach; a 2 s gap between reach and close drifted the hand 0.09 m `[MEASURED: AGENTS.md]`.
 5. `hold`, `look`, `rest` keep working on the VR channel. This replaces the **reach/grab executor**, not the `BodyCommand` contract.
@@ -193,7 +193,25 @@ At clip end: if the residual is within `TRACK_SUCCESS_M = 0.08 m`, done. If it i
 
 ### 8.4 Head
 
-No head pin during a generated reach. A constant 20 Hz pin twisted the torso and moved the root frame the target lived in `[MEASURED: research/motion.md]`. The generated clip contains the look; after playback, freeze-hold claims the achieved head.
+No head pin during a generated reach. A constant 20 Hz pin twisted the torso and moved the root frame the target lived in `[MEASURED: research/motion.md]`. The generated clip contains whatever look it produces; after playback, freeze-hold claims the achieved head.
+
+### 8.5 The look, measured (2026-11-11)
+
+**The generated reach does not aim the torso at the object, and making it do so costs the reach.** This was investigated four ways and the answer is a property of the body, not a bug:
+
+| attempt | torso→object | hand residual |
+| --- | --- | --- |
+| default (nothing asked) | 44° | **72 mm** |
+| `root2d` facing goal on the first generation | 15° | 97 mm |
+| turn-only clip, then reach | 35° | 93 mm |
+| waist-rotation constraint (see below) | **8°** | **180 mm** |
+
+- The turn is not the reach optimisation it was assumed to be. Signed measurement (`probe_ardy_track.py`, commit `ae1a8fd`) shows the torso turns only +0.2…+8.6° for an object 30° to the right and +10…+24° for one to the left — i.e. about as much as the *arm* needs, never toward the object. The offset is roughly the object's own bearing.
+- Walking closer does not change it: the turn is the same at 0.30 m and 0.48 m. Distance changes whether the hand arrives (0.68 m is beyond the ~0.55 m arm and measures 154–213 mm), not where the torso points.
+- Facing is expensive because it moves the object away from the working arm: the right hand's distance to it goes 0.35 → 0.53 m.
+- A **waist-rotation constraint** does what it is asked (44.4° → 8.4°) and the tracker follows it, but the hand then stops 130–215 mm short and the torso leans 18–26°. Note for anyone retrying this: the **position** channel is geometrically dead here, because G1's waist chain is coaxial with yaw — pelvis and `waist_yaw` are the same point and `waist_roll`/`waist_pitch` sit 4.4 cm above it, so a 30° turn moves the pinned joints 0.0/2.1/2.1 mm. Only `global_joints_rots` expresses it.
+
+The honest design sentence: on a body with no neck, looking at an off-axis object and reaching it with the far arm are the same geometric conflict, and the reach is the thing that must survive. A future fix is not a constraint but a **turn-then-step-closer** sequence, so the object is within easy arm reach from a facing stance; that is unmeasured.
 
 ## 9. Adapter / process split
 
@@ -239,7 +257,7 @@ The number that can still kill it: **SONIC mode 0 tracking a generated reference
 2. **Envelope** — planted/step classification and root-goal arithmetic. ✅ *done*
 3. **Generation** — 52 frames, no NaNs, starts at the placement pose, ends at the hand constraint within 0.10 m; VRAM < 2.0 GB. ✅ *done: 0.94 GB, 45.5 mm*
 4. **Root goal** — 0.60 m request travelled to within 5 %. ✅ *done: 0.566 m*
-5. **Tracked playback, game off** — SONIC follows a generated clip: residual < 8 cm, no fall, look error < 15°. *outstanding*
+5. **Tracked playback, game off** — SONIC follows a generated clip: residual < 8 cm, no fall, look error < 15°. ✅ *measured 2026-11-11: median 66 mm over 6 runs, 4/6 inside the gate, 0 falls, head tracking within 6° of the clip's own look. The gate is met at its boundary, not comfortably — the 80 mm clasp threshold sits in the same place. Look relative to the **object** is a separate, unmet goal: 35–59° (see §8.5).*
 6. **Live grab, game up** — one in-front and one out-of-reach grab, clasp on approach, `hold`/`look`/`rest` afterwards. *outstanding*
 
 ## 12. Does text matter, and is a smaller model worth training
