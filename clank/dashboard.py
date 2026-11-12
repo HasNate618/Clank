@@ -12,7 +12,7 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import unquote, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 
 from . import brainlog
 from .body_preview import BODY_VERBS, BODY_VIEWS, BodyPreview, send_control
@@ -22,6 +22,7 @@ from .manual_input import ManualInputError, ManualInputUnavailable
 from .orchestrator import ConflictError, PreflightError, SessionManager
 from .pose_relay import request_click
 from .processes import tail_stream
+from .run import RUN_ID_RE, RunError, RunManager
 
 
 class PayloadTooLarge(ValueError):
@@ -137,12 +138,14 @@ class DashboardServer(ThreadingHTTPServer):
     allow_reuse_address = True
 
     def __init__(self, address, manager, config: Config, static_dir: Path,
-                 body: BodyPreview | None = None) -> None:
+                 body: BodyPreview | None = None, overlay: OverlayBoard | None = None,
+                 run: RunManager | None = None) -> None:
         self.manager = manager
         self.config = config
         self.static_dir = Path(static_dir)
         self.body = body
-        self.overlay = OverlayBoard()
+        self.overlay = overlay or OverlayBoard()
+        self.run = run
         self.shutdown_event = threading.Event()
         super().__init__(address, DashboardHandler)
 
@@ -175,6 +178,10 @@ class DashboardHandler(BaseHTTPRequestHandler):
             body = self.server.body
             if body is not None:
                 state = {**state, "body": body.status()}
+            # The run is a separate lifetime from the session: a stopped stack can
+            # still have a last run to show, and a running stack can have none.
+            run = self.server.run
+            state = {**state, "run": run.snapshot() if run is not None else None}
             return self._json(state)
         if path == "/api/preview/config":
             return self._preview_config()
@@ -187,7 +194,6 @@ class DashboardHandler(BaseHTTPRequestHandler):
         if path.startswith("/novnc/"):
             return self._novnc(path[len("/novnc/"):])
         if path == "/api/body.jpg":
-            from urllib.parse import parse_qs
             body = self.server.body
             if body is None:
                 return self._error(404, "no body frame")
@@ -205,9 +211,17 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return self._log_stream()
         if path == "/api/brain/messages":
             # Structured diary rows for the Brain panel; /api/logs keeps its own
-            # rendered copy of the same diary for the plain log view.
+            # rendered copy of the same diary for the plain log view. `?run=<id>`
+            # reads a past run, which is how a finished attempt is inspected.
+            query = parse_qs(urlparse(self.path).query)
+            wanted = (query.get("run") or [None])[0]
+            target = self._diary()
+            if wanted is not None:
+                target = self._run_diary(wanted)
+                if target is None:
+                    return self._error(404, "unknown run")
             try:
-                rows = brainlog.tail(50)
+                rows = brainlog.tail(50, target)
             except Exception:  # noqa: BLE001 - a broken diary must not break the page
                 rows = []
             return self._json({"messages": rows})
@@ -240,6 +254,19 @@ class DashboardHandler(BaseHTTPRequestHandler):
         if path == "/api/session/stop":
             try:
                 self.server.manager.stop()
+            except Exception:
+                return self._error(500, "internal server error")
+            return self._json({"accepted": True}, status=202)
+        if path == "/api/run/start" or path == "/api/run/stop":
+            run = self.server.run
+            if run is None:
+                return self._error(503, "runs disabled")
+            try:
+                run.start() if path.endswith("start") else run.stop()
+            except ConflictError as exc:
+                return self._error(409, str(exc))
+            except RunError as exc:
+                return self._error(400, str(exc))
             except Exception:
                 return self._error(500, "internal server error")
             return self._json({"accepted": True}, status=202)
@@ -425,7 +452,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
     def _brain_lines(self) -> list[str]:
         """The brain's diary as log lines. Never raises: a diary must not break the UI."""
         try:
-            rows = brainlog.tail(LOG_TAIL_LINES)
+            rows = brainlog.tail(LOG_TAIL_LINES, self._diary())
         except Exception:  # noqa: BLE001 - a broken diary must not take out /api/logs
             return []
         lines: list[str] = []
@@ -433,6 +460,31 @@ class DashboardHandler(BaseHTTPRequestHandler):
             rendered = brainlog.render(row)
             lines.append(rendered.removeprefix("[brain] "))
         return lines
+
+    def _diary(self) -> Path:
+        """The diary this page shows: the run's, or the global one with no runs yet.
+
+        The override has to be explicit: `brainlog.default_path()` reads the
+        dashboard's own environment, which has no `CLANK_BRAIN_LOG`, so a run's
+        diary would be invisible if the reader relied on it.
+        """
+        run = self.server.run
+        if run is not None:
+            with contextlib.suppress(Exception):
+                path = run.current_diary()
+                if path is not None:
+                    return Path(path)
+        return brainlog.default_path()
+
+    def _run_diary(self, run_id: str) -> Path | None:
+        """A past run's diary, or None. The id is the only input, so it is pinned."""
+        if not RUN_ID_RE.fullmatch(str(run_id)):
+            return None
+        session_dir = self.server.manager.snapshot().get("session_dir")
+        if not session_dir:
+            return None
+        path = Path(session_dir) / "runs" / str(run_id) / "brain.jsonl"
+        return path if path.is_file() else None
 
     def _font(self, name: str) -> None:
         # Only the vendored font directory is served, and never a traversal.
@@ -572,6 +624,21 @@ def dashboard_pidfile(cfg: Config) -> Path:
     return Path(cfg.paths.session_root) / "dashboard.pid"
 
 
+def shutdown_all(body: BodyPreview | None, run: RunManager | None, manager) -> None:
+    """Stop everything in the one order that leaves no ghost.
+
+    The run goes before the stack: its last phase may be restarting the game or
+    waiting on a game restart, and shutting Steam down underneath that is how a
+    half-killed game and an orphan brain loop happen.
+    """
+    if body is not None:
+        body.stop()
+    if run is not None:
+        run.stop()
+        run.wait_idle(15)
+    manager.stop()
+
+
 def run_dashboard(cfg: Config) -> None:
     manager = SessionManager(cfg)
     static_dir = Path(__file__).resolve().parent / "static"
@@ -582,8 +649,11 @@ def run_dashboard(cfg: Config) -> None:
             problem = body.start()
             if problem:
                 print(f"clank dashboard: body view: {problem}", file=sys.stderr)
+    overlay = OverlayBoard()
+    run = RunManager(manager, cfg, body=body, overlay=overlay)
     server = DashboardServer(
-        (cfg.dashboard.host, cfg.dashboard.port), manager, cfg, static_dir, body=body
+        (cfg.dashboard.host, cfg.dashboard.port), manager, cfg, static_dir,
+        body=body, overlay=overlay, run=run,
     )
     pidfile = dashboard_pidfile(cfg)
     pidfile.parent.mkdir(parents=True, exist_ok=True)
@@ -602,9 +672,7 @@ def run_dashboard(cfg: Config) -> None:
         print("clank dashboard: shutting down", flush=True)
         if body is not None:
             print(f"clank dashboard: stopping body view (running={body.running()})", flush=True)
-            body.stop()
-            print(f"clank dashboard: body view stopped (running={body.running()})", flush=True)
-        manager.stop()
+        shutdown_all(body, run, manager)
         if not manager.wait_idle(70):
             print("clank dashboard: session did not stop within 70s", file=sys.stderr)
         server.server_close()

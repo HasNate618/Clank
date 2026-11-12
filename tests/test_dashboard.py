@@ -17,7 +17,7 @@ from unittest.mock import patch
 
 from clank.body_preview import BodyPreview
 from clank.config import load_config
-from clank.dashboard import DashboardHandler, DashboardServer, OverlayBoard
+from clank.dashboard import DashboardHandler, DashboardServer, OverlayBoard, shutdown_all
 from clank.manual_input import ManualInputError, ManualInputUnavailable
 from clank import pose_relay
 from clank.orchestrator import ConflictError, MODES, PreflightError, SessionManager
@@ -939,3 +939,182 @@ class MenuRouteTestCase(unittest.TestCase):
         self.assertEqual(status, 400)
         self.assertIn("unknown hand", doc.get("error", ""))
         self.assertFalse(self.click_file.exists())
+
+
+class FakeRun:
+    """A RunManager as the dashboard sees it: four methods and a dict."""
+
+    def __init__(self, state: str = "idle", diary: Path | None = None) -> None:
+        self.state_value = state
+        self.diary = diary
+        self.started = 0
+        self.stopped = 0
+        self.waits = 0
+
+    def snapshot(self) -> dict:
+        return {
+            "state": self.state_value,
+            "phase": self.state_value,
+            "detail": "",
+            "id": "101010-a1b2c3",
+            "dir": str(self.diary.parent) if self.diary else None,
+            "session_id": None,
+            "started_at": None,
+            "ended_at": None,
+            "duration_s": None,
+            "error": None,
+            "exit_code": None,
+        }
+
+    def start(self) -> None:
+        self.started += 1
+        if self.state_value == "conflict":
+            raise ConflictError("session is not running")
+        if self.state_value == "bad":
+            from clank.run import RunError
+
+            raise RunError("run.brain_python not found: /nonexistent")
+
+    def stop(self) -> None:
+        self.stopped += 1
+
+    def current_diary(self) -> Path:
+        return self.diary or Path("/nonexistent/brain.jsonl")
+
+    def wait_idle(self, timeout: float = 10.0) -> bool:
+        self.waits += 1
+        return True
+
+
+class RunRouteTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.base = Path(self.temp.name)
+        self.manager = FakeManager(self.base)
+        self.manager.state = "running"
+        self.cfg = load_config(None, env={})
+        self.run_dir = self.base / "session" / "runs" / "101010-a1b2c3"
+        self.run_dir.mkdir(parents=True)
+        self.diary = self.run_dir / "brain.jsonl"
+        self.diary.write_text(
+            json.dumps({"kind": "think", "text": "this run only"}) + "\n", encoding="utf-8"
+        )
+        self.fake_run = FakeRun(diary=self.diary)
+        self.server = DashboardServer(
+            ("127.0.0.1", 0),
+            _SessionDirManager(self.manager, self.base),
+            self.cfg,
+            self.base,
+            overlay=OverlayBoard(),
+            run=self.fake_run,
+        )
+        self.port = self.server.server_address[1]
+        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        self.thread.start()
+        self.addCleanup(self.thread.join, 2)
+        self.addCleanup(self.server.server_close)
+        self.addCleanup(self.server.shutdown)
+
+    def request(self, method: str, path: str, body=None):
+        data = json.dumps(body).encode() if body is not None else None
+        request = urllib.request.Request(
+            f"http://127.0.0.1:{self.port}{path}",
+            data=data,
+            method=method,
+            headers={"Content-Type": "application/json"},
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=5) as response:  # noqa: S310
+                return response.status, json.loads(response.read() or b"{}")
+        except urllib.error.HTTPError as exc:
+            try:
+                return exc.code, json.loads(exc.read() or b"{}")
+            finally:
+                exc.close()
+
+    def test_state_includes_the_run(self) -> None:
+        status, body = self.request("GET", "/api/state")
+        self.assertEqual(status, 200)
+        self.assertEqual(body["run"]["id"], "101010-a1b2c3")
+        self.assertEqual(body["run"]["state"], "idle")
+
+    def test_run_start_and_stop_are_accepted(self) -> None:
+        status, body = self.request("POST", "/api/run/start", {})
+        self.assertEqual(status, 202)
+        self.assertTrue(body["accepted"])
+        status, _ = self.request("POST", "/api/run/stop", {})
+        self.assertEqual(status, 202)
+        self.assertEqual(self.fake_run.started, 1)
+        self.assertEqual(self.fake_run.stopped, 1)
+
+    def test_run_start_conflict_is_409(self) -> None:
+        self.fake_run.state_value = "conflict"
+        status, body = self.request("POST", "/api/run/start", {})
+        self.assertEqual(status, 409)
+        self.assertIn("session is not running", body["error"])
+
+    def test_run_start_with_a_bad_interpreter_is_400(self) -> None:
+        self.fake_run.state_value = "bad"
+        status, body = self.request("POST", "/api/run/start", {})
+        self.assertEqual(status, 400)
+        self.assertIn("brain_python", body["error"])
+
+    def test_runs_disabled_is_503(self) -> None:
+        self.server.run = None
+        status, _ = self.request("POST", "/api/run/start", {})
+        self.assertEqual(status, 503)
+
+    def test_brain_messages_read_the_run_diary(self) -> None:
+        status, body = self.request("GET", "/api/brain/messages")
+        self.assertEqual(status, 200)
+        self.assertEqual([row["text"] for row in body["messages"]], ["this run only"])
+
+    def test_brain_messages_accept_a_past_run(self) -> None:
+        status, body = self.request("GET", "/api/brain/messages?run=101010-a1b2c3")
+        self.assertEqual(status, 200)
+        self.assertEqual(body["messages"][0]["text"], "this run only")
+
+    def test_brain_messages_refuse_a_traversing_run_id(self) -> None:
+        for bad in ("..%2F..%2Fetc", "101010-a1b2c3/../../x", "nope"):
+            with self.subTest(run=bad):
+                status, _ = self.request("GET", f"/api/brain/messages?run={bad}")
+                self.assertEqual(status, 404)
+
+
+class _SessionDirManager(FakeManager):
+    """FakeManager plus the session_dir the run-diary route needs."""
+
+    def __init__(self, inner: FakeManager, base: Path) -> None:
+        super().__init__(inner.base)
+        self.inner = inner
+        self.state = inner.state
+        self.session_id = inner.session_id
+
+    def snapshot(self) -> dict:
+        return {**self.inner.snapshot(), "session_dir": str(self.base / "session")}
+
+
+class ShutdownOrderTests(unittest.TestCase):
+    def test_the_run_stops_before_the_stack(self) -> None:
+        order: list[str] = []
+
+        class Body:
+            def stop(self) -> None:
+                order.append("body")
+
+        class Run:
+            def stop(self) -> None:
+                order.append("run")
+
+            def wait_idle(self, timeout: float = 10.0) -> bool:
+                order.append("run-wait")
+                return True
+
+        class Manager:
+            def stop(self) -> None:
+                order.append("stack")
+
+        shutdown_all(Body(), Run(), Manager())
+        # A run that outlives its Steam leaves a brain loop driving nothing.
+        self.assertEqual(order, ["body", "run", "run-wait", "stack"])
