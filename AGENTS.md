@@ -35,12 +35,18 @@ stream, drives pose modes, and exposes the logs.
 # frozen black window for Job Simulator (it renders only to the OpenXR views).
 ./run.sh --no-depth --replace
 
-# Session control (the UI calls the same endpoints).
+# Stack control: once per boot. The UI calls the same endpoints.
 curl -s -X POST -H 'Content-Type: application/json' -d '{}' \
   http://127.0.0.1:8765/api/session/start
 curl -s -X POST -H 'Content-Type: application/json' -d '{}' \
-  http://127.0.0.1:8765/api/session/stop
-curl -s http://127.0.0.1:8765/api/state
+  http://127.0.0.1:8765/api/session/stop        # "Shut down" in the UI
+
+# Run control: what you repeat. The stack stays up between runs.
+curl -s -X POST -H 'Content-Type: application/json' -d '{}' \
+  http://127.0.0.1:8765/api/run/start
+curl -s -X POST -H 'Content-Type: application/json' -d '{}' \
+  http://127.0.0.1:8765/api/run/stop
+curl -s http://127.0.0.1:8765/api/state          # state.run walks the phases
 
 # One capture. The reader is stdlib-only: no nix develop, ~0.4 s total.
 python3 spike/e5/depth_stream.py --once --verify --out research/evidence/depth-stream
@@ -89,6 +95,49 @@ depth-stream.bin / depth-stream.log       # live stream (spike/e5)
 depth-layer/vulkan/implicit_layer.d/      # e5 manifest
 renderdoc-layer/vulkan/implicit_layer.d/  # e4 manifest
 ```
+
+## Stack and runs, 2026-11-12
+
+**Start** boots the stack (Monado → Weston → websockify → pose relay → Steam → game)
+once. **Start run** is the thing you repeat, and it never touches the stack: a new
+directory, a new diary, the overlay cleared, the game's saved job wiped and the game
+relaunched, the body stood up, then `spike/wbc_game/auto.py` under `spike/e3/.venv`.
+**Stop run** ends the attempt and leaves the stack up; **Shut down** is the old Stop.
+A failed run keeps its directory as evidence and never stops the stack.
+
+```text
+sessions/<session-id>/runs/<HHMMSS>-<6 hex>/
+  run.json      # id, argv, started/ended, exit code, error
+  brain.jsonl   # this run's diary; the Brain panel reads it
+  brain.log     # the loop's stdout/stderr
+  frames/       # CLANK_AUTO_STATE: the stills the brain looked at
+```
+
+- **The model gate is first, and it is cheapest.** `GET /health` + `/v1/models` on
+  `:11434` must answer `ok` with `run.required_model` (`LFM3-Omni`) in the name, or the
+  run is refused with the command to start it — before a game restart or a save wipe is
+  paid for. `loading` is a wait of up to `run.model_timeout_sec`, not a failure. The
+  topbar greys Start run only when nothing is listening.
+- **The save wipe is what makes the game restart a reset.** `paths.game_save_dirs` are
+  relative to the Proton prefix and are wiped while the game is dead; absolute paths,
+  `..` and symlinks out of the prefix are refused. Measured 2026-11-12: the job's save
+  is `LocalLow/Owlchemy Labs/Job Simulator/User/JobSimulatorSave.save.bak-<time>` (the
+  only file there), and `LocalLow/Unity/Owlchemy Labs_Job Simulator/` is 22 MB of
+  per-play state. `output_log.txt` beside them is kept — a failed run is diagnosed from
+  it. There is no Steam Cloud copy: the game is a non-Steam shortcut.
+- **`restart_game()` resets the OpenXR log parser first.** `_launch_game` waits for the
+  new client's `application_name` line in `monado.log`; with the killed game still in
+  the parser, that wait returns instantly and the run starts against a dead window.
+- **What is loading is on screen.** A spinner plus a phrase in the topbar for the stack
+  and the run phases (`run.detail`: "restarting the game…", "waiting for the model to
+  load…"), on the preview while the transport comes up, and in the Robot panel. Under
+  `prefers-reduced-motion` the ring stops turning but stays visible.
+- The body reset is `BodyPreview.stop/start` + `rest` × `run.rest_ticks`, not a session
+  concern: the body view is deliberately outside the session manager. A run works with
+  the body disabled.
+- `python3 -m clank.brainlog --tail` still reads the global diary, which runs no longer
+  write; pass `--path sessions/<id>/runs/<run>/brain.jsonl` for a run, or use
+  `GET /api/brain/messages?run=<id>`.
 
 ## Depth stream (spike/e5)
 
@@ -270,7 +319,7 @@ chromium --headless=new --no-sandbox --disable-gpu \
 
 | Path | What |
 | --- | --- |
-| `clank/` | App: config, orchestrator, dashboard/HTTP, VNC, command bus, pose relay, `depth_stream.py` reader |
+| `clank/` | App: config, orchestrator, `run.py` (run state machine), dashboard/HTTP, VNC, command bus, pose relay, `depth_stream.py` reader |
 | `spike/e5/` | Live Vulkan depth layer, shader (+`gen_header.py`), launcher, reader CLI, Monado patch |
 | `spike/e4/` | RenderDoc trigger/replay/extract pipeline and metric post-processing |
 | `spike/c0/` | Scripted OpenXR pose clients (`hold`, `yaw`, `manual`, ...) |

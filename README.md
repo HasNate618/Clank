@@ -260,12 +260,14 @@ Weights are `nvidia/GEAR-SONIC` (encoder 1762→64, decoder 994→29) under the 
 
 ## Controls
 
-The dashboard is a single local page with a state badge, session id, uptime, log tails and the preview.
+The dashboard is a single local page with a state badge, session id, run phase, uptime, log tails and the preview. A wait shows a spinner and what it is for; a state that needs you does not.
 
 | Control | Effect |
 | --- | --- |
-| **Start** | Runs the full sequence: Monado → Weston (VNC) → websockify → pose client → Steam → game. `409` if a session is already running. |
-| **Stop** | Tears the session down; idempotent, and cleanup is verified rather than assumed — surviving processes are logged and surfaced in `/api/state`. |
+| **Start** | Boots the stack: Monado → Weston (VNC) → websockify → pose client → Steam → game. `409` if a session is already running. Once per stack, not once per attempt. |
+| **Start run** | One repeatable attempt, leaving the stack up: a fresh `sessions/<id>/runs/<run>/` (diary, log, frames), the overlay cleared, the game's saved job wiped and the game relaunched, the body reset, then the brain loop. Refused before anything is spent if the model server is not up serving the expected model. |
+| **Stop run** | Ends the attempt (the brain loop and its process group) and keeps the stack, the game and the body running. |
+| **Shut down** | Tears the session down; the run is stopped first, then idempotent cleanup — surviving processes are logged and surfaced in `/api/state`. |
 | **mode** | Switches the pose client: `hold`, `yaw`, `trigger`, `dodge`, `walk`, `clock`, `manual`, `body`. `body` is the join — the relay sends the simulated humanoid's achieved poses instead of scripted constants. |
 | **kill** | Force-stops the game or Steam specifically. These are force kills and they hit *your* Steam. |
 | **preview** | VNC stream with PAM login; view-only. The stream is 1280x720 at a target 30 fps; the dashboard crops the top 32 px status panel, so the display area is 1280x688. Manual mode still uses pointer lock. |
