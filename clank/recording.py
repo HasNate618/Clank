@@ -7,6 +7,12 @@ with, and ``Recorder``, which runs an encoder per source while the run is live.
 Both of the first two are pure, so the recorder and the composite that run
 them are tested around them rather than through them.
 
+``Recorder`` is the live half. The offline half finishes the job once the run
+has ended: ``run_composite`` probes the parts, composites them and publishes
+``recording.mp4``; ``sweep_stale`` cleans up after a dashboard that died mid-run;
+``prune`` holds the recordings under their disk cap; ``list_recordings`` is what
+the dashboard's page reads.
+
 Nothing here raises into a run. A missing encoder, a dead pipe, an absent
 depth stream: each becomes a manifest state or a source status, never an
 exception the run has to survive.
@@ -17,6 +23,7 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+import shutil
 import signal
 import subprocess
 import threading
@@ -24,9 +31,12 @@ import time
 from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from clank.ears import level
+
+if TYPE_CHECKING:  # imported for the annotations only: config never imports this module
+    from clank.config import Config
 
 GAME_WIDTH = 960
 GAME_HEIGHT = 540
@@ -39,6 +49,17 @@ MANIFEST_NAME = "recording.json"
 PARTS_DIR = "parts"
 PART_NAMES = {"game": "game.mp4", "robot": "robot.mp4", "audio": "audio.m4a"}
 SOURCES = ("game", "robot", "audio")
+#: The file a run's composite lands in, and the name a `ready` manifest carries.
+RECORDING_NAME = "recording.mp4"
+#: A manifest in either state belongs to a dashboard that died mid-run.
+STALE_STATES = ("recording", "composing")
+#: The composite's own bound: a re-encode that outlasts this is a wedged encoder.
+COMPOSITE_TIMEOUT_S = 1800.0
+#: A probe reads the container's index, never the frames, so this is generous.
+PROBE_TIMEOUT_S = 60.0
+#: Hold past the run's length, so `-t duration_s` never cuts inside a stream
+#: whose encoded length landed a frame short of the schedule's.
+PAD_MARGIN_S = 1.0
 #: 16 kHz mono s16le, which is also the rate the audio encoder's pipe is read at.
 AUDIO_RATE = 16000
 AUDIO_BYTES_PER_S = AUDIO_RATE * 2
@@ -65,7 +86,7 @@ WEDGED_SOURCES = {PUMP_THREAD: ("game", "robot"), AUDIO_THREAD: ("audio",)}
 
 def composite_argv(
     *,
-    game: Path,
+    game: Path | None,
     robot: Path | None,
     audio: Path | None,
     out: Path,
@@ -73,46 +94,70 @@ def composite_argv(
     crf: int,
     preset: str,
     ffmpeg: str = "ffmpeg",
+    pad: dict[str, float] | None = None,
+    duration: float | None = None,
 ) -> list[str]:
     """The ffmpeg pass that stacks the parts side by side into `out`.
 
     A part that is missing is black padding of the same size, not a narrower
     file: the layout is fixed so every recording looks the same to a player.
-    """
-    inputs = ["-i", str(game)]
-    input_count = 1
-    audio_index: int | None = None
-    if robot is not None:
-        inputs += ["-i", str(robot)]
-        input_count += 1
-    if audio is not None:
-        audio_index = input_count
-        inputs += ["-i", str(audio)]
 
-    left = f"[0:v]scale={GAME_WIDTH}:{GAME_HEIGHT}[g]"
-    if robot is None:
-        # An endless black pad, so the game's picture decides where the stack ends.
-        right = f"color=black:s={ROBOT_WIDTH}x{HEIGHT}:r={fps}[r]"
-        stack = "[g][r]hstack=inputs=2:shortest=1[v]"
-    else:
-        right = f"[1:v]scale={ROBOT_WIDTH}:{HEIGHT}[r]"
-        stack = "[g][r]hstack=inputs=2[v]"
+    `pad` holds a picture's last frame for that many seconds, which is what
+    keeps a part demoted mid-run from shortening the whole recording: without
+    it a black pad makes the stack end with the picture that is real, and
+    `-shortest` ends the file with the shortest stream. `duration` then cuts
+    the result at the run's own length, which replaces `-shortest` -- an audio
+    part that died early must leave a quiet tail, not a truncated picture.
+
+    Nothing here reads the filesystem: the caller measures the parts, and this
+    function writes down what to do about them.
+    """
+    sources = ((name, path) for name, path in (("game", game), ("robot", robot),
+                                               ("audio", audio)) if path is not None)
+    index: dict[str, int] = {}
+    inputs: list[str] = []
+    for name, path in sources:
+        index[name] = len(index)
+        inputs += ["-i", str(path)]
+
+    holds = pad or {}
+    left = f"[{index['game']}:v]scale={GAME_WIDTH}:{GAME_HEIGHT}" if "game" in index \
+        else f"color=black:s={GAME_WIDTH}x{GAME_HEIGHT}:r={fps}"
+    left += _hold(holds.get("game", 0.0)) + "[g]"
+    right = f"[{index['robot']}:v]scale={ROBOT_WIDTH}:{HEIGHT}" if "robot" in index \
+        else f"color=black:s={ROBOT_WIDTH}x{HEIGHT}:r={fps}"
+    right += _hold(holds.get("robot", 0.0)) + "[r]"
+    # An endless black pad cannot decide where the stack ends; without a target
+    # the picture that is real does.
+    black = "game" not in index or "robot" not in index
+    stack = "[g][r]hstack=inputs=2:shortest=1[v]" if black else "[g][r]hstack=inputs=2[v]"
 
     argv = [
         ffmpeg, "-y", *inputs,
         "-filter_complex", ";".join([left, right, stack]),
         "-map", "[v]",
     ]
-    if audio_index is not None:
-        argv += ["-map", f"{audio_index}:a"]
+    if "audio" in index:
+        argv += ["-map", f"{index['audio']}:a"]
     argv += [
         "-c:v", "libx264", "-preset", preset, "-crf", str(crf),
         "-pix_fmt", "yuv420p", "-r", str(fps),
     ]
-    if audio_index is not None:
-        argv += ["-c:a", "aac", "-b:a", "96k", "-shortest"]
+    if "audio" in index:
+        argv += ["-c:a", "aac", "-b:a", "96k"]
+        if duration is None:
+            argv += ["-shortest"]
+    if duration is not None:
+        argv += ["-t", f"{duration:.3f}"]
     argv += ["-movflags", "+faststart", str(out)]
     return argv
+
+
+def _hold(seconds: float) -> str:
+    """The filter that holds a picture's last frame for `seconds`, or nothing."""
+    if seconds <= 0:
+        return ""
+    return f",tpad=stop_mode=clone:stop_duration={seconds:.3f}"
 
 
 class Recorder:
@@ -731,13 +776,7 @@ class Recorder:
             "error": self._error,
         }
         self._manifest = doc
-        try:
-            path = self.manifest()
-            tmp = path.with_name(path.name + ".tmp")
-            tmp.write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8")
-            os.replace(tmp, path)
-        except OSError:
-            pass  # the run is worth more than its recording
+        _save_manifest(self.run_dir, doc)
         return dict(doc)
 
 
@@ -754,8 +793,379 @@ def read_manifest(run_dir: Path) -> dict | None:
     return doc if isinstance(doc, dict) else None
 
 
+def probe_part(path: Path, *, want: str, ffprobe: str = "ffprobe") -> tuple[dict | None, str]:
+    """What the demuxer says a part holds, or (None, why it is unusable).
+
+    An encoder SIGKILLed mid-write leaves an MP4 with no moov atom, which no
+    player and no muxer can demux. `ffprobe` reads the container's index and
+    not its frames, so this is a whole part for the price of a header; a part
+    that fails here is dropped before it can fail the composite.
+
+    `want` is the stream kind the part exists for: ``video`` for the two
+    pictures, ``audio`` for the sound.
+    """
+    argv = [
+        ffprobe, "-v", "error", "-print_format", "json",
+        "-show_entries", "stream=codec_type:format=duration", str(path),
+    ]
+    try:
+        done = subprocess.run(
+            argv, stdin=subprocess.DEVNULL, capture_output=True, timeout=PROBE_TIMEOUT_S,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        return None, f"ffprobe is not runnable: {exc}"
+    if done.returncode != 0:
+        lines = _lines(done.stderr)
+        return None, (lines[-1][:200] if lines else f"ffprobe exited {done.returncode}")
+    try:
+        doc = json.loads(done.stdout)
+    except ValueError:
+        return None, "ffprobe printed no stream information"
+    if not isinstance(doc, dict):
+        return None, "ffprobe printed no stream information"
+    streams = [item.get("codec_type") for item in doc.get("streams") or []
+               if isinstance(item, dict)]
+    if want not in streams:
+        return None, f"no {want} stream"
+    try:
+        seconds = float((doc.get("format") or {}).get("duration") or 0.0)
+    except (TypeError, ValueError):
+        seconds = 0.0
+    return {"streams": streams, "duration_s": seconds}, ""
+
+
+def run_composite(run_dir: Path, cfg: Config) -> dict:
+    """Composite a finished recording's parts into `recording.mp4`, and publish it.
+
+    Synchronous and bounded, because the caller detaches it into a thread once
+    the run has gone idle. It probes every part the manifest names before it
+    composites them, drops the ones that cannot be demuxed with a note, and
+    never writes ``ready`` for a run with nothing playable. Every kept picture
+    is padded to the run's own length so a part demoted mid-run cannot shorten
+    the file. The parts are deleted unless `keep_parts`; a failed composite
+    keeps them, because they are what the failure is diagnosed from.
+
+    Returns the manifest it wrote. Prunes the recordings afterwards, never
+    deleting the run it just published.
+    """
+    run_dir = Path(run_dir).resolve()
+    manifest = read_manifest(run_dir)
+    if manifest is None:
+        return {
+            "state": "failed", "error": "no recording manifest to compose",
+            "available": False, "file": None,
+        }
+    if manifest.get("state") == "ready":
+        return manifest  # already published; a second call must not delete parts
+    if manifest.get("state") == "failed":
+        # The recorder's own failure (no encoder, no parts directory) already
+        # says why, and there is nothing to compose: composing it again would
+        # replace a precise reason with "nothing survived the probe".
+        return manifest
+    try:
+        return _composite(run_dir, manifest, cfg)
+    except Exception as exc:  # a detached thread must still leave a manifest
+        return _fail(run_dir, manifest, f"the composite failed: {exc}", {}, {}, {})
+
+
+def _composite(run_dir: Path, manifest: dict, cfg: Config) -> dict:
+    rec = cfg.recording
+    notes = dict(manifest.get("notes") or {})
+    recorded = dict(manifest.get("part_seconds") or {})
+    named = dict(manifest.get("parts") or {})
+    ffprobe = _ffprobe(rec.ffmpeg)
+    kept: dict[str, Path] = {}
+    lengths: dict[str, float] = {}
+    for name in SOURCES:
+        relative = named.get(name)
+        if not relative:
+            continue
+        # Absolute, always: the dashboard's cwd is not the run directory.
+        path = (run_dir / relative).resolve()
+        if not path.is_file():
+            notes[name] = "the part is gone"
+            continue
+        probed, problem = probe_part(
+            path, want=("audio" if name == "audio" else "video"), ffprobe=ffprobe,
+        )
+        if probed is None:
+            notes[name] = f"the part cannot be demuxed: {problem}"
+            continue
+        kept[name] = path
+        lengths[name] = float(probed.get("duration_s") or 0.0) or float(recorded.get(name) or 0.0)
+    parts = {name: named[name] for name in SOURCES if name in kept}
+    seconds = {name: lengths[name] for name in parts}
+
+    if "game" not in kept and "robot" not in kept:
+        detail = notes.get("game") or notes.get("robot") or "no parts"
+        return _fail(run_dir, manifest, f"no picture survived the probe: {detail}",
+                     notes, {}, {})
+
+    length = max([float(manifest.get("duration_s") or 0.0), *lengths.values()])
+    duration = round(length, 3) if length > 0 else None
+    pad: dict[str, float] = {}
+    if duration is not None:
+        for name in ("game", "robot"):
+            if name in kept:
+                pad[name] = max(0.0, duration - lengths.get(name, 0.0)) + PAD_MARGIN_S
+
+    out = run_dir / RECORDING_NAME
+    argv = composite_argv(
+        game=kept.get("game"), robot=kept.get("robot"), audio=kept.get("audio"),
+        out=out, fps=rec.fps, crf=rec.crf, preset=rec.preset, ffmpeg=rec.ffmpeg,
+        pad=pad, duration=duration,
+    )
+    try:
+        done = subprocess.run(
+            argv, stdin=subprocess.DEVNULL, capture_output=True,
+            timeout=COMPOSITE_TIMEOUT_S, check=False,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        return _fail(run_dir, manifest, f"the composite could not run: {exc}",
+                     notes, parts, seconds)
+    if done.returncode != 0:
+        lines = _lines(done.stderr)
+        detail = lines[-1][:200] if lines else f"ffmpeg exited {done.returncode}"
+        return _fail(run_dir, manifest, f"the composite failed: {detail}", notes, parts, seconds)
+    try:
+        size = out.stat().st_size
+    except OSError:
+        size = 0
+    if size <= 0:
+        return _fail(run_dir, manifest, "the composite wrote nothing", notes, parts, seconds)
+
+    doc = dict(manifest)
+    doc.update({
+        "state": "ready",
+        "file": RECORDING_NAME,
+        "available": True,
+        "error": None,
+        "bytes": size,
+        "width": WIDTH,
+        "height": HEIGHT,
+        "fps": rec.fps,
+        "duration_s": round(duration, 2) if duration is not None else manifest.get("duration_s"),
+        "notes": notes,
+        "parts": parts,
+        "part_seconds": {name: round(value, 2) for name, value in seconds.items()},
+    })
+    if not rec.keep_parts:
+        _remove_tree(run_dir / PARTS_DIR)
+        doc["parts"] = {}
+        doc["part_seconds"] = {}
+    published = _save_manifest(run_dir, doc)
+    prune(Path(cfg.paths.session_root), rec.max_total_mb, keep=run_dir)
+    return published
+
+
+def _fail(
+    run_dir: Path, manifest: dict, error: str, notes: dict, parts: dict, seconds: dict,
+) -> dict:
+    """Publish the failure: what could not be done, and what is left on disk."""
+    doc = dict(manifest)
+    doc.update({
+        "state": "failed",
+        "error": error,
+        "available": False,
+        "file": None,
+        "notes": notes,
+        "parts": parts,
+        "part_seconds": seconds,
+    })
+    if not doc.get("ended_at"):
+        doc["ended_at"] = _utc_now()
+    return _save_manifest(run_dir, doc)
+
+
+def sweep_stale(sessions_root: Path) -> list[Path]:
+    """Clean up after a dashboard that died with a run in flight.
+
+    Called once at dashboard start, before the server serves and before any run
+    exists, so nothing it meets is live. A manifest left in ``recording`` or
+    ``composing`` belongs to a dashboard that will not come back, and so does a
+    ``parts/`` directory with no manifest at all: the parts (and any composite
+    killed mid-write) are deleted and the run marked ``failed: dashboard
+    exited``. A ``ready`` run is untouched, so its ``recording.mp4`` survives; a
+    ``failed`` run keeps its parts as evidence.
+
+    Returns the run directories it swept. Deletion is confined to a run
+    directory found under the root: a symlinked session, ``runs`` or run
+    directory is skipped rather than followed.
+    """
+    swept: list[Path] = []
+    for run_dir, _session in _runs(sessions_root):
+        manifest = read_manifest(run_dir)
+        if manifest is not None and manifest.get("state") not in STALE_STATES:
+            continue
+        if manifest is None and not (run_dir / PARTS_DIR).exists():
+            continue  # nothing was ever recorded here
+        doc = dict(manifest or {})
+        _remove_tree(run_dir / PARTS_DIR)
+        _remove_tree(run_dir / RECORDING_NAME)
+        doc.update({
+            "state": "failed",
+            "error": "dashboard exited",
+            "available": False,
+            "file": None,
+            "parts": {},
+            "part_seconds": {},
+            "bytes": 0,
+        })
+        if not doc.get("ended_at"):
+            doc["ended_at"] = _utc_now()
+        _save_manifest(run_dir, doc)
+        swept.append(run_dir)
+    return swept
+
+
+def prune(sessions_root: Path, max_total_mb: int, keep: Path | None = None) -> list[Path]:
+    """Delete the oldest finished recordings until the total fits the cap.
+
+    Only a ``ready`` recording counts and only a ``ready`` recording is deleted:
+    a run whose composite has not finished has no size to count yet, and one
+    that failed has no video. ``keep`` is the run that just composed and is
+    never deleted, even when it alone is over the cap: deleting the thing that
+    was just asked for is not pruning. ``0`` disables pruning. One line per
+    deletion names the run and its bytes in the session's ``session.log``.
+
+    Returns the deleted run directories.
+    """
+    if max_total_mb <= 0:
+        return []
+    cap = max_total_mb * 1024 * 1024
+    keep_dir = Path(keep).resolve() if keep is not None else None
+    ready: list[tuple[str, Path, Path, int]] = []
+    for run_dir, session_dir in _runs(sessions_root):
+        manifest = read_manifest(run_dir)
+        if manifest is None or manifest.get("state") != "ready":
+            continue
+        try:
+            size = (run_dir / RECORDING_NAME).stat().st_size
+        except OSError:
+            continue  # nothing on disk to reclaim
+        ready.append((str(manifest.get("started_at") or ""), run_dir, session_dir, size))
+    total = sum(size for *_rest, size in ready)
+    removed: list[Path] = []
+    for _started, run_dir, session_dir, size in sorted(ready, key=lambda row: (row[0], row[1].name)):
+        if total <= cap:
+            break
+        if keep_dir is not None and run_dir.resolve() == keep_dir:
+            continue
+        _remove_tree(run_dir)
+        total -= size
+        _append_session_log(session_dir, f"recording pruned: {run_dir.name} {size} bytes")
+        removed.append(run_dir)
+    return removed
+
+
+def list_recordings(sessions_root: Path) -> list[dict]:
+    """Every run that left a manifest, newest first, as the dashboard lists it.
+
+    ``has_file`` is whether the video is really there and ``has_diary`` whether
+    the run left one, so the page can say what a run is missing instead of
+    offering a player that cannot start.
+    """
+    rows: list[dict] = []
+    for run_dir, session_dir in _runs(sessions_root):
+        manifest = read_manifest(run_dir)
+        if manifest is None:
+            continue
+        name = manifest.get("file")
+        rows.append({
+            "run_id": run_dir.name,
+            "session_id": session_dir.name,
+            "dir": str(run_dir),
+            "state": manifest.get("state"),
+            "started_at": manifest.get("started_at"),
+            "ended_at": manifest.get("ended_at"),
+            "duration_s": manifest.get("duration_s"),
+            "bytes": manifest.get("bytes"),
+            "width": manifest.get("width"),
+            "height": manifest.get("height"),
+            "fps": manifest.get("fps"),
+            "audio_peak": manifest.get("audio_peak"),
+            "error": manifest.get("error"),
+            "has_file": bool(name) and (run_dir / str(name)).is_file(),
+            "has_diary": (run_dir / "brain.jsonl").is_file(),
+        })
+    rows.sort(key=lambda row: (str(row.get("started_at") or ""), str(row.get("run_id"))),
+              reverse=True)
+    return rows
+
+
 def _utc_now() -> str:
     return datetime.now(UTC).isoformat().replace("+00:00", "Z")
+
+
+def _save_manifest(run_dir: Path, doc: dict) -> dict:
+    """The manifest replaced in one step, so a reader never sees half a file."""
+    path = Path(run_dir) / MANIFEST_NAME
+    try:
+        tmp = path.with_name(path.name + ".tmp")
+        tmp.write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8")
+        os.replace(tmp, path)
+    except OSError:
+        pass  # the evidence on disk is worth more than its index
+    return doc
+
+
+def _ffprobe(ffmpeg: str) -> str:
+    """The probe beside the configured encoder, else the one on `PATH`.
+
+    ffmpeg and ffprobe ship together, so an operator (or a test) who names one
+    by path has the other in the same directory; a bare `ffmpeg` is resolved on
+    `PATH` like the encoder itself.
+    """
+    beside = Path(ffmpeg).with_name("ffprobe")
+    if Path(ffmpeg).parent != Path(".") and beside.is_file():
+        return str(beside)
+    return "ffprobe"
+
+
+def _runs(sessions_root: Path) -> list[tuple[Path, Path]]:
+    """Every real run directory under the root, with its session directory.
+
+    The only place the sweep and the prune learn a path, and the reason neither
+    can leave the root: a symlinked session, ``runs`` or run directory is not
+    one of ours, so it is skipped rather than followed.
+    """
+    found: list[tuple[Path, Path]] = []
+    for session_dir in _subdirs(Path(sessions_root)):
+        runs_dir = session_dir / "runs"
+        if runs_dir.is_symlink() or not runs_dir.is_dir():
+            continue
+        for run_dir in _subdirs(runs_dir):
+            found.append((run_dir, session_dir))
+    return found
+
+
+def _subdirs(path: Path) -> list[Path]:
+    try:
+        entries = sorted(path.iterdir())
+    except OSError:
+        return []
+    return [entry for entry in entries if not entry.is_symlink() and entry.is_dir()]
+
+
+def _remove_tree(path: Path) -> None:
+    """Delete a file or a directory, and never delete through a symlink."""
+    try:
+        if path.is_symlink() or path.is_file():
+            path.unlink(missing_ok=True)
+            return
+        shutil.rmtree(path, ignore_errors=True)
+    except OSError:
+        pass
+
+
+def _append_session_log(session_dir: Path, message: str) -> None:
+    """One line in the session's log, the shape `orchestrator` writes."""
+    try:
+        with (session_dir / "session.log").open("a", encoding="utf-8") as handle:
+            handle.write(f"{_utc_now()} {message}\n")
+    except OSError:
+        pass
 
 
 def _lines(raw: bytes | None) -> list[str]:

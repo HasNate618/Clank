@@ -22,6 +22,7 @@ from .manual_input import ManualInputError, ManualInputUnavailable
 from .orchestrator import ConflictError, PreflightError, SessionManager
 from .pose_relay import request_click
 from .processes import tail_stream
+from .recording import sweep_stale
 from .run import RUN_ID_RE, RunError, RunManager
 
 
@@ -666,6 +667,10 @@ def run_dashboard(cfg: Config) -> None:
                 print(f"clank dashboard: body view: {problem}", file=sys.stderr)
     overlay = OverlayBoard()
     run = RunManager(manager, cfg, body=body, overlay=overlay)
+    # Before the page serves and before a run can exist: a manifest left behind by
+    # a dashboard that died belongs to nobody, and its parts are still on disk.
+    stale = sweep_stale(Path(cfg.paths.session_root))
+    print(f"clank dashboard: swept {len(stale)} stale recording(s)", flush=True)
     server = DashboardServer(
         (cfg.dashboard.host, cfg.dashboard.port), manager, cfg, static_dir,
         body=body, overlay=overlay, run=run,

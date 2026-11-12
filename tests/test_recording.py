@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import json
+import shutil
 import struct
+import subprocess
 import tempfile
 import threading
 import time
@@ -18,8 +21,13 @@ from clank.recording import (
     GAME_WIDTH,
     Recorder,
     composite_argv,
+    list_recordings,
     parse_range,
+    probe_part,
+    prune,
     read_manifest,
+    run_composite,
+    sweep_stale,
 )
 
 
@@ -553,3 +561,535 @@ class RecorderTests(unittest.TestCase):
         self.assertEqual(manifest["sources"]["audio"], "missing")
         self.assertNotIn("audio", manifest["parts"])
         self.assertEqual(manifest["state"], "composing")
+
+
+# --------------------------------------------------------------------------- #
+# The offline half: the composite, the sweep, the prune and the listing
+# --------------------------------------------------------------------------- #
+
+#: A fake encoder and a fake probe, both needed. The composite probes every part
+#: before it composes them, so a test that faked only ffmpeg would hand real
+#: ffprobe a file that is not an MP4 and watch every part be dropped.
+FAKE_COMPOSITOR = """#!/bin/sh
+# The last argument is the output: write a marker there and record the argv
+# beside it, one argument per line so a path with a space stays one argument.
+for a in "$@"; do out="$a"; done
+case "$out" in
+  *-version) echo "fake-ffmpeg version 1.0"; exit 0 ;;
+esac
+printf 'fake-composite' > "$out"
+printf '%s\\n' "$@" > "$out.argv"
+"""
+
+#: A composite that reports success and writes nothing: the manifest must not
+#: call that playable.
+EMPTY_COMPOSITOR = """#!/bin/sh
+for a in "$@"; do out="$a"; done
+case "$out" in
+  *-version) echo "empty-ffmpeg 0"; exit 0 ;;
+esac
+: > "$out"
+"""
+
+#: The fake probe answers `ffprobe -print_format json -show_entries ...`. A part
+#: whose name says "broken" has no moov atom to be found; the game part is a
+#: minute long and the rest are four, so the padding arithmetic is visible in the
+#: composite's argv.
+FAKE_PROBE = """#!/bin/sh
+for a in "$@"; do part="$a"; done
+case "$part" in
+  *broken*)
+    echo "moov atom not found" >&2
+    exit 1
+    ;;
+  *game.mp4)
+    printf '{"streams":[{"codec_type":"video"}],"format":{"duration":"60.0"}}'
+    ;;
+  *.m4a)
+    printf '{"streams":[{"codec_type":"audio"}],"format":{"duration":"240.0"}}'
+    ;;
+  *)
+    printf '{"streams":[{"codec_type":"video"}],"format":{"duration":"240.0"}}'
+    ;;
+esac
+"""
+
+#: The parts a manifest names by default, keyed the way `Recorder` keys them.
+PART_PATHS = {name: f"{recording.PARTS_DIR}/{filename}"
+              for name, filename in recording.PART_NAMES.items()}
+
+
+def write_recording(
+    run_dir: Path,
+    *,
+    state: str = "composing",
+    started_at: str = "2026-11-12T15:00:00.000Z",
+    duration_s: float = 240.0,
+    parts: dict[str, str] | None = None,
+    write_parts: bool = True,
+    **fields,
+) -> dict:
+    """A `recording.json` in the shape `Recorder.stop()` leaves, with its parts.
+
+    `write_parts=False` leaves the files alone: a test that built real ones with
+    ffmpeg wants the manifest only.
+    """
+    parts = dict(PART_PATHS if parts is None else parts)
+    paths = parts.values() if write_parts else ()
+    for relative in paths:
+        path = run_dir / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"part-bytes")
+    doc = {
+        "available": bool(parts),
+        "file": None,
+        "started_at": started_at,
+        "ended_at": "2026-11-12T15:04:00.000Z",
+        "duration_s": duration_s,
+        "state": state,
+        "width": recording.WIDTH,
+        "height": recording.HEIGHT,
+        "fps": 15,
+        "bytes": 0,
+        "sources": {"game": "ok", "robot": "ok", "audio": "ok"},
+        "audio_peak": 9000,
+        "encoder": "fake-ffmpeg version 1.0",
+        "parts": parts,
+        "part_seconds": dict.fromkeys(parts, duration_s),
+        "notes": {},
+        "error": None,
+    }
+    doc.update(fields)
+    (Path(run_dir) / recording.MANIFEST_NAME).write_text(json.dumps(doc), encoding="utf-8")
+    return doc
+
+
+def manifest_of(test: unittest.TestCase, run_dir: Path) -> dict:
+    """`read_manifest` with the test failed rather than a TypeError when it is gone."""
+    doc = read_manifest(run_dir)
+    if doc is None:
+        test.fail(f"no {recording.MANIFEST_NAME} in {run_dir}")
+    return doc
+
+
+class CompositeTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.base = Path(self.temp.name)
+        self.sessions = self.base / "sessions"
+        self.run_dir = self.sessions / "101010-a1b2c3" / "runs" / "101011-deadbe"
+        self.run_dir.mkdir(parents=True)
+        cfg = load_config(None, env={})
+        cfg = replace(cfg, paths=replace(cfg.paths, session_root=str(self.sessions)))
+        self.compositor = self.base / "fake-ffmpeg"
+        self.compositor.write_text(FAKE_COMPOSITOR)
+        self.compositor.chmod(0o755)
+        # The probe is found beside the configured encoder, so the fake pair sits
+        # in one directory and `cfg.recording.ffmpeg` names both.
+        probe = self.base / "ffprobe"
+        probe.write_text(FAKE_PROBE)
+        probe.chmod(0o755)
+        self.cfg = replace(cfg, recording=replace(cfg.recording, ffmpeg=str(self.compositor)))
+        write_recording(self.run_dir)
+
+    def composite_argv_of(self, name: str = "recording.mp4") -> list[str]:
+        return (self.run_dir / f"{name}.argv").read_text().splitlines()
+
+    def graph_of(self, name: str = "recording.mp4") -> str:
+        argv = self.composite_argv_of(name)
+        return argv[argv.index("-filter_complex") + 1]
+
+    def test_the_composite_turns_composing_into_ready(self):
+        manifest = run_composite(self.run_dir, self.cfg)
+        self.assertEqual(manifest["state"], "ready")
+        self.assertEqual(manifest["file"], "recording.mp4")
+        self.assertTrue((self.run_dir / "recording.mp4").is_file())
+        self.assertFalse((self.run_dir / "parts").exists())  # keep_parts false
+        self.assertTrue(manifest["available"])
+        self.assertIsNone(manifest["error"])
+        self.assertEqual(manifest["width"], recording.WIDTH)
+        self.assertEqual(manifest["height"], recording.HEIGHT)
+        self.assertEqual(manifest["fps"], 15)
+        self.assertEqual(manifest["bytes"], (self.run_dir / "recording.mp4").stat().st_size)
+        self.assertEqual(manifest["duration_s"], 240.0)
+        # The manifest a dashboard reads back says so too.
+        self.assertEqual(manifest_of(self, self.run_dir)["state"], "ready")
+
+    def test_the_composite_names_the_parts_by_absolute_path(self):
+        """The dashboard's cwd is not the run directory: a bare part name is a
+        file the composite cannot find."""
+        run_composite(self.run_dir, self.cfg)
+        argv = self.composite_argv_of()
+        for name in ("game.mp4", "robot.mp4", "audio.m4a"):
+            self.assertIn(str((self.run_dir / "parts" / name).resolve()), argv)
+            self.assertNotIn(f"parts/{name}", argv)
+
+    def test_a_short_part_is_padded_so_the_video_covers_the_run(self):
+        """`composite_argv` ends at `-shortest`, so a part demoted at minute one of
+        twenty would otherwise composite to one minute."""
+        run_composite(self.run_dir, self.cfg)
+        graph = self.graph_of()
+        argv = self.composite_argv_of()
+        # The game part probes at 60 s against a 240 s run: hold its last frame
+        # for the other 180 s, and cut the result at the run's own length.
+        self.assertIn("tpad=stop_mode=clone:stop_duration=181.000", graph)
+        self.assertEqual(argv[argv.index("-t") + 1], "240.000")
+        self.assertNotIn("-shortest", argv)
+
+    def test_a_part_that_cannot_be_demuxed_is_left_out_with_a_note(self):
+        broken = {"game": "parts/broken-game.mp4",
+                  "robot": PART_PATHS["robot"], "audio": PART_PATHS["audio"]}
+        write_recording(self.run_dir, parts=broken)
+        manifest = run_composite(self.run_dir, self.cfg)
+        self.assertEqual(manifest["state"], "ready")
+        self.assertNotIn("game", manifest["parts"])
+        self.assertIn("cannot be demuxed", manifest["notes"]["game"])
+        argv = self.composite_argv_of()
+        self.assertNotIn(str(self.run_dir / "parts" / "broken-game.mp4"), argv)
+        # The picture the probe did trust is still composited, black on the left.
+        self.assertIn("color=black:s=960x540", self.graph_of())
+
+    def test_nothing_playable_is_a_failed_run_not_a_ready_one(self):
+        broken = {name: f"parts/broken-{filename}"
+                  for name, filename in recording.PART_NAMES.items()}
+        write_recording(self.run_dir, parts=broken)
+        manifest = run_composite(self.run_dir, self.cfg)
+        self.assertEqual(manifest["state"], "failed")
+        self.assertFalse(manifest["available"])
+        self.assertIsNone(manifest["file"])
+        self.assertIn("no picture", manifest["error"])
+        self.assertFalse((self.run_dir / "recording.mp4").exists())
+
+    def test_a_failed_composite_keeps_the_parts_and_says_why(self):
+        cfg = replace(self.cfg, recording=replace(self.cfg.recording,
+                                                   ffmpeg=str(self.base / "nope")))
+        manifest = run_composite(self.run_dir, cfg)
+        self.assertEqual(manifest["state"], "failed")
+        self.assertTrue((self.run_dir / "parts" / "game.mp4").is_file())
+        self.assertIn("nope", manifest["error"])
+        self.assertFalse(manifest["available"])
+
+    def test_a_recorder_that_failed_is_not_recomposed(self):
+        """The recorder's reason is precise; "nothing survived the probe" is not."""
+        write_recording(self.run_dir, state="failed", parts={},
+                        error="ffmpeg is not runnable: [Errno 2] no such file")
+        manifest = run_composite(self.run_dir, self.cfg)
+        self.assertEqual(manifest["state"], "failed")
+        self.assertEqual(manifest["error"], "ffmpeg is not runnable: [Errno 2] no such file")
+        self.assertFalse((self.run_dir / "recording.mp4").exists())
+
+    def test_a_composite_that_writes_nothing_is_not_published(self):
+        empty = self.base / "empty-ffmpeg"
+        empty.write_text(EMPTY_COMPOSITOR)
+        empty.chmod(0o755)
+        cfg = replace(self.cfg, recording=replace(self.cfg.recording, ffmpeg=str(empty)))
+        manifest = run_composite(self.run_dir, cfg)
+        self.assertEqual(manifest["state"], "failed")
+        self.assertIn("wrote nothing", manifest["error"])
+        self.assertFalse(manifest["available"])
+
+    def test_the_run_just_composed_is_never_pruned(self):
+        """The cap deletes the oldest, and `keep` is the run that just finished:
+        deleting the thing that was just asked for is not pruning."""
+        other = self.sessions / "101010-a1b2c3" / "runs" / "101500-ffffff"
+        other.mkdir(parents=True)
+        write_recording(other, state="ready", started_at="2026-11-12T15:05:00.000Z",
+                        file="recording.mp4")
+        (other / "recording.mp4").write_bytes(b"x" * (2 * 1024 * 1024))
+        cfg = replace(self.cfg, recording=replace(self.cfg.recording, max_total_mb=1))
+        manifest = run_composite(self.run_dir, cfg)
+        self.assertEqual(manifest["state"], "ready")
+        self.assertFalse(other.exists())  # older than nothing: over the cap, so gone
+        self.assertTrue((self.run_dir / "recording.mp4").is_file())
+
+
+class SessionsRootTests(unittest.TestCase):
+    """The sweep, the prune and the listing, over a sessions root of runs."""
+
+    SESSION = "20261112-abc123"
+
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.base = Path(self.temp.name)
+        self.sessions = self.base / "sessions"
+
+    def dir_of(self, run_id: str, session: str | None = None) -> Path:
+        return self.sessions / (session or self.SESSION) / "runs" / run_id
+
+    def make_run(self, run_id: str, *, session: str | None = None, **fields) -> Path:
+        run_dir = self.dir_of(run_id, session)
+        run_dir.mkdir(parents=True)
+        write_recording(run_dir, **fields)
+        return run_dir
+
+    def make_video(self, run_dir: Path, size: int) -> None:
+        (run_dir / "recording.mp4").write_bytes(b"x" * size)
+
+    def test_a_run_whose_dashboard_died_is_marked_and_its_parts_are_deleted(self):
+        run_dir = self.make_run("101010-aaaaaa", state="recording")
+        self.make_video(run_dir, 32)  # a composite killed mid-write, no moov atom
+        removed = sweep_stale(self.sessions)
+        self.assertEqual(removed, [run_dir])
+        manifest = manifest_of(self, run_dir)
+        self.assertEqual(manifest["state"], "failed")
+        self.assertIn("dashboard exited", manifest["error"])
+        self.assertFalse(manifest["available"])
+        self.assertFalse((run_dir / "parts").exists())
+        self.assertFalse((run_dir / "recording.mp4").exists())
+        self.assertEqual(manifest["parts"], {})
+
+    def test_a_parts_directory_with_no_manifest_is_swept_too(self):
+        run_dir = self.dir_of("101010-bbbbbb")
+        (run_dir / "parts").mkdir(parents=True)
+        (run_dir / "parts" / "game.mp4").write_bytes(b"x")
+        removed = sweep_stale(self.sessions)
+        self.assertEqual(removed, [run_dir])
+        self.assertFalse((run_dir / "parts").exists())
+        self.assertIn("dashboard exited", manifest_of(self, run_dir)["error"])
+
+    def test_a_ready_run_and_its_video_are_left_alone(self):
+        run_dir = self.make_run("101010-cccccc", state="ready", file="recording.mp4")
+        self.make_video(run_dir, 64)
+        self.assertEqual(sweep_stale(self.sessions), [])
+        self.assertTrue((run_dir / "recording.mp4").is_file())
+        self.assertEqual(manifest_of(self, run_dir)["state"], "ready")
+
+    def test_a_failed_run_keeps_its_parts_as_evidence(self):
+        run_dir = self.make_run("101010-dddddd", state="failed",
+                                error="the composite failed: boom")
+        self.assertEqual(sweep_stale(self.sessions), [])
+        self.assertTrue((run_dir / "parts" / "game.mp4").is_file())
+        self.assertEqual(manifest_of(self, run_dir)["error"], "the composite failed: boom")
+
+    def test_pruning_takes_the_oldest_and_never_the_run_just_recorded(self):
+        oldest = self.make_run("101010-aaaaaa", state="ready", file="recording.mp4",
+                               started_at="2026-11-12T10:00:00.000Z")
+        middle = self.make_run("110000-bbbbbb", state="ready", file="recording.mp4",
+                               started_at="2026-11-12T11:00:00.000Z")
+        newest = self.make_run("120000-cccccc", state="ready", file="recording.mp4",
+                               started_at="2026-11-12T12:00:00.000Z")
+        for run_dir in (oldest, middle, newest):
+            self.make_video(run_dir, 1024 * 1024)
+        removed = prune(self.sessions, 2, keep=newest)
+        self.assertEqual([path.name for path in removed], ["101010-aaaaaa"])
+        self.assertFalse(oldest.exists())
+        self.assertTrue(middle.exists())
+        self.assertTrue((newest / "recording.mp4").is_file())  # never the kept run
+
+    def test_pruning_logs_each_deletion_to_the_session_log(self):
+        old = self.make_run("101010-aaaaaa", state="ready", file="recording.mp4",
+                            started_at="2026-11-12T10:00:00.000Z")
+        new = self.make_run("110000-bbbbbb", state="ready", file="recording.mp4",
+                            started_at="2026-11-12T11:00:00.000Z")
+        self.make_video(old, 1024 * 1024)
+        self.make_video(new, 1024 * 1024)
+        prune(self.sessions, 1)
+        log = (self.sessions / self.SESSION / "session.log").read_text()
+        lines = [line for line in log.splitlines() if line.strip()]
+        self.assertEqual(len(lines), 1)
+        self.assertIn("101010-aaaaaa", lines[0])
+        self.assertIn(str(1024 * 1024), lines[0])
+
+    def test_pruning_leaves_a_composite_that_has_not_finished(self):
+        composing = self.make_run("101010-aaaaaa", state="composing")
+        self.make_video(composing, 2 * 1024 * 1024)  # a partial file, mid-write
+        ready = self.make_run("110000-bbbbbb", state="ready", file="recording.mp4")
+        self.make_video(ready, 1024 * 1024)
+        self.assertEqual(prune(self.sessions, 1), [])
+        self.assertTrue(composing.exists())
+        self.assertTrue(ready.exists())
+
+    def test_zero_disables_pruning(self):
+        run_dir = self.make_run("101010-aaaaaa", state="ready", file="recording.mp4")
+        self.make_video(run_dir, 2 * 1024 * 1024)
+        self.assertEqual(prune(self.sessions, 0), [])
+        self.assertTrue(run_dir.exists())
+
+    def test_the_listing_is_newest_first_and_says_what_is_missing(self):
+        self.make_run("101010-aaaaaa", state="failed", error="dashboard exited",
+                      started_at="2026-11-12T10:00:00.000Z")
+        played = self.make_run("120000-bbbbbb", state="ready", file="recording.mp4",
+                               started_at="2026-11-12T12:00:00.000Z")
+        self.make_video(played, 512)
+        (played / "brain.jsonl").write_text("")
+        rows = list_recordings(self.sessions)
+        self.assertEqual([row["run_id"] for row in rows], ["120000-bbbbbb", "101010-aaaaaa"])
+        self.assertEqual(rows[0]["state"], "ready")
+        self.assertTrue(rows[0]["has_file"])
+        self.assertTrue(rows[0]["has_diary"])
+        self.assertEqual(rows[0]["session_id"], self.SESSION)
+        self.assertEqual(rows[0]["fps"], 15)
+        self.assertEqual(rows[-1]["state"], "failed")
+        self.assertIn("dashboard exited", rows[-1]["error"])
+        self.assertFalse(rows[-1]["has_file"])
+
+    def test_the_listing_skips_a_run_with_no_usable_manifest(self):
+        self.make_run("101010-aaaaaa", state="ready", file="recording.mp4")
+        blank = self.dir_of("101010-bbbbbb")
+        blank.mkdir(parents=True)
+        (blank / recording.MANIFEST_NAME).write_text("{not json")
+        rows = list_recordings(self.sessions)
+        self.assertEqual([row["run_id"] for row in rows], ["101010-aaaaaa"])
+
+
+class ProbeTests(unittest.TestCase):
+    def test_a_part_without_a_moov_atom_is_refused_with_the_demuxers_words(self):
+        probe = self.probe()
+        part = self.base / "broken-game.mp4"
+        part.write_bytes(b"x" * 32)
+        caught, problem = probe_part(part, want="video", ffprobe=str(probe))
+        self.assertIsNone(caught)
+        self.assertIn("moov atom not found", problem)
+
+    def test_a_part_without_its_stream_is_refused(self):
+        probe = self.probe()
+        part = self.base / "game.mp4"
+        part.write_bytes(b"x")
+        caught, problem = probe_part(part, want="audio", ffprobe=str(probe))
+        self.assertIsNone(caught)
+        self.assertIn("no audio stream", problem)
+
+    def setUp(self) -> None:
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        self.base = Path(temp.name)
+
+    def probe(self) -> Path:
+        probe = self.base / "ffprobe"
+        probe.write_text(FAKE_PROBE)
+        probe.chmod(0o755)
+        return probe
+
+
+class ConfinementTests(unittest.TestCase):
+    """These two functions delete files unattended, so a path that leaves the
+    sessions root by a symlink or by a `..` in a manifest is refused: only a run
+    directory found under the root, and only a fixed name inside it."""
+
+    SESSION = "20261112-abc123"
+
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.base = Path(self.temp.name)
+        self.sessions = self.base / "sessions"
+        self.sessions.mkdir()
+        self.outside = self.base / "outside"
+        (self.outside / "parts").mkdir(parents=True)
+        self.victim = self.outside / "parts" / "game.mp4"
+        self.victim.write_bytes(b"evidence")
+
+    def test_a_symlinked_session_directory_is_not_swept(self):
+        (self.sessions / self.SESSION).symlink_to(self.outside)
+        self.assertEqual(sweep_stale(self.sessions), [])
+        self.assertTrue(self.victim.is_file())
+
+    def test_a_symlinked_run_directory_is_not_swept(self):
+        runs = self.sessions / self.SESSION / "runs"
+        runs.mkdir(parents=True)
+        write_recording(self.outside, state="recording")
+        (runs / "101010-aaaaaa").symlink_to(self.outside)
+        self.assertEqual(sweep_stale(self.sessions), [])
+        self.assertTrue(self.victim.is_file())
+        self.assertEqual(manifest_of(self, self.outside)["state"], "recording")
+
+    def test_a_symlinked_run_directory_is_not_pruned(self):
+        runs = self.sessions / self.SESSION / "runs"
+        runs.mkdir(parents=True)
+        write_recording(self.outside, state="ready", file="recording.mp4")
+        (self.outside / "recording.mp4").write_bytes(b"x" * (2 * 1024 * 1024))
+        (runs / "101010-aaaaaa").symlink_to(self.outside)
+        self.assertEqual(prune(self.sessions, 1), [])
+        self.assertTrue((self.outside / "recording.mp4").is_file())
+
+    def test_a_symlinked_parts_directory_is_unlinked_not_emptied(self):
+        run_dir = self.sessions / self.SESSION / "runs" / "101010-bbbbbb"
+        run_dir.mkdir(parents=True)
+        write_recording(run_dir, state="composing", parts={})
+        (run_dir / "parts").symlink_to(self.outside / "parts")
+        self.assertEqual(sweep_stale(self.sessions), [run_dir])
+        self.assertFalse((run_dir / "parts").exists())
+        self.assertTrue(self.victim.is_file())
+
+    def test_a_part_path_that_climbs_out_of_the_run_is_not_deleted(self):
+        run_dir = self.sessions / self.SESSION / "runs" / "101010-cccccc"
+        run_dir.mkdir(parents=True)
+        write_recording(run_dir, state="composing",
+                        parts={"game": "../../../../outside/parts/game.mp4"})
+        sweep_stale(self.sessions)
+        self.assertTrue(self.victim.is_file())
+        self.assertEqual(manifest_of(self, run_dir)["state"], "failed")
+
+
+class RealCompositeTests(unittest.TestCase):
+    """One composite through real ffmpeg, because the padding has to be measured.
+
+    The fake pair above proves the argv; this proves the file. Skipped on a
+    machine without ffmpeg, which is the same machine that cannot record.
+    """
+
+    def setUp(self) -> None:
+        ffmpeg = shutil.which("ffmpeg")
+        ffprobe = shutil.which("ffprobe")
+        if ffmpeg is None or ffprobe is None:
+            self.skipTest("ffmpeg is not installed")
+        self.ffmpeg: str = ffmpeg
+        self.ffprobe: str = ffprobe
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.base = Path(self.temp.name)
+        self.sessions = self.base / "sessions"
+        self.run_dir = self.sessions / "101010-a1b2c3" / "runs" / "101011-deadbe"
+        self.run_dir.mkdir(parents=True)
+        cfg = load_config(None, env={})
+        cfg = replace(cfg, paths=replace(cfg.paths, session_root=str(self.sessions)))
+        # keep_parts: the second test composites the same three files again.
+        self.cfg = replace(cfg, recording=replace(cfg.recording, ffmpeg=self.ffmpeg,
+                                                   keep_parts=True))
+        self.parts = {
+            "game": self.build("game.mp4", "testsrc=size=960x540:rate=15:duration=1",
+                               ["-c:v", "libx264", "-pix_fmt", "yuv420p"]),
+            "robot": self.build("robot.mp4", "testsrc2=size=720x540:rate=10:duration=3",
+                                ["-c:v", "libx264", "-pix_fmt", "yuv420p"]),
+            "audio": self.build("audio.m4a", "sine=frequency=440:duration=2",
+                                ["-c:a", "aac"]),
+        }
+        write_recording(self.run_dir, duration_s=3.0, write_parts=False,
+                        parts={name: f"parts/{path.name}" for name, path in self.parts.items()},
+                        part_seconds={"game": 1.0, "robot": 3.0, "audio": 2.0})
+
+    def build(self, name: str, source: str, codec: list[str]) -> Path:
+        out = self.run_dir / "parts" / name
+        out.parent.mkdir(parents=True, exist_ok=True)
+        subprocess.run(
+            [self.cfg.recording.ffmpeg, "-nostdin", "-hide_banner", "-loglevel", "error",
+             "-y", "-f", "lavfi", "-i", source, *codec, str(out)],
+            check=True, stdin=subprocess.DEVNULL, capture_output=True,
+        )
+        return out
+
+    def length_of(self, path: Path) -> float:
+        done = subprocess.run(
+            [self.ffprobe, "-v", "error", "-show_entries", "format=duration",
+             "-of", "csv=p=0", str(path)],
+            check=True, stdin=subprocess.DEVNULL, capture_output=True, text=True,
+        )
+        return float(done.stdout.strip())
+
+    def test_a_short_part_does_not_truncate_the_composite(self):
+        manifest = run_composite(self.run_dir, self.cfg)
+        self.assertEqual(manifest["state"], "ready")
+        self.assertAlmostEqual(self.length_of(self.run_dir / "recording.mp4"), 3.0, delta=0.3)
+
+    def test_the_unpadded_argv_would_have_stopped_at_the_short_part(self):
+        """The measurement the padding answers: `-shortest` ends the file at the
+        shortest stream, which is a part that was demoted mid-run."""
+        out = self.base / "naive.mp4"
+        argv = composite_argv(
+            game=self.parts["game"], robot=self.parts["robot"], audio=self.parts["audio"],
+            out=out, fps=15, crf=28, preset="veryfast", ffmpeg=self.cfg.recording.ffmpeg,
+        )
+        subprocess.run(argv, check=True, stdin=subprocess.DEVNULL, capture_output=True)
+        self.assertLess(self.length_of(out), 2.5)

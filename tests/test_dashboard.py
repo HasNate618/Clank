@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import array
+import contextlib
 import http.client
+import io
 import json
 import os
 import socket
@@ -15,11 +17,11 @@ from pathlib import Path
 from typing import cast
 from unittest.mock import patch
 
+from clank import dashboard, pose_relay
 from clank.body_preview import BodyPreview
 from clank.config import load_config
 from clank.dashboard import DashboardHandler, DashboardServer, OverlayBoard, shutdown_all
 from clank.manual_input import ManualInputError, ManualInputUnavailable
-from clank import pose_relay
 from clank.orchestrator import ConflictError, MODES, PreflightError, SessionManager
 
 
@@ -1167,3 +1169,65 @@ class ShutdownOrderTests(unittest.TestCase):
         )
         # A run that outlives its Steam leaves a brain loop driving nothing.
         self.assertEqual(order, ["body", "run", "run-wait", "stack"])
+
+
+class RecordingSweepTests(unittest.TestCase):
+    """A dashboard that died mid-run leaves parts nobody owns: the next start
+    clears them before the page serves, and says how many it cleared."""
+
+    def run_dashboard_with(self, order: list, stdout) -> list[Path]:
+        class FakeServer:
+            def __init__(self, address, manager, cfg, static_dir, **kwargs) -> None:
+                self.server_address = address
+
+            def serve_forever(self, poll_interval: float = 0.5) -> None:
+                order.append("serve")
+
+            def server_close(self) -> None:
+                pass
+
+        class FakeManager:
+            def __init__(self, cfg) -> None:
+                self.cfg = cfg
+
+            def stop(self) -> None:
+                pass
+
+            def wait_idle(self, timeout: float = 70.0) -> bool:
+                return True
+
+        class FakeRun:
+            def __init__(self, *args, **kwargs) -> None:
+                pass
+
+            def stop(self) -> None:
+                pass
+
+            def wait_idle(self, timeout: float = 15.0) -> bool:
+                return True
+
+        with tempfile.TemporaryDirectory() as temp:
+            cfg = load_config(None, env={})
+            cfg = replace(cfg, paths=replace(cfg.paths, session_root=temp))
+            with contextlib.redirect_stdout(stdout), \
+                    patch.object(dashboard, "SessionManager", FakeManager), \
+                    patch.object(dashboard, "RunManager", FakeRun), \
+                    patch.object(dashboard, "DashboardServer", FakeServer), \
+                    patch.object(dashboard, "signal"), \
+                    patch.object(dashboard, "sweep_stale", autospec=True) as sweep:
+                swept = Path(temp) / "swept"
+                sweep.side_effect = lambda root: order.append("sweep") or [swept]
+                dashboard.run_dashboard(cfg)
+            return [call.args[0] for call in sweep.call_args_list]
+
+    def test_the_sweep_runs_before_the_page_is_served(self):
+        order: list[str] = []
+        out = io.StringIO()
+        args = self.run_dashboard_with(order, out)
+        self.assertEqual(order, ["sweep", "serve"])
+        # Once, on the configured sessions root: nothing else sweeps.
+        self.assertEqual(len(args), 1)
+        self.assertIsInstance(args[0], Path)
+        # And the number is in the log, so a sweep that found nothing is visible
+        # as a zero rather than as a silence.
+        self.assertIn("swept 1 stale recording(s)", out.getvalue())
