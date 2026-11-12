@@ -123,8 +123,8 @@ up that the composite cannot answer.
   run has gone idle, so a fifteen-minute re-encode can never hold
   `run.wait_idle` or refuse the next Start run. `recording.json` is written
   twice, so its `state` says where it is: `recording` while the run is live,
-  `ready` once the composite exists, `failed` with the reason. The page shows
-  "composing…" for the middle state.
+  `composing` once the encoders are closed, `ready` once the composite exists,
+  `failed` with the reason. The page says "composing…" for that middle state.
 - The compositing job runs **one** ffmpeg
   (`hstack` after scaling the robot tile to the game height, both normalised to
   the same rate, plus `-c:a aac -shortest` for the audio, `-movflags +faststart`
