@@ -22,6 +22,7 @@ import re
 import shlex
 import signal
 import subprocess
+import sys
 import threading
 import time
 from collections.abc import Callable
@@ -30,10 +31,12 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
-from . import brain, brainlog
+from . import brain, brainlog, ears
 from .body_preview import send_control
 from .config import Config
+from .depth_stream import Stream
 from .orchestrator import Aborted, ConflictError
+from .recording import Recorder, read_manifest, run_composite
 
 #: `<HHMMSS>-<6 hex>`, the directory name and the id the dashboard shows.
 RUN_ID_RE = re.compile(r"^\d{6}-[0-9a-f]{6}$")
@@ -86,7 +89,9 @@ class RunManager:
     Collaborators are injected so the machine is testable without a game:
     `manager` needs `snapshot()`, `restart_game()` and `set_mode()`; `body` is a
     `BodyPreview` or None; `overlay` needs `clear()`; `probe` returns a
-    `brain.ServerStatus`; `spawn(**kwargs)` starts the brain loop.
+    `brain.ServerStatus`; `spawn(**kwargs)` starts the brain loop; `recorder` is a
+    `Recorder` (None builds the real one when the run reaches it); `composite` is
+    the post-run encode, detached into its own thread.
     """
 
     def __init__(
@@ -98,6 +103,8 @@ class RunManager:
         *,
         probe: Callable[[], brain.ServerStatus] | None = None,
         spawn: Callable[..., Any] | None = None,
+        recorder: Any = None,
+        composite: Callable[[Path, Config], Any] | None = None,
     ) -> None:
         self._manager = manager
         self._cfg = cfg
@@ -105,6 +112,9 @@ class RunManager:
         self._overlay = overlay
         self._probe = probe or (lambda: brain.server_status())
         self._spawn = spawn if spawn is not None else spawn_child
+        self._recorder = recorder
+        self._composite = composite if composite is not None else run_composite
+        self._recording = False
 
         self._lock = threading.Lock()
         self._idle = threading.Event()
@@ -161,12 +171,13 @@ class RunManager:
                 detail = PHASE_DETAILS.get(phase, "")
             ended = self._ended_at
             duration = self._duration()
-            return {
+            run_dir = self._dir
+            snapshot = {
                 "state": state,
                 "phase": phase,
                 "detail": detail,
                 "id": self._id,
-                "dir": str(self._dir) if self._dir is not None else None,
+                "dir": str(run_dir) if run_dir is not None else None,
                 "session_id": self._session_id,
                 "started_at": self._started_at,
                 "ended_at": ended,
@@ -174,6 +185,10 @@ class RunManager:
                 "error": self._error,
                 "exit_code": self._exit_code,
             }
+        # Read outside the lock: the dashboard polls this, and a manifest read is
+        # a file read. None means no recording, which is also every run before Task 5.
+        snapshot["recording"] = read_manifest(run_dir) if run_dir is not None else None
+        return snapshot
 
     def current_diary(self) -> Path:
         """The diary the panel should read: this run, then the newest on disk.
@@ -324,6 +339,7 @@ class RunManager:
             with self._lock:
                 self._child = child
             self._set_phase(RunState.RUNNING)
+            self._start_recording(run_dir)
             self._monitor(generation, child, run_dir)
         except (_Cancelled, Aborted):
             self._finish(RunState.IDLE, "")
@@ -353,7 +369,66 @@ class RunManager:
         with self._lock:
             self._detail = detail
 
+    # ---- recording -----------------------------------------------------
+
+    def _start_recording(self, run_dir: Path) -> None:
+        """Begin the run's recording, or say why there will not be one.
+
+        A recording is evidence, not a phase: ffmpeg missing, a depth stream that
+        will not open, a disk that will not take the file -- none of it ends the
+        run. The reason goes on the detail line, so the topbar says why there is
+        no video instead of the manifest being the only place that knows.
+        """
+        if not self._cfg.recording.enabled:
+            return
+        try:
+            if self._recorder is None:
+                # Both sources are passed, never defaulted: `Recorder` reads a None
+                # factory as "not available here", which records nothing and says
+                # so only in the manifest.
+                self._recorder = Recorder(
+                    self._cfg, run_dir, stream_factory=Stream, capture=ears.capture
+                )
+            self._recorder.start()
+            self._recording = True
+        except Exception as exc:  # noqa: BLE001 - a recording never fails a run
+            self._recorder = None
+            self._set_detail(f"recording unavailable: {exc}")
+
+    def _stop_recording(self) -> None:
+        """Stop the recorder, then hand the encode to a thread of its own.
+
+        `stop()` flushes three encoders and is expected back quickly; the composite
+        re-encodes the whole run and is not. Detaching it keeps `wait_idle`'s 15 s
+        honest -- the run is over when the brain loop is, not when the video is --
+        and the page reads `composing` from the manifest in the meantime.
+        """
+        recorder, self._recorder = self._recorder, None
+        if recorder is None or not self._recording:
+            return
+        self._recording = False
+        try:
+            recorder.stop()
+        except Exception as exc:  # noqa: BLE001 - the run is over either way
+            print(f"clank: the recorder failed to stop: {exc}", file=sys.stderr)
+        run_dir = self._dir
+        if run_dir is None:
+            return
+        threading.Thread(
+            target=self._composite_quietly,
+            args=(run_dir,),
+            name="clank-composite",
+            daemon=True,
+        ).start()
+
+    def _composite_quietly(self, run_dir: Path) -> None:
+        try:
+            self._composite(run_dir, self._cfg)
+        except Exception as exc:  # noqa: BLE001 - a detached thread has no caller
+            print(f"clank: the composite failed: {exc}", file=sys.stderr)
+
     def _finish(self, state: RunState, error: str) -> None:
+        self._stop_recording()
         with self._lock:
             self._state = state
             self._phase = state

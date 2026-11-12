@@ -13,6 +13,7 @@ import time
 import unittest
 from dataclasses import replace
 from pathlib import Path
+from unittest import mock
 
 from clank import brain
 from clank import run as run_mod
@@ -151,6 +152,50 @@ class FakeOverlay:
         self.cleared += 1
 
 
+_FRESH_RECORDER = object()
+
+
+class FakeRecorder:
+    """Stands in for `Recorder`: the state machine does not need ffmpeg."""
+
+    def __init__(self, manifest: dict | None = None):
+        self.started = 0
+        self.stopped = 0
+        self.manifest = (
+            manifest if manifest is not None else {"state": "ready", "file": "recording.mp4"}
+        )
+
+    def start(self) -> None:
+        self.started += 1
+
+    def stop(self) -> dict:
+        self.stopped += 1
+        return self.manifest
+
+
+class UnstartableRecorder(FakeRecorder):
+    """The ffmpeg-absent case: a recording that cannot begin must not end the run."""
+
+    def start(self) -> None:
+        self.started += 1
+        raise OSError("ffmpeg is not installed")
+
+
+class SlowComposite:
+    """A composite that outlives the run: `wait_idle` must not wait for it."""
+
+    def __init__(self, seconds: float = 3.0):
+        self.seconds = seconds
+        self.started = threading.Event()
+        self.args: tuple | None = None
+
+    def __call__(self, run_dir: Path, cfg) -> dict:
+        self.args = (run_dir, cfg)
+        self.started.set()
+        time.sleep(self.seconds)
+        return {"state": "ready"}
+
+
 class RunHarness(unittest.TestCase):
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
@@ -181,16 +226,34 @@ class RunHarness(unittest.TestCase):
         self.spawned: list[str] = []
         self.spawn_kwargs: dict = {}
         self.runs: list[RunManager] = []
+        self.composites: list[Path] = []
 
     def spawn(self, **kwargs):
         self.spawned.append("brain")
         self.spawn_kwargs.update(kwargs)
         return self.child
 
-    def make(self, manager=None, probe=None, model_timeout_sec=None, body: str | None = "default", spawn=None):
+    def make(
+        self,
+        manager=None,
+        probe=None,
+        model_timeout_sec=None,
+        body: str | None = "default",
+        spawn=None,
+        recorder: object = _FRESH_RECORDER,
+        composite=None,
+        recording: bool = True,
+    ):
         cfg = self.cfg
         if model_timeout_sec is not None:
             cfg = replace(cfg, run=replace(cfg.run, model_timeout_sec=model_timeout_sec))
+        if not recording:
+            cfg = replace(cfg, recording=replace(cfg.recording, enabled=False))
+        # A run must not need ffmpeg (or a depth stream) to be tested, so the
+        # harness hands it a fake recorder unless a test wants the real one.
+        if recorder is _FRESH_RECORDER:
+            recorder = FakeRecorder()
+        self.recorder = recorder
         run = RunManager(
             manager or self.manager,
             cfg,
@@ -199,6 +262,8 @@ class RunHarness(unittest.TestCase):
             probe=probe
             or (lambda: brain.ServerStatus(up=True, status="ok", model="LFM3-Omni-2B-Q8_0")),
             spawn=spawn or self.spawn,
+            recorder=recorder,
+            composite=composite or (lambda run_dir, cfg: self.composites.append(run_dir)),
         )
         self.runs.append(run)
         self.addCleanup(self._stop_run, run)
@@ -608,3 +673,98 @@ class ChildTests(unittest.TestCase):
         while child.alive() and time.monotonic() < deadline:
             time.sleep(0.02)
         self.assertIn("heard jobbot", self.log.read_text())
+
+
+class RecorderWiringTests(RunHarness):
+    def test_the_recorder_starts_with_the_brain_and_stops_with_the_run(self) -> None:
+        recorder = FakeRecorder()
+        run = self.make(recorder=recorder)
+        run.start()
+        self.assertEqual(self.wait_state("running"), "running")
+        self.assertEqual(recorder.started, 1)
+        self.child.alive_flag = False
+        self.assertTrue(run.wait_idle(5))
+        self.assertEqual(recorder.stopped, 1)
+
+    def test_a_run_refused_at_the_gate_never_starts_a_recorder(self) -> None:
+        recorder = FakeRecorder()
+        run = self.make(
+            recorder=recorder,
+            probe=lambda: brain.ServerStatus(up=False, status="down", model=""),
+        )
+        run.start()
+        self.assertTrue(run.wait_idle(5))
+        self.assertEqual(run.snapshot()["state"], "failed")
+        self.assertEqual(recorder.started, 0)
+
+    def test_the_composite_does_not_hold_the_run_open(self) -> None:
+        """A run that stops must not wait for the encode that follows it."""
+        composite = SlowComposite(3.0)
+        run = self.make(composite=composite)
+        run.start()
+        self.assertEqual(self.wait_state("running"), "running")
+        self.child.alive_flag = False
+        started = time.monotonic()
+        self.assertTrue(run.wait_idle(5))
+        elapsed = time.monotonic() - started
+        self.assertTrue(composite.started.wait(2), "the composite never ran")
+        self.assertLess(elapsed, 1.5, f"stop waited {elapsed:.2f}s for the composite")
+
+    def test_a_recording_that_cannot_start_does_not_fail_the_run(self) -> None:
+        recorder = UnstartableRecorder()
+        run = self.make(recorder=recorder)
+        run.start()
+        self.assertEqual(self.wait_state("running"), "running")
+        self.assertEqual(run.snapshot()["state"], "running")
+        self.assertEqual(recorder.stopped, 0)  # nothing was started, so nothing is stopped
+        self.child.alive_flag = False
+        self.assertTrue(run.wait_idle(5))
+
+    def test_a_disabled_recording_is_never_started(self) -> None:
+        recorder = FakeRecorder()
+        run = self.make(recorder=recorder, recording=False)
+        run.start()
+        self.assertEqual(self.wait_state("running"), "running")
+        self.assertEqual(recorder.started, 0)
+        self.child.alive_flag = False
+        self.assertTrue(run.wait_idle(5))
+
+    def test_a_real_recorder_gets_the_stream_and_the_ears(self) -> None:
+        """The two sources a real recorder needs are passed, not defaulted."""
+        run = RunManager(
+            self.manager,
+            self.cfg,
+            body=self.body,
+            overlay=self.overlay,
+            probe=lambda: brain.ServerStatus(up=True, status="ok", model="LFM3-Omni-2B-Q8_0"),
+            spawn=self.spawn,
+            recorder=None,
+            composite=lambda run_dir, cfg: None,
+        )
+        self.runs.append(run)
+        self.addCleanup(self._stop_run, run)
+        with mock.patch("clank.run.Recorder") as recorder_cls:
+            run.start()
+            self.assertEqual(self.wait_state("running"), "running")
+            self.child.alive_flag = False
+            self.assertTrue(run.wait_idle(5))
+        called = recorder_cls.call_args
+        kwargs = called.kwargs
+        self.assertIs(kwargs["stream_factory"], run_mod.Stream)
+        self.assertIs(kwargs["capture"], run_mod.ears.capture)
+        self.assertEqual(
+            Path(called.args[1]).resolve(), Path(run.snapshot()["dir"]).resolve()
+        )
+
+    def test_the_snapshot_carries_the_manifest_the_recorder_left(self) -> None:
+        run = self.make()
+        run.start()
+        self.assertEqual(self.wait_state("running"), "running")
+        self.assertIsNone(run.snapshot()["recording"])
+        run_dir = Path(run.snapshot()["dir"])
+        (run_dir / "recording.json").write_text(
+            json.dumps({"state": "recording", "sources": {"game": "ok"}})
+        )
+        self.assertEqual(run.snapshot()["recording"]["state"], "recording")
+        self.child.alive_flag = False
+        self.assertTrue(run.wait_idle(5))
