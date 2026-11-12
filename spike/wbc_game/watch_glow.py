@@ -81,7 +81,7 @@ def rgb_of(frame: dict) -> np.ndarray:
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    ap = argparse.ArgumentParser(description=(__doc__ or "").splitlines()[0])
     ap.add_argument("--px", nargs=2, type=float, metavar=("X", "Y"))
     ap.add_argument("--world", nargs=3, type=float, metavar=("X", "Y", "Z"))
     ap.add_argument("--seconds", type=float, default=20.0)
@@ -99,6 +99,8 @@ def main() -> int:
     if args.world is not None:
         point_rel = tuple(args.world)
         source = "--world"
+    elif args.px is None:
+        raise SystemExit("give a pixel pair or --world X Y Z")
     else:
         point_rel = resolve_world(frame, st, args.px[0], args.px[1])
         source = f"pixel ({args.px[0]:.0f}, {args.px[1]:.0f})"

@@ -158,6 +158,9 @@ def main() -> int:
 
     with Stream() as stream:
         after = stream.read(timeout=2.0)
+    if after is None:
+        print("no depth frame after the reach")
+        return 1
     cw, ch = int(after["color_width"]), int(after["color_height"])
     head = Pose(p=tuple(state()["head"]["p"]), q_xyzw=tuple(state()["head"]["q_xyzw"]))
     from clank.projection import project_point
