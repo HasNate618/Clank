@@ -285,6 +285,14 @@ Short answer: not now, and probably never.
 
 If ARDY cannot pass gate 5 or 6 on this machine, the fallback is **MotionBricks live with Kimodo-authored still poses**: Kimodo generates the still frames once from `right-hand` + foot constraints, so they are in-distribution, and MotionBricks in-betweens them at 2.67 ms with no torch in the loop. That is a plan revision, not a code switch — see `research/motion-generators.md` §6.
 
+## 15. Why not the alternatives
+
+- **MotionBricks alone** — fastest and smallest (2.67 ms, 195 M params, ONNX), but its targets are full 36-float poses and its hand/foot pins are SOMA-only, so the pose has to be invented before it can interpolate. That is the workaround this design removes.
+- **Kimodo alone** — better motion quality per clip and the best authoring tool, but offline (100 denoise steps) and it cannot serve a live reach.
+- **ARDY** — same constraint vocabulary as Kimodo, streaming, and measured here at 0.94 GB and 45.5 mm. Chosen.
+- **IK or a QP as the executor** — measured and rejected: `research/sonic-gate-results.md`, `research/wbc-classical-proposal.md`.
+- **HumanML3D** — a dataset, not a controller, and its licence and skeleton (SMPL-H, 20 fps) make it a training project rather than a runtime.
+
 ## 16. Open defects and the architecture critique
 
 Three independent critiques (robotics/control, ML, product) were run against this design on 2026-11-11; the findings,
@@ -307,11 +315,3 @@ parts that change this document:
 
 None of this invalidates the constraint vocabulary or the tracked-playback work; it changes what the demo depends on
 and what gets measured next.
-
-## 15. Why not the alternatives
-
-- **MotionBricks alone** — fastest and smallest (2.67 ms, 195 M params, ONNX), but its targets are full 36-float poses and its hand/foot pins are SOMA-only, so the pose has to be invented before it can interpolate. That is the workaround this design removes.
-- **Kimodo alone** — better motion quality per clip and the best authoring tool, but offline (100 denoise steps) and it cannot serve a live reach.
-- **ARDY** — same constraint vocabulary as Kimodo, streaming, and measured here at 0.94 GB and 45.5 mm. Chosen.
-- **IK or a QP as the executor** — measured and rejected: `research/sonic-gate-results.md`, `research/wbc-classical-proposal.md`.
-- **HumanML3D** — a dataset, not a controller, and its licence and skeleton (SMPL-H, 20 fps) make it a training project rather than a runtime.
