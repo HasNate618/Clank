@@ -55,6 +55,10 @@ RECORDING_NAME = "recording.mp4"
 STALE_STATES = ("recording", "composing")
 #: The composite's own bound: a re-encode that outlasts this is a wedged encoder.
 COMPOSITE_TIMEOUT_S = 1800.0
+#: Who is composing a run, as a pid. A live one means the work is in flight
+#: somewhere else; a dead one means a dashboard exited mid-composite and the
+#: next start may finish the job instead of deleting the evidence.
+COMPOSITE_LOCK = "composite.pid"
 #: A probe reads the container's index, never the frames, so this is generous.
 PROBE_TIMEOUT_S = 60.0
 #: Hold past the run's length, so `-t duration_s` never cuts inside a stream
@@ -531,6 +535,16 @@ class Recorder:
         self._seq = int(frame.get("seq") or 0)
         color = frame.get("color")
         if not color or len(color) != GAME_WIDTH * GAME_HEIGHT * 4:
+            # A live stream of the wrong size is a launch flag (`--no-color`, a
+            # different `--color-scale`), not a dead layer. It goes through the
+            # same bound as a read that raises, so the manifest says which size
+            # it got instead of "nothing arrived".
+            detail = (
+                f"the colour frame is {frame.get('color_width')}x"
+                f"{frame.get('color_height')}, the composite needs "
+                f"{GAME_WIDTH}x{GAME_HEIGHT}"
+            )
+            self._note_color_error(ValueError(detail))
             return None
         return color
 
@@ -700,7 +714,12 @@ class Recorder:
                 code = proc.returncode
                 if self._units[name] == 0:
                     status = "missing"
-                    self._note(name, "nothing arrived")
+                    # A source that already said why (a stream of the wrong
+                    # size, a layer that never appeared) keeps that reason:
+                    # "nothing arrived" is the answer of last resort, not an
+                    # improvement on a specific one.
+                    if not self._notes.get(name):
+                        self._note(name, "nothing arrived")
                 elif code not in (0, None):
                     status = "failed"
                     self._note(name, _stderr_line(proc) or f"the {name} encoder exited {code}")
@@ -835,6 +854,103 @@ def probe_part(path: Path, *, want: str, ffprobe: str = "ffprobe") -> tuple[dict
     return {"streams": streams, "duration_s": seconds}, ""
 
 
+def _pid_alive(pid: int) -> bool:
+    """Whether a process exists. EPERM means it does and is not ours."""
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+    return True
+
+
+def _lock_owner(run_dir: Path) -> int | None:
+    try:
+        text = (Path(run_dir) / COMPOSITE_LOCK).read_text(encoding="utf-8").strip()
+        return int(text)
+    except (OSError, ValueError):
+        return None
+
+
+def composite_is_live(run_dir: Path) -> bool:
+    """True when a process that still exists holds this run's composite."""
+    owner = _lock_owner(run_dir)
+    return owner is not None and _pid_alive(owner)
+
+
+def _acquire_composite(run_dir: Path) -> bool:
+    """Claim the composite for this process, or report that it is taken.
+
+    O_EXCL, so two dashboards cannot both compose one run. A lock naming a
+    process that is gone is litter left by a dashboard that exited mid-encode:
+    remove it and take over, which is exactly how an interrupted composite gets
+    finished instead of abandoned.
+    """
+    path = Path(run_dir) / COMPOSITE_LOCK
+    for _attempt in (0, 1):
+        try:
+            descriptor = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+        except FileExistsError:
+            if composite_is_live(run_dir):
+                return False
+            with contextlib.suppress(OSError):
+                path.unlink()
+            continue
+        except OSError:
+            return True  # cannot lock here; do not stand in the way of composing
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            handle.write(str(os.getpid()))
+        return True
+    return False
+
+
+def _release_composite(run_dir: Path) -> None:
+    path = Path(run_dir) / COMPOSITE_LOCK
+    if _lock_owner(run_dir) != os.getpid():
+        return
+    with contextlib.suppress(OSError):
+        path.unlink()
+
+
+def _temp_name() -> str:
+    """The composite's output before it is published.
+
+    It keeps the `.mp4` suffix on purpose: ffmpeg infers the container from the
+    extension, and a bare `.part.<pid>` is refused as an invalid output. The pid
+    keeps a resumed attempt from interleaving with an orphan of a dead dashboard.
+    """
+    return f"{Path(RECORDING_NAME).stem}.part.{os.getpid()}.mp4"
+
+
+def _has_parts(run_dir: Path) -> bool:
+    """Whether this run still holds bytes a composite could be built from."""
+    parts = Path(run_dir) / PARTS_DIR
+    if parts.is_symlink():
+        return False  # a link out of the run is never something to build from
+    try:
+        return any(item.stat().st_size > 0 for item in parts.iterdir() if item.is_file())
+    except OSError:
+        return False
+
+
+def _sweep_temporaries(run_dir: Path) -> None:
+    """Remove composite outputs an exited process left unfinished.
+
+    A composite writes beside its target and renames on success, so a leftover
+    `.part.<pid>` is by definition a file nobody finished. One whose pid is
+    still alive is a compose happening right now and is left alone.
+    """
+    for leftover in Path(run_dir).glob(f"{Path(RECORDING_NAME).stem}.part.*.mp4"):
+        bits = leftover.name.split(".")
+        suffix = bits[-2] if len(bits) >= 2 else ""
+        if suffix.isdigit() and _pid_alive(int(suffix)):
+            continue
+        _remove_tree(leftover)
+
+
 def run_composite(run_dir: Path, cfg: Config) -> dict:
     """Composite a finished recording's parts into `recording.mp4`, and publish it.
 
@@ -865,10 +981,16 @@ def run_composite(run_dir: Path, cfg: Config) -> dict:
         # says why, and there is nothing to compose: composing it again would
         # replace a precise reason with "nothing survived the probe".
         return manifest
+    if not _acquire_composite(run_dir):
+        # Another process is composing this run; its call publishes. Returning
+        # the manifest unchanged is the honest answer to "did I compose this".
+        return manifest
     try:
         return _composite(run_dir, manifest, cfg)
     except Exception as exc:  # a detached thread must still leave a manifest
         return _fail(run_dir, manifest, f"the composite failed: {exc}", {}, {}, {})
+    finally:
+        _release_composite(run_dir)
 
 
 def _composite(run_dir: Path, manifest: dict, cfg: Config) -> dict:
@@ -913,9 +1035,13 @@ def _composite(run_dir: Path, manifest: dict, cfg: Config) -> dict:
                 pad[name] = max(0.0, duration - lengths.get(name, 0.0)) + PAD_MARGIN_S
 
     out = run_dir / RECORDING_NAME
+    # Write beside the target and rename: an interrupted composite must never
+    # leave a `recording.mp4` that looks published, and the pid keeps a resumed
+    # attempt from interleaving with an orphan of the dashboard that died.
+    temp = run_dir / _temp_name()
     argv = composite_argv(
         game=kept.get("game"), robot=kept.get("robot"), audio=kept.get("audio"),
-        out=out, fps=rec.fps, crf=rec.crf, preset=rec.preset, ffmpeg=rec.ffmpeg,
+        out=temp, fps=rec.fps, crf=rec.crf, preset=rec.preset, ffmpeg=rec.ffmpeg,
         pad=pad, duration=duration,
     )
     # A half-written, unplayable or empty `recording.mp4` is worse than none:
@@ -927,26 +1053,33 @@ def _composite(run_dir: Path, manifest: dict, cfg: Config) -> dict:
             timeout=COMPOSITE_TIMEOUT_S, check=False,
         )
     except (OSError, subprocess.SubprocessError) as exc:
-        _remove_tree(out)
+        _remove_tree(temp)
         return _fail(run_dir, manifest, f"the composite could not run: {exc}",
                      notes, parts, seconds)
     if done.returncode != 0:
         lines = _lines(done.stderr)
         detail = lines[-1][:200] if lines else f"ffmpeg exited {done.returncode}"
-        _remove_tree(out)
+        _remove_tree(temp)
         return _fail(run_dir, manifest, f"the composite failed: {detail}", notes, parts, seconds)
     try:
-        size = out.stat().st_size
+        size = temp.stat().st_size
     except OSError:
         size = 0
     if size <= 0:
-        _remove_tree(out)
+        _remove_tree(temp)
         return _fail(run_dir, manifest, "the composite wrote nothing", notes, parts, seconds)
-    probed_out, problem = probe_part(out, want="video", ffprobe=ffprobe)
+    probed_out, problem = probe_part(temp, want="video", ffprobe=ffprobe)
     if probed_out is None:
-        _remove_tree(out)
+        _remove_tree(temp)
         return _fail(run_dir, manifest,
                      f"the composite wrote no playable video: {problem}",
+                     notes, parts, seconds)
+    try:
+        os.replace(temp, out)
+    except OSError as exc:
+        _remove_tree(temp)
+        return _fail(run_dir, manifest,
+                     f"the composite could not be published: {exc}",
                      notes, parts, seconds)
     measured = float(probed_out.get("duration_s") or 0.0)
     # A measurement beats a target: the run asked for `duration`, the file is
@@ -1011,12 +1144,20 @@ def sweep_stale(sessions_root: Path) -> list[Path]:
     Called once at dashboard start, after the server has bound its port and
     before any run exists: a dashboard refused its port deletes nothing, and
     nothing it meets can be live yet. One dashboard per ``session_root`` is the
-    rule this rests on -- two on different ports would still both sweep. A
-    manifest left in ``recording`` or ``composing`` belongs to a dashboard that
-    will not come back, and so does a ``parts/`` directory with no manifest at
-    all: the parts (and any composite killed mid-write) are deleted and the run
-    marked ``failed: dashboard exited``. A ``ready`` run is untouched, so its
-    ``recording.mp4`` survives; a ``failed`` run keeps its parts as evidence.
+    rule this rests on -- two on different ports would still both sweep.
+
+    **An unfinished composite is not a corpse.** A manifest left ``recording``
+    or ``composing`` whose parts are still on disk is handed to
+    `pending_composites`, which the next dashboard finishes: a whole run is
+    re-encoded in minutes, so exiting inside that window is ordinary, and
+    deleting the video *and* the parts that could rebuild it loses the only copy
+    of what the run did. Only a run nothing can be rebuilt from -- no manifest,
+    no parts, an encoder that never wrote -- is marked ``failed: dashboard
+    exited``. A composite still running under a live pid is left entirely alone.
+    Leftover ``recording.mp4.part.<pid>`` files from dead processes are removed.
+
+    A ``ready`` run is untouched, so its ``recording.mp4`` survives; a
+    ``failed`` run keeps its parts as evidence.
 
     Returns the run directories it swept. Deletion is confined to a run
     directory found under the root: a symlinked session, ``runs`` or run
@@ -1024,12 +1165,21 @@ def sweep_stale(sessions_root: Path) -> list[Path]:
     """
     swept: list[Path] = []
     for run_dir, _session in _runs(sessions_root):
+        _sweep_temporaries(run_dir)
         manifest = read_manifest(run_dir)
         if manifest is not None and manifest.get("state") not in STALE_STATES:
             continue
         if manifest is None and not (run_dir / PARTS_DIR).exists():
             continue  # nothing was ever recorded here
+        if composite_is_live(run_dir):
+            continue  # composing right now, in a process that still exists
+        if manifest is not None and _has_parts(run_dir):
+            continue  # unfinished, not dead: pending_composites() resumes it
         doc = dict(manifest or {})
+        # Capture a time before the parts go: a run with no manifest has no
+        # `started_at` of its own, and an undated row sorts to the bottom of the
+        # page as if it were the oldest thing on it.
+        started = doc.get("started_at") or _mtime_iso(run_dir / PARTS_DIR)
         _remove_tree(run_dir / PARTS_DIR)
         _remove_tree(run_dir / RECORDING_NAME)
         doc.update({
@@ -1041,11 +1191,34 @@ def sweep_stale(sessions_root: Path) -> list[Path]:
             "part_seconds": {},
             "bytes": 0,
         })
+        if started:
+            doc["started_at"] = started
         if not doc.get("ended_at"):
             doc["ended_at"] = _utc_now()
         _save_manifest(run_dir, doc)
         swept.append(run_dir)
     return swept
+
+
+def pending_composites(sessions_root: Path) -> list[Path]:
+    """Runs left mid-composite by a dashboard that exited, ready to be finished.
+
+    The work outlives the process that started it: the parts are on disk, the
+    manifest names them, and `run_composite` is idempotent and probes before it
+    publishes. So the next dashboard finishes the encode rather than deleting
+    the evidence. A run whose lock names a live process is somebody else's
+    in-flight composite and is skipped, which is what keeps two dashboards on
+    one session root from racing.
+    """
+    pending: list[Path] = []
+    for run_dir, _session in _runs(sessions_root):
+        manifest = read_manifest(run_dir)
+        if manifest is None or manifest.get("state") not in STALE_STATES:
+            continue
+        if not _has_parts(run_dir) or composite_is_live(run_dir):
+            continue
+        pending.append(run_dir)
+    return pending
 
 
 def prune(sessions_root: Path, max_total_mb: int, keep: Path | None = None) -> list[Path]:

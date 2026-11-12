@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import struct
 import subprocess
@@ -27,6 +28,7 @@ from clank.recording import (
     probe_part,
     prune,
     read_manifest,
+    pending_composites,
     run_composite,
     sweep_stale,
 )
@@ -214,6 +216,28 @@ class FakeStream:
         self.closed = True
 
 
+class WrongSizeStream(FakeStream):
+    """A live layer launched with `--no-color` or a different `--color-scale`.
+
+    The reads answer perfectly well; the frames are simply not the size the
+    composite is built for, which is an operator's launch flag and not a dead
+    layer.
+    """
+
+    def read(self, timeout: float = 5.0, after_seq: int = 0, flip: bool = True) -> dict | None:
+        self.reading.set()
+        self.flips.append(flip)
+        self.seq += 2
+        return {
+            "color": bytes(480 * 270 * 4),
+            "seq": self.seq,
+            "color_width": 480,
+            "color_height": 270,
+            "width": 480,
+            "height": 270,
+        }
+
+
 class BrokenStream(FakeStream):
     """A depth stream whose reads raise, the way a closed mmap's do.
 
@@ -296,12 +320,13 @@ class ExclusiveStream(FakeStream):
 class FakeStreamFactory:
     """`stream_factory` as the recorder calls it, keeping the streams it made."""
 
-    def __init__(self, frames: int = 1) -> None:
+    def __init__(self, frames: int = 1, factory: type[FakeStream] = FakeStream) -> None:
         self.frames = frames
+        self.factory = factory
         self.made: list[FakeStream] = []
 
     def __call__(self) -> FakeStream:
-        stream = FakeStream(self.frames)
+        stream = self.factory(self.frames)
         self.made.append(stream)
         return stream
 
@@ -369,6 +394,21 @@ class RecorderTests(unittest.TestCase):
         self.assertIn("ffmpeg", manifest["error"])
         self.assertEqual(manifest["parts"], {})
         self.assertFalse(manifest["available"])
+
+    def test_a_stream_of_the_wrong_size_names_the_mismatch(self):
+        """`--no-color` and `--color-scale` are launch flags, not a dead layer:
+        "nothing arrived" would send the operator looking in the wrong place."""
+        streams = FakeStreamFactory(factory=WrongSizeStream)
+        rec = Recorder(self.cfg, self.run_dir, stream_factory=streams, capture=FakeCapture)
+        rec.start()
+        rec.pump(2.2)  # past STREAM_ERROR_LIMIT ticks of the wrong size
+        manifest = rec.stop()
+        # No frame was written, so the source is `missing`; the note is what says
+        # why, and it names the sizes rather than claiming nothing arrived.
+        self.assertEqual(manifest["sources"]["game"], "missing")
+        note = manifest["notes"]["game"]
+        self.assertIn("480x270", note)
+        self.assertIn(f"{GAME_WIDTH}x{GAME_HEIGHT}", note)
 
     def test_no_depth_stream_records_the_robot_side_only(self):
         rec = Recorder(self.cfg, self.run_dir, stream_factory=None, capture=FakeCapture)
@@ -609,7 +649,7 @@ case "$part" in
   *short-robot*)
     printf '{"streams":[{"codec_type":"video"}],"format":{"duration":"60.0"}}'
     ;;
-  *recording.mp4)
+  *recording.*mp4)
     printf '{"streams":[{"codec_type":"video"}],"format":{"duration":"238.5"}}'
     ;;
   *game.mp4)
@@ -704,7 +744,16 @@ class CompositeTests(unittest.TestCase):
         write_recording(self.run_dir)
 
     def composite_argv_of(self, name: str = "recording.mp4") -> list[str]:
-        return (self.run_dir / f"{name}.argv").read_text().splitlines()
+        # The composite writes beside its target and renames, so the argv the fake
+        # recorded is named after whichever output path it was handed.
+        path = self.run_dir / f"{name}.argv"
+        if not path.is_file():
+            # The composite writes beside its target and renames, so the argv the
+            # fake recorded is named after the temporary output it was handed.
+            candidates = sorted(self.run_dir.glob("*.argv"))
+            self.assertTrue(candidates, f"no argv was written for {name}")
+            path = candidates[-1]
+        return path.read_text().splitlines()
 
     def graph_of(self, name: str = "recording.mp4") -> str:
         argv = self.composite_argv_of(name)
@@ -854,7 +903,7 @@ class CompositeTests(unittest.TestCase):
             "#!/bin/sh\n"
             "for a in \"$@\"; do part=\"$a\"; done\n"
             "case \"$part\" in\n"
-            "  *recording.mp4) echo 'moov atom not found' >&2; exit 1 ;;\n"
+            "  *recording.*mp4) echo 'moov atom not found' >&2; exit 1 ;;\n"
             "  *.m4a) printf '{\"streams\":[{\"codec_type\":\"audio\"}],"
             "\"format\":{\"duration\":\"240.0\"}}' ;;\n"
             "  *) printf '{\"streams\":[{\"codec_type\":\"video\"}],"
@@ -920,9 +969,18 @@ class SessionsRootTests(unittest.TestCase):
     def make_video(self, run_dir: Path, size: int) -> None:
         (run_dir / "recording.mp4").write_bytes(b"x" * size)
 
-    def test_a_run_whose_dashboard_died_is_marked_and_its_parts_are_deleted(self):
+    def test_a_run_left_mid_composite_is_kept_for_the_next_dashboard(self):
+        """Exiting inside a composite window is ordinary; the video is not."""
         run_dir = self.make_run("101010-aaaaaa", state="recording")
         self.make_video(run_dir, 32)  # a composite killed mid-write, no moov atom
+        self.assertEqual(sweep_stale(self.sessions), [])
+        manifest = manifest_of(self, run_dir)
+        self.assertEqual(manifest["state"], "recording")
+        self.assertTrue((run_dir / "parts" / "game.mp4").is_file())
+        self.assertTrue((run_dir / "recording.mp4").is_file())
+
+    def test_a_stale_run_with_nothing_to_compose_is_marked_failed(self):
+        run_dir = self.make_run("101010-aaaaaa", state="composing", parts={})
         removed = sweep_stale(self.sessions)
         self.assertEqual(removed, [run_dir])
         manifest = manifest_of(self, run_dir)
@@ -931,7 +989,45 @@ class SessionsRootTests(unittest.TestCase):
         self.assertFalse(manifest["available"])
         self.assertFalse((run_dir / "parts").exists())
         self.assertFalse((run_dir / "recording.mp4").exists())
-        self.assertEqual(manifest["parts"], {})
+
+    def test_a_composite_still_running_is_left_entirely_alone(self):
+        run_dir = self.make_run("101010-aaaaaa", state="composing")
+        (run_dir / recording.COMPOSITE_LOCK).write_text(str(os.getpid()), encoding="utf-8")
+        self.assertEqual(sweep_stale(self.sessions), [])
+        self.assertEqual(pending_composites(self.sessions), [])
+        self.assertTrue((run_dir / "parts" / "game.mp4").is_file())
+        self.assertEqual(manifest_of(self, run_dir)["state"], "composing")
+
+    def test_pending_composites_hands_a_dead_dashboards_work_on(self):
+        run_dir = self.make_run("101010-aaaaaa", state="composing")
+        # A lock naming a pid that cannot exist: the dashboard that wrote it is gone.
+        (run_dir / recording.COMPOSITE_LOCK).write_text("999999", encoding="utf-8")
+        self.assertEqual(pending_composites(self.sessions), [run_dir])
+        self.assertEqual(sweep_stale(self.sessions), [])
+        # The next dashboard takes a dead owner's lock over, and refuses a live one.
+        self.assertTrue(recording._acquire_composite(run_dir))
+        self.assertFalse(recording._acquire_composite(run_dir))
+        recording._release_composite(run_dir)
+        self.assertFalse((run_dir / recording.COMPOSITE_LOCK).exists())
+
+    def test_an_unfinished_temporary_from_a_dead_process_is_removed(self):
+        run_dir = self.make_run("101010-aaaaaa", state="ready", file="recording.mp4")
+        self.make_video(run_dir, 64)
+        dead = run_dir / "recording.part.999999.mp4"
+        dead.write_bytes(b"x" * 8)
+        sweep_stale(self.sessions)
+        self.assertFalse(dead.exists())
+        self.assertTrue((run_dir / "recording.mp4").is_file())
+
+    def test_a_swept_run_with_no_manifest_still_gets_a_time(self):
+        """A parts directory with no manifest has no `started_at` of its own; an
+        undated row sorts to the bottom of the page as if it were the oldest."""
+        run_dir = self.dir_of("101010-bbbbbb")
+        (run_dir / "parts").mkdir(parents=True)
+        (run_dir / "parts" / "game.mp4").write_bytes(b"x")
+        self.assertEqual(sweep_stale(self.sessions), [run_dir])
+        started = manifest_of(self, run_dir)["started_at"]
+        self.assertTrue(started and started.endswith("Z"), started)
 
     def test_a_parts_directory_with_no_manifest_is_swept_too(self):
         run_dir = self.dir_of("101010-bbbbbb")

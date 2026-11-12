@@ -1263,10 +1263,19 @@ class RecordingSweepTests(unittest.TestCase):
                     patch.object(dashboard, "RunManager", FakeRun), \
                     patch.object(dashboard, "DashboardServer", server), \
                     patch.object(dashboard, "signal"), \
-                    patch.object(dashboard, "sweep_stale", autospec=True) as sweep:
+                    patch.object(dashboard, "sweep_stale", autospec=True) as sweep, \
+                    patch.object(dashboard, "pending_composites", autospec=True) as pending, \
+                    patch.object(dashboard, "run_composite", autospec=True) as compose:
                 swept = Path(temp) / "swept"
                 sweep.side_effect = lambda root: order.append("sweep") or [swept]
+                pending.side_effect = lambda root: [Path(temp) / "session" / "runs" / "101010-aaaaaa"]
+                # The resume thread is daemon; give it a moment to be seen.
+                started = threading.Event()
+                compose.side_effect = lambda run_dir, cfg: started.set()
                 dashboard.run_dashboard(cfg)
+                started.wait(2)
+                self.pending_calls = [call.args[0] for call in pending.call_args_list]
+                self.composed = [call.args[0].name for call in compose.call_args_list]
             return [call.args[0] for call in sweep.call_args_list]
 
     def test_the_sweep_runs_before_the_page_is_served(self):
@@ -1281,6 +1290,14 @@ class RecordingSweepTests(unittest.TestCase):
         # And the number is in the log, so a sweep that found nothing is visible
         # as a zero rather than as a silence.
         self.assertIn("swept 1 stale recording(s)", out.getvalue())
+
+    def test_an_unfinished_composite_is_resumed_not_deleted(self):
+        """A run left mid-composite is finished by the next dashboard."""
+        out = io.StringIO()
+        self.run_dashboard_with([], out)
+        self.assertEqual(len(self.pending_calls), 1)
+        self.assertEqual(self.composed, ["101010-aaaaaa"])
+        self.assertIn("finishing 1 unfinished recording(s)", out.getvalue())
 
     def test_a_dashboard_that_cannot_bind_sweeps_nothing(self):
         """A second dashboard on the same session root is refused at the bind; it

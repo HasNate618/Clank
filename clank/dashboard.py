@@ -22,7 +22,14 @@ from .manual_input import ManualInputError, ManualInputUnavailable
 from .orchestrator import ConflictError, PreflightError, SessionManager
 from .pose_relay import request_click
 from .processes import tail_stream
-from .recording import RECORDING_NAME, list_recordings, parse_range, sweep_stale
+from .recording import (
+    RECORDING_NAME,
+    list_recordings,
+    parse_range,
+    pending_composites,
+    run_composite,
+    sweep_stale,
+)
 from .run import RUN_ID_RE, RunError, RunManager
 
 
@@ -780,6 +787,19 @@ def run_dashboard(cfg: Config) -> None:
     # page serves and before a run can exist, so nothing it meets is live.
     stale = sweep_stale(Path(cfg.paths.session_root))
     print(f"clank dashboard: swept {len(stale)} stale recording(s)", flush=True)
+    # A composite that outlived the dashboard that started it is finished here,
+    # not deleted: the parts are intact, the manifest says what they are, and a
+    # run's video is the one thing that cannot be re-recorded after the fact.
+    resume = pending_composites(Path(cfg.paths.session_root))
+    for run_dir in resume:
+        threading.Thread(
+            target=run_composite,
+            args=(run_dir, cfg),
+            name=f"clank-composite-{run_dir.name}",
+            daemon=True,
+        ).start()
+    if resume:
+        print(f"clank dashboard: finishing {len(resume)} unfinished recording(s)", flush=True)
     pidfile = dashboard_pidfile(cfg)
     pidfile.parent.mkdir(parents=True, exist_ok=True)
     pidfile.write_text(str(os.getpid()), encoding="utf-8")
