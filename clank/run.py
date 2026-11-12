@@ -529,9 +529,29 @@ class RunManager:
         # out as before.
         path = self._body.control_path()
         resting = 0
+        starts = 1
         deadline = time.monotonic() + self._cfg.run.body_timeout_sec
         while resting < max(1, self._cfg.run.rest_ticks):
             self._check_cancel(generation)
+            if not self._body.running():
+                # A spawn that finds the dying viewer still holding the socket
+                # prints "another body view is already listening" and exits at
+                # once. The old process then answers our rest and unlinks the
+                # socket as it goes, so "the socket replied" is not "my child is
+                # up": notice the dead child and start another.
+                starts += 1
+                if starts > 4:
+                    log = getattr(self._body, "log_path", None)
+                    raise RuntimeError(
+                        "the body view kept exiting"
+                        + (f"; see {log}" if log else "")
+                    )
+                self._set_detail("restarting the body view…")
+                problem = self._body.start()
+                if problem:
+                    raise RuntimeError(f"body view did not start: {problem}")
+                self._cancel.wait(0.5)
+                continue
             try:
                 send_control(path, {"verb": "rest"})
             except OSError as exc:

@@ -101,15 +101,23 @@ class BodyServer:
 
 class FakeBody:
     def __init__(self, path: Path | None = None) -> None:
-        self.running = False
+        self.alive = False
         self.path = path or Path("/nonexistent/body-control.sock")
+        self.starts = 0
+        # A sidecar that loses the socket race exits at once: the first spawn
+        # answers "another body view is already listening" and dies.
+        self.dies_after_start = False
 
     def start(self) -> str:
-        self.running = True
+        self.starts += 1
+        self.alive = not self.dies_after_start
         return ""
 
+    def running(self) -> bool:
+        return self.alive
+
     def stop(self) -> None:
-        self.running = False
+        self.alive = False
 
     def control_path(self) -> Path:
         return self.path
@@ -241,7 +249,13 @@ class RunManagerTests(RunHarness):
 
         self.manager.set_mode = set_mode
         self.body.stop = lambda: order.append("body-stop")
-        self.body.start = lambda: order.append("body-start") or ""
+
+        def start() -> str:
+            order.append("body-start")
+            self.body.alive = True
+            return ""
+
+        self.body.start = start
         run.start()
         self.assertEqual(self.wait_state("running"), "running")
         self.assertEqual(order[:2], ["mode:body", "body-stop"])
@@ -460,6 +474,28 @@ class RunManagerTests(RunHarness):
         self.assertEqual(self.wait_state("running"), "running")
         self.assertEqual([v.get("verb") for v in late.verbs], ["rest"])
 
+    def test_body_phase_restarts_a_sidecar_that_lost_the_socket_race(self) -> None:
+        """A spawn that finds the dying viewer still holding the socket exits at
+        once. The run must notice its own child is gone and start another, not
+        call the reset done because the *old* process answered one rest."""
+        self.body.dies_after_start = True
+        real_start = self.body.start
+
+        def start_and_heal() -> str:
+            reply = real_start()
+            if self.body.starts >= 2:
+                server = BodyServer(self.body.path)
+                self.addCleanup(server.close)
+                self.body.dies_after_start = False
+            return reply
+
+        self.body.start = start_and_heal
+        run = self.make()
+        run.start()
+        self.assertEqual(self.wait_state("running"), "running")
+        self.assertGreaterEqual(self.body.starts, 2)
+        self.assertTrue(self.body.running())
+
     def test_a_silent_body_view_fails_the_run_before_the_brain(self) -> None:
         self.body.path = self.base / "never.sock"
         cfg = replace(self.cfg, run=replace(self.cfg.run, body_timeout_sec=0.6))
@@ -485,6 +521,7 @@ class RunManagerTests(RunHarness):
     def test_a_stopped_stack_cancels_the_run(self) -> None:
         def stop_the_stack() -> str:
             self.manager.state_value = "stopped"
+            self.body.alive = True
             return ""
 
         self.body.start = stop_the_stack
