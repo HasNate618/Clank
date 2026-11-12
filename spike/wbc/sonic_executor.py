@@ -28,6 +28,16 @@ Measured facts this file is built on (`research/c3m-results.md`,
 `vr_delta` is a 9-vector (head, left wrist, right wrist - each xyz) added to
 the clip's own targets; `vr_orn_delta` is three quats left-multiplied onto
 them. That is the only per-tick steering this controller exposes.
+
+With `session_dir` set, the executor is also the player for a motion a
+separate process generated (`spike/wbc/reach_ardy.py` -> `mb_mailbox`): each
+tick publishes the achieved 36-float pose, a deposited npz clip switches the
+runner to mode 0 and plays every row from the current `mjData`, and the end of
+the clip returns to the mode-1 freeze-hold. `reset()` is never called on that
+path: it writes qpos from a clip's first frame, which is the teleport this
+design exists to avoid, and a generated dict carries no `bl`/`ba` for it to
+read. The end of a clip is held at the look-ahead (`mb_play.lookahead_rows`),
+not by rewriting the clip's rows.
 """
 
 from __future__ import annotations
@@ -43,6 +53,9 @@ import numpy as np  # pyright: ignore[reportMissingImports]
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
+import g1_pack  # noqa: E402
+import mb_mailbox  # noqa: E402
+import mb_play  # noqa: E402
 import sonic_runner as sr  # noqa: E402
 
 from clank.body import (  # noqa: E402
@@ -117,10 +130,27 @@ class ExecutorUnavailable(RuntimeError):
 class SonicExecutor:
     """One SONIC tick per `step()`. Owns no timing policy of its own."""
 
-    def __init__(self, clip: str = HOLD_CLIP, model: str = "default", verbose: bool = False) -> None:
+    def __init__(
+        self,
+        clip: str = HOLD_CLIP,
+        model: str = "default",
+        verbose: bool = False,
+        session_dir: Path | None = None,
+    ) -> None:
         self.clip = clip
         self.runner = sr.SonicRunner(mode=1, model=model, verbose=verbose)
+        # `g1_pack.pose36_from_qpos` reads fixed qpos addresses up to 49, so a model with a
+        # different articulation must fail here, at startup, rather than 50 times a second
+        # inside `_publish_pose` once the session is already running.
+        assert self.runner.data.qpos.size == g1_pack.QPOS_LEN, (
+            f"the pose36 ring needs {g1_pack.QPOS_LEN} qpos values, "
+            f"the model has {self.runner.data.qpos.size}"
+        )
         self.motion = sr.load_motion(clip)
+        #: The freeze-hold reference, restored when a deposited clip has played out.
+        #: `self.motion` is what the current tick reads, which during playback is the
+        #: generated clip and otherwise this.
+        self._hold_motion = self.motion
         self.hold_frame = HOLD_FRAME
         # Anchor-index freeze: the lookahead must never contain walking.
         self.runner.reset(self.motion, start=self.hold_frame)
@@ -146,6 +176,39 @@ class SonicExecutor:
         #: its own measurement.
         self._held_key: tuple[object, ...] | None = None
         self._held_state: BodyState | None = None
+        #: The session's output directory. Set, the mailbox is live: achieved poses go
+        #: out, deposited clips play, progress is reported. `None` keeps this a plain
+        #: hold executor, down to the observation built each tick.
+        self.session_dir = Path(session_dir) if session_dir is not None else None
+        #: The mailbox is this process's from here on. `--out` is `session_root/body`, a
+        #: persistent directory that `clank/` never clears, so the previous run's files are
+        #: still sitting in it - and a leftover `mb_play.json` looks exactly like a fresh
+        #: deposit to a process that has loaded no seq yet. Left alone it played the last
+        #: session's clip on the first tick, in mode 0, with no adapter running.
+        #: Nothing legitimate is lost: the adapter generates from `pose36.json`, which no
+        #: body has written yet, so it cannot have deposited a playable clip before this
+        #: point. Clearing `mb_status.json` matters too - a stale `done` would read as this
+        #: process's own first acknowledgement.
+        if self.session_dir is not None:
+            left = mb_mailbox.clear_stale(self.session_dir)
+            if left:
+                print(
+                    f"sonic_executor: stale mailbox files could not be removed: {left}",
+                    file=sys.stderr,
+                )
+        #: Which deposit is being played and on which row, plus the seq of the request
+        #: already answered. `mb_play.Playback` owns the tick ordering that keeps the last
+        #: row played and progress reported against the clip that ran, not against a
+        #: request that was rejected.
+        self._playback = mb_play.Playback()
+        #: One log-once latch per mailbox write. A removed session directory fails both, and
+        #: the pose publish runs first every tick, so a shared latch would swallow the
+        #: status message and the log would never say the status stream had stopped.
+        self._pose36_warned = mb_play.WarnLatch()
+        self._status_warned = mb_play.WarnLatch()
+        #: The pose36 ring, held in memory so the 50 Hz publish does not read back the
+        #: file it wrote one tick ago.
+        self._ring: list | None = None
 
     # ---- geometry -------------------------------------------------------
 
@@ -318,12 +381,29 @@ class SonicExecutor:
 
     def step(self, cmd: BodyCommand, now_ns: int = 0) -> BodyState:
         r = self.runner
-        vr_pos, vr_orn = self._targets(cmd)
+        if self.session_dir is not None:
+            self._publish_pose(now_ns)
+            self._accept_play()
+        # Mode 0 is the playback mode and only a deposited clip sets it, so it is the
+        # single source of truth for "this tick plays a generated clip". With no session
+        # directory it is never set and this is exactly the hold executor it always was.
+        playing = r.mode == 0
+        if playing:
+            # No VR overlay: the clip carries the motion, and mode 0 ignores the overlay
+            # anyway. The frame is the first row of the clamped look-ahead window, i.e.
+            # the row being played and never past the clip's end.
+            vr_pos, vr_orn = None, None
+            frame = mb_play.lookahead_rows(  # pyright: ignore[reportIndexIssue]
+                self._playback.frame, self._playback.n
+            )[0]
+        else:
+            vr_pos, vr_orn = self._targets(cmd)
+            frame = self.hold_frame
 
         base_quat = r.data.qpos[3:7].copy()
         enc_obs = r.build_encoder_obs(
             self.motion,
-            self.hold_frame,
+            frame,
             base_quat,
             vr_pos=vr_pos,
             vr_orn=vr_orn,
@@ -409,7 +489,171 @@ class SonicExecutor:
             invalid_count=0,
         )
         self.last_state = state
+        if playing:
+            self._advance_clip()
         return state
+
+    # ---- mailbox: play a deposited clip ---------------------------------
+
+    def _mailbox_dir(self) -> Path:
+        """The session directory. `step()` only reaches the mailbox when it is set."""
+        assert self.session_dir is not None, "mailbox used without a session directory"
+        return self.session_dir
+
+    def _publish_pose(self, now_ns: int) -> None:
+        """Hand the adapter the achieved pose ring it generates from.
+
+        The achieved pose, not the commanded one: the adapter continues from where the
+        body actually is, and the body is what the next clip has to start from.
+
+        A publish that fails drops this tick's ring update and carries on. Both failures
+        are realistic mid-session and neither is worth the 50 Hz loop: a session directory
+        rotated or removed under a running body raises `OSError` from the atomic replace,
+        and a qpos of unexpected width raises `ValueError` from the packer. The adapter
+        sees the tick missing from the ring's `seq`, which is recoverable; losing the body
+        process is not.
+        """
+        try:
+            self._ring = mb_mailbox.write_pose36(
+                self._mailbox_dir(),
+                g1_pack.pose36_from_qpos(self.runner.data.qpos),
+                self.ticks,
+                now_ns,
+                prev=self._ring,
+            )
+        except (OSError, ValueError) as exc:
+            why = self._pose36_warned.warn(str(exc) or type(exc).__name__)
+            if why is not None:
+                print(
+                    f"sonic_executor: pose36 publish failed, carrying on: {why}",
+                    file=sys.stderr,
+                )
+
+    def _write_status(self, seq: int, status: str, frame: int, n: int) -> None:
+        """Publish progress, or lose this tick's report without losing the body.
+
+        The same rule as `_publish_pose`, and the same trigger: a session directory that
+        is rotated or removed under a running body makes the mailbox's atomic replace
+        raise `OSError`. Here that would take the 50 Hz loop down from the middle of a
+        clip. Warned once - on its own latch, not the pose publish's - because a directory
+        that has gone away does not come back, which means status stops being observable at
+        all. That converts a crash into silence, so the adapter is expected to notice
+        through the age of its clip rather than through a `failed` status it will never
+        receive.
+        """
+        why = self._status_warned.warn(
+            mb_play.write_progress(self._mailbox_dir(), seq, status, frame, n)
+        )
+        if why is not None:
+            print(f"sonic_executor: status write failed, carrying on: {why}", file=sys.stderr)
+
+    def _accept_play(self) -> None:
+        """Load a clip the adapter deposited and start playing it, without resetting.
+
+        The current `mjData` is the state the clip is played *from*; `reset()` would write
+        qpos from the clip's first frame, teleporting the body and the game's view, and it
+        reads `bl`/`ba`, which `clip_from_gen.sonic_dict` does not emit.
+        """
+        session_dir = self._mailbox_dir()
+        play = self._playback.pending(mb_mailbox.read_play(session_dir))
+        if play is None:
+            return
+        seq = int(play["seq"])
+        path = session_dir / play["path"]
+        try:
+            motion = self._load_clip(path)
+        except Exception as exc:  # noqa: BLE001 - see below
+            # Anything, because a truncated clip is a torn zip container and `np.load`
+            # raises `zipfile.BadZipFile`, `EOFError` or `UnpicklingError` out of it - none
+            # of them an `OSError`, and all of them the realistic result of an interrupted
+            # adapter write. Nothing here can legitimately raise something worth
+            # re-raising into the 50 Hz loop.
+            #
+            # A request is taken once even when it cannot be played: the mailbox is
+            # latest-wins, so the next attempt arrives with a new seq rather than being
+            # retried here every 20 ms. `rejected` deliberately leaves any clip that is
+            # still playing owning its own seq, so its progress is not renamed.
+            print(f"sonic_executor: clip {path} rejected: {exc}", file=sys.stderr)
+            self._playback.rejected(seq)
+            self._write_status(seq, "failed", 0, 0)
+            return
+        self.motion = motion
+        self._playback.started(seq, int(motion["n"]))
+        # The command that froze the arms before the clip describes a body that has moved
+        # by the time the clip ends, so let `_fallback` re-take it from the achieved pose
+        # rather than snapping the hands back to their pre-clip target.
+        self._held_key = None
+        self.runner.mode = 0
+        self._write_status(seq, mb_play.PLAYING, 0, int(motion["n"]))
+
+    def _load_clip(self, path: Path) -> dict:
+        """Read the adapter's resampled npz into SONIC's motion dict.
+
+        `n` is derived from the arrays and every array is required to agree with it: the
+        encoder's look-ahead is clamped against `n`, so a clip whose arrays disagree would
+        read rows that are not there instead of holding on the last one.
+        """
+        with np.load(path) as data:
+            rows = {
+                key: np.asarray(data[key], dtype=np.float64)
+                for key in ("jp", "jv", "bp", "bq")
+            }
+        lengths = {key: int(rows_array.shape[0]) for key, rows_array in rows.items()}
+        n = lengths["jp"]
+        if n < 1:
+            raise ValueError(f"{path}: clip has no frames")
+        if set(lengths.values()) != {n}:
+            raise ValueError(f"{path}: clip arrays disagree on length: {lengths}")
+        motion: dict[str, object] = dict(rows)
+        motion["n"] = n
+        return motion
+
+    def _advance_clip(self) -> None:
+        """Play out this tick's row, report progress, and leave mode 0 when it plays out.
+
+        The clip's rows are played in full and never rewritten. The hold at the end lives
+        in the look-ahead (`mb_play.lookahead_rows`): on the last frame all ten rows the
+        encoder reads are that frame, so the reference is constant and the body cannot be
+        told to keep walking (`research/c3m-results.md`, H1f).
+
+        Progress is reported against the clip that is playing (`clip_seq`), never against
+        the last request taken: a reload that failed leaves an older clip running, and that
+        clip must not acknowledge a request that never ran.
+        """
+        status = self._playback.advance()
+        seq = self._playback.clip_seq
+        if seq is None:
+            # Documented unreachable: `advance()` is only reached from a mode-0 tick, and
+            # only a deposited clip sets mode 0 and fills `clip_seq`. Dropped rather than
+            # thrown anyway - this runs inside the 50 Hz tick, which owns the physics, and
+            # nothing here is worth unwinding that loop over.
+            print(
+                "sonic_executor: clip progress with no clip playing, skipped",
+                file=sys.stderr,
+            )
+            return
+        self._write_status(seq, status, self._playback.frame, self._playback.n)
+        if status == mb_play.DONE:
+            self._finish_clip()
+
+    def _finish_clip(self) -> None:
+        """Return to the mode-1 freeze-hold where the clip left the body.
+
+        Putting the standing clip back is all this takes: mode 1 reads its reference from
+        `self.motion` at `hold_frame`, and `hold` claims the achieved head and wrists
+        through `channel_pose`, so the body stays where it is. Touching qpos here - which
+        is what the constructor's `reset()` call does at startup - would be the teleport
+        the clip was generated to avoid.
+        """
+        self.runner.mode = 1
+        self.motion = self._hold_motion
+        # Re-latch the freeze-hold onto where the clip left the body. `_fallback` keeps its
+        # latch until the commanded poses change, and a tick with no commanded poses has the
+        # same key (`()`) it held *before* the reach - so without this the arms spring back to
+        # the pre-reach pose the moment the clip plays out. Observed live 2026-11-11: the hand
+        # reached, the clasp fired, and the arm snapped home as the clip ended.
+        self._held_key = None
+        self._held_state = self.last_state
 
     # ---- command builders the reel uses --------------------------------
 

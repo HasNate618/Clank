@@ -10,7 +10,9 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from clank.body import Pose
 from clank.player_scale import FILENAME, PlayerScale, apply, path, read, write
+from clank.projection import Fov, project_point
 
 
 class Defaults(unittest.TestCase):
@@ -97,3 +99,57 @@ class Refusals(unittest.TestCase):
             (Path(tmp) / FILENAME).write_text(json.dumps({"scale": 0.0}))
             with self.assertRaises(ValueError):
                 read(tmp)
+
+
+class PixelPoint(unittest.TestCase):
+    """The seam that applies the declaration, not just its two numbers.
+
+    `scale` and `camera_scale` are exercised above, and on their own they let an uncallable
+    `pixel_point` sit under a green suite: the module was restored against a
+    `point_from_pixel` that takes `pivot`/`hands_scale`, and the one on this branch did not,
+    so every call raised TypeError. `reach_vr`'s 1.43x miss is the same seam, so the two
+    configurations get a call each.
+    """
+
+    PIVOT = (0.10, -0.20, 0.35)
+    SCALE = 1.43
+    HEAD = Pose((0.02, 0.00, 0.40), (0.0, 0.0, 0.0, 1.0))
+    OBJECT = (0.32, -0.36, 0.05)
+    FOV = Fov.from_degrees(70.0, 70.0, 57.11, 57.11)
+
+    def game_point(self, point: tuple[float, float, float]) -> tuple[float, float, float]:
+        """The game-space point for a robot-frame `point`: `pivot + scale * (point - pivot)`."""
+        return (
+            self.PIVOT[0] + (point[0] - self.PIVOT[0]) * self.SCALE,
+            self.PIVOT[1] + (point[1] - self.PIVOT[1]) * self.SCALE,
+            self.PIVOT[2] + (point[2] - self.PIVOT[2]) * self.SCALE,
+        )
+
+    def frame(self, depth: float) -> dict:
+        return {"depth": [depth] * (48 * 27), "width": 48, "height": 27}
+
+    def pixel_and_depth(self, camera: Pose, target: tuple[float, float, float]):
+        pixel = project_point(camera, target, self.FOV)
+        assert pixel is not None
+        # Identity rotation, so the body +x axis is the gaze and the depth the stream
+        # carries is the forward component, not the range.
+        return pixel[0], pixel[1], target[0] - camera.p[0]
+
+    def test_a_scaled_camera_and_hands_round_trip_to_the_robot_frame(self) -> None:
+        declared = PlayerScale(scale=self.SCALE, pivot=self.PIVOT, head_scaled=True)
+        camera = Pose(self.game_point(self.HEAD.p), self.HEAD.q_xyzw)
+        u, v, depth = self.pixel_and_depth(camera, self.game_point(self.OBJECT))
+        got = declared.pixel_point(self.frame(depth), u, v, self.HEAD, self.FOV)
+        assert got is not None
+        for i in range(3):
+            self.assertAlmostEqual(got[i], self.OBJECT[i], places=6)
+
+    def test_hands_only_scaling_round_trips_with_the_camera_left_alone(self) -> None:
+        # `--player-scale-head off`: the camera is the robot's own, and only the hand's
+        # travel is scaled, so the division about the pivot is the whole transform.
+        declared = PlayerScale(scale=self.SCALE, pivot=self.PIVOT, head_scaled=False)
+        u, v, depth = self.pixel_and_depth(self.HEAD, self.game_point(self.OBJECT))
+        got = declared.pixel_point(self.frame(depth), u, v, self.HEAD, self.FOV)
+        assert got is not None
+        for i in range(3):
+            self.assertAlmostEqual(got[i], self.OBJECT[i], places=6)

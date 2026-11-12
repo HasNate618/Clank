@@ -16,7 +16,7 @@ treated as "no answer" rather than averaged away.
 from __future__ import annotations
 
 import math
-from collections.abc import Iterable, Sequence
+from collections.abc import Sequence
 
 from clank.body import Pose
 from clank.projection import Fov, unproject

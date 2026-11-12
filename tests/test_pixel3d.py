@@ -119,7 +119,7 @@ class PlayerScale(unittest.TestCase):
         plain = point_from_pixel(f, 0.72, 0.38, HEAD, FOV)
         scaled = point_from_pixel(f, 0.72, 0.38, HEAD, FOV, head_scale=1.6)
         assert plain is not None and scaled is not None
-        for a, b in zip(plain, scaled):
+        for a, b in zip(plain, scaled, strict=True):
             self.assertAlmostEqual(a / b, 1.6, places=6)
 
     def test_the_default_is_the_robot_frame_unchanged(self) -> None:
