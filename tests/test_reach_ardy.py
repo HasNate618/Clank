@@ -51,6 +51,37 @@ class NoCruiseArtefacts(unittest.TestCase):
         self.assertNotIn("STEP_GUARD", PROBE.read_text())
 
 
+class OneHandPoint(unittest.TestCase):
+    """The reach has to aim and measure the point the game grabs with, not the wrist link.
+
+    The relay reports the hand `VR_OFFSETS[side]` out from `right_wrist_yaw_link` (0.18 m), so a
+    constraint pinned at the wrist leaves the glove 0.18 m past the object - and the clasp, which
+    reads the relayed hand, then measures 0.18 m against a point the wrist was pinned to, i.e.
+    above `CLASP_START_M`, and never fires. Verified as a real defect before the fix: gate 5's
+    66 mm was wrist-to-wrist and nothing had ever measured the glove.
+    """
+
+    def test_the_delta_is_measured_from_the_glove(self) -> None:
+        body = function_body(ADAPTER.read_text(), "hand_delta_for")
+        self.assertIn("glove_position", body)
+        self.assertNotIn("hand_position", body)
+
+    def test_the_residual_is_the_glove_and_the_wrist_is_available(self) -> None:
+        text = ADAPTER.read_text()
+        self.assertIn("glove_position", function_body(text, "hand_residual"))
+        self.assertIn("hand_position", function_body(text, "wrist_residual"))
+
+    def test_the_clasp_reads_the_relayed_hand(self) -> None:
+        # `reach_vr.state()`'s `right_hand.p` is the relayed point, which is the glove, and
+        # `reach_vr.link` would undo the lever. The probe must not undo it either.
+        text = ADAPTER.read_text()
+        self.assertNotIn("reach_vr.link(", text)
+        self.assertNotIn("reach_vr.link(", PROBE.read_text())
+
+    def test_the_probe_cross_checks_the_two_gloves(self) -> None:
+        self.assertIn("lever_gap_m", PROBE.read_text())
+
+
 class ChainPolicy(unittest.TestCase):
     def test_the_adapter_obeys_the_real_decision_function(self) -> None:
         text = ADAPTER.read_text()

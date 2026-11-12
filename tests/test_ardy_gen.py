@@ -24,6 +24,7 @@ from __future__ import annotations
 import importlib.util
 import math
 import pathlib
+import re
 import subprocess
 import sys
 import unittest
@@ -282,6 +283,51 @@ class ContextValidationTest(unittest.TestCase):
                 history_features=object(),
             )
         self.assertIn("encoder", str(caught.exception))
+
+
+class GloveLeverTest(unittest.TestCase):
+    """The point the game grabs with is the wrist link **plus** the relay's 0.18 m lever.
+
+    Pinning the wrist at the object puts the glove 0.18 m past it, which is larger than every
+    accuracy number in the design; and the clasp compares the relayed hand, so a wrist-pinned
+    constraint can never come within `CLASP_START_M`. Both live in the constants below.
+    """
+
+    def test_the_right_hand_lever_is_the_relay_offset_in_ardy_axes(self) -> None:
+        self.assertEqual(ardy_gen.lever_offset_ardy("right"), (0.025, 0.0, 0.18))
+
+    def test_the_left_hand_lever_is_mirrored(self) -> None:
+        self.assertEqual(ardy_gen.lever_offset_ardy("left"), (-0.025, 0.0, 0.18))
+
+    def test_an_unrotated_wrist_puts_the_glove_in_front_of_it(self) -> None:
+        identity = (1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0)
+        self.assertEqual(
+            ardy_gen.glove_point((1.0, 2.0, 3.0), identity, "right"), (1.025, 2.0, 3.18)
+        )
+
+    def test_the_lever_turns_with_the_wrist(self) -> None:
+        # A quarter turn about ARDY's up axis (+y) sends the forward lever to +x.
+        quarter_turn = (0.0, 0.0, 1.0, 0.0, 1.0, 0.0, -1.0, 0.0, 0.0)
+        glove = ardy_gen.glove_point((0.0, 0.0, 0.0), quarter_turn, "right")
+        for got, want in zip(glove, (0.18, 0.0, -0.025), strict=True):
+            self.assertAlmostEqual(got, want, places=12)
+
+    def test_the_delta_lands_the_glove_on_the_target(self) -> None:
+        delta = ardy_gen.delta_to_target((0.5, 0.9, 0.4), (0.55, 0.95, 0.45))
+        for got, want in zip(delta, (0.05, 0.05, 0.05), strict=True):
+            self.assertAlmostEqual(got, want, places=12)
+
+    def test_the_lever_has_not_drifted_from_the_relay(self) -> None:
+        """`sonic_runner` is the relay's own definition, and it needs NumPy to import."""
+        runner = (WBC / "sonic_runner.py").read_text()
+        block = runner.split("VR_OFFSETS = np.array([", 1)[1].split("])", 1)[0]
+        numbers = [float(v) for v in re.findall(r"-?\d+\.\d+", block)]
+        self.assertEqual(numbers[:3], [0.18, -0.025, 0.0])
+        self.assertEqual(numbers[3:6], [0.18, 0.025, 0.0])
+        self.assertEqual(
+            tuple(tuple(float(v) for v in row) for row in ardy_gen.VR_LEVER),
+            ((0.18, -0.025, 0.0), (0.18, 0.025, 0.0)),
+        )
 
 
 class LazyImportTest(unittest.TestCase):

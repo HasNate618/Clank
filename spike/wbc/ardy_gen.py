@@ -76,6 +76,13 @@ LOOK_AT_OBJECT_RAD = math.radians(20)
 #: MuJoCo world (x forward, y left, z up) -> ARDY world (x left, y up, z forward): `ardy = M @ mujoco`.
 MUJOCO_TO_ARDY = ((0.0, 1.0, 0.0), (0.0, 0.0, 1.0), (1.0, 0.0, 0.0))
 
+#: Where the relay reports a hand, in the wrist link's own frame (`sonic_runner.VR_OFFSETS`, left
+#: then right). The game draws the glove out there, and both the clasp and the game's own grab
+#: measure it there - so this is the point a reach has to put on the object. Pinning the wrist
+#: *link* instead leaves the glove 0.18 m past the object and the clasp's own measurement 0.18 m
+#: from the target it was pinned to, which is above `CLASP_START_M` and can never fire.
+VR_LEVER = ((0.18, -0.025, 0.0), (0.18, 0.025, 0.0))
+
 _MODELS: dict[str, Any] = {}
 _CONVERTERS: dict[int, Any] = {}
 _SKELETON: Any = None
@@ -87,6 +94,45 @@ _SKELETON: Any = None
 def hand_delta(forward_m: float, up_m: float) -> tuple[float, float, float]:
     """A hand displacement in ARDY space from a forward and an up distance, in metres."""
     return (0.0, float(up_m), float(forward_m))
+
+
+def lever_offset_ardy(side: str = "right") -> tuple[float, float, float]:
+    """`VR_LEVER` for one hand, in ARDY axes.
+
+    The wrist link's own frame is relabelled exactly as the world is (`MUJOCO_TO_ARDY`), so a
+    vector given in that frame converts with the same matrix: `(x, y, z)` of MuJoCo becomes
+    `(y, z, x)`.
+    """
+    if side not in ("left", "right"):
+        raise ValueError(f"side must be 'left' or 'right', got {side!r}")
+    lever = VR_LEVER[0 if side == "left" else 1]
+    return tuple(  # type: ignore[return-value]
+        sum(MUJOCO_TO_ARDY[row][column] * lever[column] for column in range(3))
+        for row in range(3)
+    )
+
+
+def glove_point(
+    wrist_pos: Sequence[float], wrist_rot: Sequence[float], side: str = "right"
+) -> tuple[float, float, float]:
+    """The relayed hand for a wrist at `wrist_pos` with rotation `wrist_rot` (row-major 3x3).
+
+    Pure on purpose: the lever is 0.18 m of the reach, so it is unit-tested in the standard
+    library while `glove_position` supplies the forward kinematics from a pose36.
+    """
+    lever = lever_offset_ardy(side)
+    return tuple(
+        float(wrist_pos[row])
+        + sum(float(wrist_rot[3 * row + column]) * lever[column] for column in range(3))
+        for row in range(3)
+    )  # type: ignore[return-value]
+
+
+def delta_to_target(
+    current: Sequence[float], target: Sequence[float]
+) -> tuple[float, float, float]:
+    """The displacement from `current` to `target`, the form a constraint takes."""
+    return tuple(float(far) - float(near) for near, far in zip(current, target, strict=True))  # type: ignore[return-value]
 
 
 def check_steps(steps: int, num_base_steps: int) -> int:
@@ -390,7 +436,13 @@ def hand_constraint(
 
 
 def hand_target(skeleton, pose: dict, hand_delta: Sequence[float]) -> tuple[float, float, float]:
-    """The world point `hand_constraint` pins: `pose`'s right hand plus `hand_delta`."""
+    """The wrist-link point `hand_constraint` pins: `pose`'s hand plus `hand_delta`.
+
+    `hand_delta` is the displacement that lands the **glove** on the object (`glove_position`,
+    not `hand_position`). A translation moves the wrist and the glove by the same amount, and the
+    constraint pins the wrist's rotation separately, so the wrist point is the right place to
+    apply it - but the caller must have measured the delta from the glove.
+    """
     hand = skeleton.right_hand_joint_names[0]
     x, y, z = pose["posed_joints"][0, -1, skeleton.bone_index[hand]].tolist()
     dx, dy, dz = (float(value) for value in hand_delta)
@@ -422,10 +474,10 @@ def root_goal_constraint(
 
 
 def hand_position(pose36: Sequence[float], hand: str = "right") -> tuple[float, float, float]:
-    """Where a pose36 puts one hand, in ARDY world metres.
+    """The wrist *link* a pose36 puts one hand at, in ARDY world metres.
 
-    This is how a caller turns an object in the game's world into a `hand_delta`: subtract it
-    from the object's point (after the same MuJoCo -> ARDY axis swap, `MUJOCO_TO_ARDY`).
+    This is the point a constraint's displacement is applied to. It is **not** the hand the game
+    draws or the clasp measures - that is `glove_position`.
     """
     skeleton = _skeleton()
     motion = _motion_pose(pose36, skeleton, _converter(skeleton))
@@ -437,6 +489,26 @@ def hand_position(pose36: Sequence[float], hand: str = "right") -> tuple[float, 
         raise ValueError(f"hand must be 'left' or 'right', got {hand!r}")
     x, y, z = motion["posed_joints"][0, -1, skeleton.bone_index[names[0]]].tolist()
     return (x, y, z)
+
+
+def glove_position(pose36: Sequence[float], hand: str = "right") -> tuple[float, float, float]:
+    """The **relayed hand** a pose36 puts on the object, in ARDY world metres.
+
+    The wrist link plus the lever the relay carries it 0.18 m out on, which is the point the game
+    grabs with and therefore the point `hand_delta` has to land on the object.
+    """
+    skeleton = _skeleton()
+    motion = _motion_pose(pose36, skeleton, _converter(skeleton))
+    if hand == "right":
+        names = skeleton.right_hand_joint_names
+    elif hand == "left":
+        names = skeleton.left_hand_joint_names
+    else:
+        raise ValueError(f"hand must be 'left' or 'right', got {hand!r}")
+    joint = skeleton.bone_index[names[0]]
+    wrist = motion["posed_joints"][0, -1, joint].tolist()
+    rotation = motion["global_rot_mats"][0, -1, joint].reshape(-1).tolist()
+    return glove_point(wrist, rotation, hand)
 
 
 def generate(
@@ -459,9 +531,11 @@ def generate(
     that many frames regardless, so a different count would pin the hand at the wrong one.
 
     Returns `(frames, metrics)`, the frames being pose36 rows (`g1_pack` order, 25 Hz) and the
-    metrics `{"seconds", "peak_vram_gb", "hand_residual_m", "fk_roundtrip_m",
-    "fk_roundtrip_deg"}`. Every number is measured, not assumed, so a caller can decide whether
-    another generation is worth it.
+    metrics `{"seconds", "peak_vram_gb", "hand_residual_m", "wrist_residual_m",
+    "fk_roundtrip_m", "fk_roundtrip_deg"}`. `hand_residual_m` is the **glove** against the
+    target - what `hand_delta` is stated about and what the game grabs with - and
+    `wrist_residual_m` is the wrist link, which is 0.18 m nearer the shoulder. Every number is
+    measured, not assumed, so a caller can decide whether another generation is worth it.
     """
     context = _rows(pose36_context)
     if history_features is not None:
@@ -565,14 +639,23 @@ def generate(
 
     hand = skeleton.bone_index[skeleton.right_hand_joint_names[0]]
     landed = output["posed_joints"][0, last_frame, hand]
-    residual = float(
+    wrist_residual = float(
         torch.linalg.norm(landed - torch.tensor(target, device=landed.device, dtype=landed.dtype))
     )
+    # The number that means something is where the **glove** landed: the relay reports the hand
+    # 0.18 m out from the wrist link, so a wrist that hits the target has the hand 0.18 m past it.
+    glove = glove_point(
+        [float(v) for v in landed.tolist()],
+        [float(v) for v in output["global_rot_mats"][0, last_frame, hand].reshape(-1).tolist()],
+        "right",
+    )
+    residual = math.dist(glove, target)
     frames = [tuple(float(v) for v in row) for row in qpos[0].tolist()]
     metrics = {
         "seconds": seconds,
         "peak_vram_gb": (torch.cuda.max_memory_allocated() / 1e9) if device == "cuda" else None,
         "hand_residual_m": residual,
+        "wrist_residual_m": wrist_residual,
         "fk_roundtrip_m": fk_roundtrip,
         "fk_roundtrip_deg": fk_roundtrip_deg,
     }

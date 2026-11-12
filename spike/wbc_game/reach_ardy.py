@@ -112,23 +112,33 @@ def world_point(ardy: tuple[float, float, float]) -> tuple[float, float, float]:
 def hand_delta_for(
     latest: tuple[float, ...], target: tuple[float, float, float], side: str = "right"
 ) -> tuple[float, float, float]:
-    """The displacement from the achieved hand to `target`, both in ARDY world metres.
+    """The displacement that puts the **glove** on `target`, in ARDY world metres.
 
-    ARDY pins the hand *on* `hand_position + delta`, so this is the whole intent: where the
-    hand has to go, stated relative to where it is.
+    The glove and not the wrist link: the relay reports the hand 0.18 m out from
+    `right_wrist_yaw_link` (`VR_LEVER`), so a delta measured from the link leaves the hand the
+    game draws 0.18 m past the object, and the clasp - which reads the relayed hand - can never
+    come within `CLASP_START_M` of the point the constraint was pinned to. A translation moves
+    both points equally, so the same delta is applied to the wrist's own position.
     """
-    hand = ardy_gen.hand_position(latest, hand=side)
-    return (target[0] - hand[0], target[1] - hand[1], target[2] - hand[2])
+    return ardy_gen.delta_to_target(ardy_gen.glove_position(latest, hand=side), target)
 
 
 def hand_residual(
     latest: tuple[float, ...], target: tuple[float, float, float], side: str = "right"
 ) -> float:
-    """How far the achieved hand is from `target`, in metres, in ARDY world.
+    """How far the achieved **glove** is from `target`, in metres, in ARDY world.
 
     Measured through the same FK the constraint was built with, so a mapping error cancels
-    out of the comparison instead of turning into a false residual.
+    out of the comparison instead of turning into a false residual. `wrist_residual` is the
+    same question about the link, for the diagnostics that need to tell them apart.
     """
+    return math.dist(ardy_gen.glove_position(latest, hand=side), target)
+
+
+def wrist_residual(
+    latest: tuple[float, ...], target: tuple[float, float, float], side: str = "right"
+) -> float:
+    """How far the achieved wrist **link** is from `target` - 0.18 m of lever bigger."""
     return math.dist(ardy_gen.hand_position(latest, hand=side), target)
 
 
@@ -252,7 +262,7 @@ def wait_for_play(
                 reach_vr.send(authority=AUTH_CLOSURE, closure=closure_for(side))
                 clasped = True
                 print(
-                    f"clasp  {side} hand {distance * 1000:.0f} mm from the object "
+                    f"clasp  {side} glove {distance * 1000:.0f} mm from the object "
                     f"(<= {end_pose.CLASP_START_M * 1000:.0f} mm), closed mid-clip"
                 )
         if status is not None and status["seq_ack"] == seq:
@@ -396,7 +406,8 @@ def main() -> int:
             return 2
         print(
             f"gen {generated}: {len(frames)} frames in {metrics['seconds']:.3f} s, "
-            f"generator residual {metrics['hand_residual_m'] * 1000:.1f} mm, "
+            f"glove residual {metrics['hand_residual_m'] * 1000:.1f} mm "
+            f"(wrist {metrics['wrist_residual_m'] * 1000:.1f} mm), "
             f"vram {metrics['peak_vram_gb']:.2f} GB{root_note}"
         )
         seq = deposit(session_dir, frames)
@@ -412,7 +423,10 @@ def main() -> int:
             return 2
         residual = hand_residual(final_ring["poses"][-1], target)
         best = min(best, residual)
-        print(f"gen {generated}: achieved hand residual {residual * 1000:.1f} mm")
+        print(
+            f"gen {generated}: achieved glove residual {residual * 1000:.1f} mm "
+            f"(wrist {wrist_residual(final_ring['poses'][-1], target) * 1000:.1f} mm)"
+        )
         decision = end_pose.decide_next(
             kind=presented,
             residual_m=residual,

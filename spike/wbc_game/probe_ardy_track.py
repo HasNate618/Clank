@@ -321,6 +321,13 @@ def analyse(
     residual the generator is judged on; the body's own `right_hand` in `body_state.json`
     is MuJoCo's kinematics on the same joint angles and shares nothing with it. When those
     two disagree, the disagreement is ours, not the tracker's.
+
+    Every one of them is the **glove**, because the glove is what the game grabs with and what
+    `hand_delta` is stated about (`VR_LEVER`): the relay reports the hand 0.18 m out from
+    `right_wrist_yaw_link`. `reach_vr.link` would take the lever back off and compare a wrist
+    to an object point - the mistake that let a wrist-pinned constraint read as 66 mm while the
+    glove sat 0.18 m past the object. `lever_gap_m` cross-checks the two gloves, and only a few
+    centimetres of it is ARDY's export loss, so it is also the test of the lever's direction.
     """
     residual = reach_ardy.hand_residual(final_pose, target)
     roots = [tuple(float(v) for v in st["root_p"]) for st in samples if "root_p" in st]
@@ -337,20 +344,22 @@ def analyse(
         tuple(first["root_q"]), tuple(first["head"]["q_xyzw"])
     )
     head_end = world_head_yaw_deg(tuple(last["root_q"]), tuple(last["head"]["q_xyzw"]))
-    # `body_state`'s hand is the wrist *plus* the 0.18 m lever the relay carries, and the
-    # ARDY skeleton's hand is `right_wrist_yaw`: `reach_vr.link` takes the lever back off so
-    # the two numbers name the same link. Neither shares code with `_motion_pose`.
-    body_hand = reach_vr.to_world(reach_vr.link(last, "right"), last)
+    # `body_state`'s hand IS the glove the game draws, so it is compared to the object point
+    # directly; pulling the lever back off first would compare a wrist link to an object.
+    body_hand = reach_vr.to_world(tuple(last["right_hand"]["p"]), last)
     body_error = tuple(
         a - b for a, b in zip(body_hand, target_world, strict=True)
     )
-    generator_hand = reach_ardy.world_point(ardy_gen.hand_position(clip_final))
+    generator_hand = reach_ardy.world_point(ardy_gen.glove_position(clip_final))
     generator_error = tuple(
         a - b for a, b in zip(generator_hand, target_world, strict=True)
     )
+    lever_gap = math.dist(
+        reach_ardy.world_point(ardy_gen.glove_position(final_pose)), body_hand
+    )
     # The signed error against the body's own axes: the world triple above is mostly the
     # heading on a body facing -90 deg, so this is the readable one.
-    achieved = ardy_gen.hand_position(final_pose)
+    achieved = ardy_gen.glove_position(final_pose)
     error_ardy = tuple(
         a - b for a, b in zip(achieved, target, strict=True)
     )
@@ -366,6 +375,7 @@ def analyse(
         "body_hand_world_m": [round(v, 4) for v in body_hand],
         "body_error_world_m": [round(v, 4) for v in body_error],
         "generator_error_world_m": [round(v, 4) for v in generator_error],
+        "lever_gap_m": round(lever_gap, 5),
         "root_start": list(start),
         "root_end": list(end),
         "root_net_m": math.dist(start, end),
@@ -449,7 +459,7 @@ def main() -> int:
             print("the pose ring vanished before generation")
             return 3
         latest = ring["poses"][-1]
-        hand = ardy_gen.hand_position(latest)
+        hand = ardy_gen.glove_position(latest)  # the point the game grabs with
         heading = ardy_gen.heading_angle(latest)
         root_ardy = ardy_gen.world_root(latest)
         if args.root_offset is not None:
@@ -481,7 +491,7 @@ def main() -> int:
             f"facing {math.degrees(heading):.1f} deg"
         )
         print(
-            f"right hand {tuple(round(v, 3) for v in hand)} -> constrained "
+            f"right glove {tuple(round(v, 3) for v in hand)} -> constrained "
             f"{tuple(round(v, 3) for v in target)} {placed_at} "
             f"= {tuple(round(v, 3) for v in reach_ardy.world_point(target))} MuJoCo world"
         )
@@ -503,7 +513,7 @@ def main() -> int:
         clip_look_deg = math.degrees(ardy_gen.torso_yaw(frames[-1]))
         print(
             f"generated {len(frames)} frames in {metrics['seconds']:.3f} s, "
-            f"generator residual {metrics['hand_residual_m'] * 1000:.1f} mm, "
+            f"glove residual {metrics['hand_residual_m'] * 1000:.1f} mm, "
             f"vram {metrics['peak_vram_gb']:.2f} GB"
         )
         seq = reach_ardy.deposit(session_dir, frames)

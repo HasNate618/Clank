@@ -166,11 +166,13 @@ def main() -> int:
 
     stand = stand_pose36()
     context = [stand] * 4
-    hand = ardy_gen.hand_position(stand)
+    # The glove, not the wrist link: this probe's target is the point the game grabs with, and
+    # `generate` reports its residual against the same point.
+    hand = ardy_gen.glove_position(stand)
     delta = ardy_gen.hand_delta(ardy_gen.HAND_DELTA_FWD, ardy_gen.HAND_DELTA_UP)
     target = (hand[0] + delta[0], hand[1] + delta[1], hand[2] + delta[2])
     print(f"stand at {STAND_ROOT} facing {STAND_HEADING:.2f} rad")
-    print(f"right hand {tuple(round(v, 3) for v in hand)} -> target {tuple(round(v, 3) for v in target)}")
+    print(f"right glove {tuple(round(v, 3) for v in hand)} -> target {tuple(round(v, 3) for v in target)}")
 
     report: dict = {"device": device, "torch": torch.__version__, "steps": args.steps,
                     "stand": list(STAND_ROOT), "stand_heading": STAND_HEADING,
@@ -184,7 +186,8 @@ def main() -> int:
     checks = frame_checks(frames, stand)
     fk_clip = write_fk_clip(args.out, frames)
     print(f"hand only: {len(frames)} frames, {metrics['seconds']:.3f} s, "
-          f"hand residual {metrics['hand_residual_m'] * 1000:.1f} mm")
+          f"glove residual {metrics['hand_residual_m'] * 1000:.1f} mm "
+          f"(wrist {metrics['wrist_residual_m'] * 1000:.1f} mm)")
     print(f"  peak VRAM {metrics['peak_vram_gb']:.2f} GB"
           if metrics["peak_vram_gb"] is not None else "  peak VRAM n/a (cpu)")
     print(f"  clip frame 0: root offset {checks['root_offset_m'] * 1000:.0f} mm, "
