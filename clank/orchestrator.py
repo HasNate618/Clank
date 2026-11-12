@@ -941,6 +941,17 @@ class SessionManager:
             # the simulated body actually achieved (see clank/pose_relay.py).
             relay = Path(__file__).with_name("pose_relay.py")
             state = Path(self.cfg.paths.session_root) / "body" / "body_state.json"
+            # Declared rather than defaulted: the relay writes what it used beside the
+            # state file, and everything that unprojects a pixel reads it back there.
+            scale_flags: list[str] = []
+            if self.cfg.body.player_scale != 1.0:
+                px, py, pz = (float(c) for c in self.cfg.body.player_pivot)
+                scale_flags = [
+                    "--player-scale", f"{self.cfg.body.player_scale:g}",
+                    "--player-pivot", f"{px:g},{py:g},{pz:g}",
+                    "--player-scale-head",
+                    "on" if self.cfg.body.player_scale_head else "off",
+                ]
             argv = [
                 sys.executable,
                 str(relay),
@@ -952,6 +963,7 @@ class SessionManager:
                 str(self._session_dir / "body_pose.csv"),
                 "--yaw-offset-deg",
                 f"{self.cfg.body.yaw_offset_deg:g}",
+                *scale_flags,
                 # Omitted rather than passed as 0: undeclared is the existing
                 # behaviour, and 0 deg is not a valid declaration.
                 *fov_flags,

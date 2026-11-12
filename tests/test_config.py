@@ -397,6 +397,57 @@ class FieldOfViewConfig(unittest.TestCase):
                 load_config(path, env={})
 
 
+class PlayerScaleConfig(unittest.TestCase):
+    """How big the emulated player is reported to the game, as a config knob.
+
+    Unscaled by default, because that is the behaviour every earlier measurement was taken
+    under. The pivot is a numeric triple, which is the one shape the config loader's
+    list-of-strings rule does not cover: a two-value "point" has to be refused at load
+    rather than reach the relay as half a pivot.
+    """
+
+    def test_the_player_is_the_robot_as_it_is_by_default(self) -> None:
+        body = load_config(None, env={}).body
+        self.assertEqual(body.player_scale, 1.0)
+        self.assertEqual(body.player_pivot, (0.0, 0.0, 0.0))
+        self.assertTrue(body.player_scale_head)
+
+    def test_it_reads_from_the_file(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            path = Path(raw) / "config.toml"
+            path.write_text(
+                "[body]\nplayer_scale = 1.43\nplayer_pivot = [0.0, -0.24, 0.0]\n"
+                "player_scale_head = false\n",
+                encoding="utf-8",
+            )
+            body = load_config(path, env={}).body
+            self.assertEqual(body.player_scale, 1.43)
+            self.assertEqual(body.player_pivot, (0.0, -0.24, 0.0))
+            self.assertFalse(body.player_scale_head)
+
+    def test_half_a_pivot_is_refused(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            path = Path(raw) / "config.toml"
+            path.write_text("[body]\nplayer_pivot = [0.0, -0.24]\n", encoding="utf-8")
+            with self.assertRaises(ConfigError):
+                load_config(path, env={})
+
+    def test_a_pivot_that_is_not_numbers_is_refused(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            path = Path(raw) / "config.toml"
+            path.write_text("[body]\nplayer_pivot = ['a', 'b', 'c']\n", encoding="utf-8")
+            with self.assertRaises(ConfigError):
+                load_config(path, env={})
+
+    def test_a_mirroring_scale_is_refused(self) -> None:
+        for bad in (0.0, -1.43):
+            with tempfile.TemporaryDirectory() as raw:
+                path = Path(raw) / "config.toml"
+                path.write_text(f"[body]\nplayer_scale = {bad}\n", encoding="utf-8")
+                with self.assertRaises(ConfigError):
+                    load_config(path, env={})
+
+
 class BodyPoseFlags(unittest.TestCase):
     """The relay argv the config derives, so "0 means undeclared" has one owner."""
 

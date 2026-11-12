@@ -84,6 +84,20 @@ class BodyConfig:
     #: point of emulating one.
     fov_h_deg: float = 0.0
     fov_v_deg: float = 0.0
+    #: How big the emulated player is reported to the game, as a multiple of the robot.
+    #: The game's room is laid out for an adult and the G1 is 1.32 m, so at 1.0 every
+    #: object sits about 1.4x further than the arm travels. 1.43 is the measured adult
+    #: ratio and the value `research/g1-scale.md` reports; 1.0 changes nothing. This
+    #: scales what the game is TOLD, not the robot: see the pivot below.
+    player_scale: float = 1.0
+    #: The point, in the body's world frame, the scale is measured from. The resting
+    #: wrist is the measured choice: travel = |object - pivot| / scale, so a pivot at the
+    #: floor lifts the hand faster than it lengthens the arm and makes a reach longer.
+    player_pivot: tuple[float, float, float] = (0.0, 0.0, 0.0)
+    #: Whether the camera is scaled with the hands. Measured both ways: with the head
+    #: left alone the camera stays where the depth measurements were taken and only the
+    #: hands grow; with it scaled the game's whole view moves with the player.
+    player_scale_head: bool = True
 
 
 @dataclass(frozen=True)
@@ -181,6 +195,10 @@ DEFAULTS: dict[str, dict[str, Any]] = {
         # nothing, leaving the remote driver's own default in force.
         "fov_h_deg": 0.0,
         "fov_v_deg": 0.0,
+        # How big the emulated player is reported to the game; 1.0 changes nothing.
+        "player_scale": 1.0,
+        "player_pivot": (0.0, 0.0, 0.0),
+        "player_scale_head": True,
     },
     "preview": {
         "width": 1280,
@@ -223,7 +241,27 @@ def _coerce(value: Any, default: Any, where: str) -> Any:
             raise ConfigError(f"{where} must be a string")
         return value
     if isinstance(default, (list, tuple)):
-        if not isinstance(value, (list, tuple)) or not all(isinstance(item, str) for item in value):
+        if not isinstance(value, (list, tuple)):
+            raise ConfigError(f"{where} must be a list")
+        if default and all(
+            isinstance(item, (int, float)) and not isinstance(item, bool) for item in default
+        ):
+            # A numeric triple, e.g. a pivot: the default's own shape is the contract, so a
+            # two-value "point" is refused here rather than reaching the relay.
+            if len(value) != len(default):
+                raise ConfigError(
+                    f"{where} must be {len(default)} numbers, got {len(value)}"
+                )
+            if not all(
+                isinstance(item, (int, float)) and not isinstance(item, bool)
+                for item in value
+            ):
+                raise ConfigError(f"{where} must be {len(default)} numbers")
+            numbers = (float(value[0]), float(value[1]), float(value[2]))
+            if len(numbers) == 3:  # noqa: SIM108 - explicit is the point here
+                return numbers
+            raise ConfigError(f"{where} must be three numbers")
+        if not all(isinstance(item, str) for item in value):
             raise ConfigError(f"{where} must be a list of strings")
         return tuple(value)
     raise ConfigError(f"unsupported default for {where}")
@@ -293,6 +331,17 @@ def _validate(cfg: Config) -> None:
         # with a field of view nobody intended.
         raise ConfigError(
             "body.fov_h_deg and body.fov_v_deg must be given together, or both 0"
+        )
+    if not math.isfinite(cfg.body.player_scale) or cfg.body.player_scale <= 0.0:
+        # A zero or negative scale collapses the room to a point or mirrors it, and both
+        # look like a tracking fault rather than the argument error they are.
+        raise ConfigError(
+            f"body.player_scale must be finite and positive, got {cfg.body.player_scale!r}"
+        )
+    pivot = tuple(cfg.body.player_pivot)
+    if len(pivot) != 3 or not all(math.isfinite(float(c)) for c in pivot):
+        raise ConfigError(
+            f"body.player_pivot must be x,y,z, got {cfg.body.player_pivot!r}"
         )
     for field_name in (
         "steam_settle_sec",
