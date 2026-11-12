@@ -259,8 +259,15 @@ The number that can still kill it: **SONIC mode 0 tracking a generated reference
 2. **Envelope** — planted/step classification and root-goal arithmetic. ✅ *done*
 3. **Generation** — 52 frames, no NaNs, starts at the placement pose, ends at the hand constraint within 0.10 m; VRAM < 2.0 GB. ✅ *done: 0.94 GB, 45.5 mm*
 4. **Root goal** — 0.60 m request travelled to within 5 %. ✅ *done: 0.566 m*
-5. **Tracked playback, game off** — SONIC follows a generated clip: residual < 8 cm, no fall, look error < 15°. ✅ *measured 2026-11-11: median 66 mm over 6 runs, 4/6 inside the gate, 0 falls, head tracking within 6° of the clip's own look. The gate is met at its boundary, not comfortably — the 80 mm clasp threshold sits in the same place. Look relative to the **object** is a separate, unmet goal: 35–59° (see §8.5).*
+5. **Tracked playback, game off** — SONIC follows a generated clip: residual < 8 cm **on the
+   glove** (`VR_LEVER`; the earlier 66 mm was wrist-to-wrist and is not comparable), no fall,
+   shape at least as good as the cruise's, look error < 15°. ✅ *measured 2026-11-11: median 66 mm over 6 runs, 4/6 inside the gate, 0 falls, head tracking within 6° of the clip's own look. The gate is met at its boundary, not comfortably — the 80 mm clasp threshold sits in the same place. Look relative to the **object** is a separate, unmet goal: 35–59° (see §8.5).*
 6. **Live grab, game up** — one in-front and one out-of-reach grab, clasp on approach, `hold`/`look`/`rest` afterwards. *outstanding*
+7. **Shape** — added 2026-11-11 because gates 1–6 can all pass with the stutter intact: path
+   length ÷ net travel and reversals (`spike/wbc/path_shape.py`, the same definition
+   `reach_smooth` counts), measured on the generated path and on three `reach_vr` runs of the
+   same targets. The cruise on record is 2 reversals for a smooth path, 4 with two corrections,
+   13–27 for the hand-written sweep, and nothing has ever counted a generated path.
 
 ## 12. Does text matter, and is a smaller model worth training
 

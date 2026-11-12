@@ -80,6 +80,7 @@ if str(_GAME) not in sys.path:
 import ardy_gen  # noqa: E402  # pyright: ignore[reportMissingImports]
 import end_pose  # noqa: E402  # pyright: ignore[reportMissingImports]
 import mb_mailbox  # noqa: E402  # pyright: ignore[reportMissingImports]
+import path_shape  # noqa: E402  # pyright: ignore[reportMissingImports]
 import reach_ardy  # noqa: E402  # pyright: ignore[reportMissingImports]
 import reach_vr  # noqa: E402  # pyright: ignore[reportMissingImports]
 
@@ -368,8 +369,19 @@ def analyse(
         for unit in body_axes(placed_on)
     )
     tracked = signed_error(achieved, target)
+    # Path shape, because the reach was rejected for how it moved and no residual can see it.
+    # The same definition `reach_smooth` uses, so the count is comparable with the cruise's
+    # recorded 2 / 4 / 13-27 reversals.
+    hand_path = path_shape.path_shape(
+        [reach_vr.to_world(tuple(st["right_hand"]["p"]), st) for st in samples]
+    )
     return {
         "residual_m": residual,
+        "hand_path": hand_path,
+        "tilt_max_deg": round(
+            math.degrees(math.acos(max(-1.0, min(1.0, min(up_z(tuple(st["root_q"])) for st in samples))))),
+            1,
+        ),
         "error_body_m": [round(v, 5) for v in error_body],
         **{f"tracked_{key}": value for key, value in tracked.items()},
         "body_hand_world_m": [round(v, 4) for v in body_hand],
@@ -569,7 +581,7 @@ def main() -> int:
             + " body frame"
         )
         print(
-            f"body's own hand (wrist link) {tuple(report['body_hand_world_m'])}  "
+            f"body's own glove {tuple(report['body_hand_world_m'])}  "
             "signed error: "
             + ", ".join(
                 f"{value * 1000:+.0f} mm {axis}"
@@ -578,6 +590,17 @@ def main() -> int:
                 )
             )
             + " world (the row above, from MuJoCo instead of our FK)"
+        )
+        print(
+            f"glove path: {report['hand_path']['path_m']:.3f} m travelled for "
+            f"{report['hand_path']['net_m']:.3f} m net "
+            f"(straightness {report['hand_path']['straightness']:.3f}), "
+            f"{report['hand_path']['reversals']} reversals "
+            f"(cruise on record: 2 smooth, 4 with two corrections)"
+        )
+        print(
+            f"lever cross-check {report['lever_gap_m'] * 1000:.1f} mm between our FK's glove "
+            f"and the relayed one; torso tilt {report['tilt_max_deg']:.1f} deg max"
         )
         print(
             "clip's last frame against the object: "
