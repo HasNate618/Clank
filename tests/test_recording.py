@@ -12,6 +12,7 @@ import time
 import unittest
 from dataclasses import replace
 from pathlib import Path
+from unittest.mock import patch
 
 from clank import recording
 from clank.config import load_config
@@ -594,13 +595,22 @@ esac
 #: The fake probe answers `ffprobe -print_format json -show_entries ...`. A part
 #: whose name says "broken" has no moov atom to be found; the game part is a
 #: minute long and the rest are four, so the padding arithmetic is visible in the
-#: composite's argv.
+#: composite's argv. A part named "short-robot" is a minute too, which is the
+#: demotion the right-hand tile has to survive, and the composite's own output
+#: measures 238.5 s -- deliberately not the 240 s the run asked for, so a test can
+#: tell a measured length from the target.
 FAKE_PROBE = """#!/bin/sh
 for a in "$@"; do part="$a"; done
 case "$part" in
   *broken*)
     echo "moov atom not found" >&2
     exit 1
+    ;;
+  *short-robot*)
+    printf '{"streams":[{"codec_type":"video"}],"format":{"duration":"60.0"}}'
+    ;;
+  *recording.mp4)
+    printf '{"streams":[{"codec_type":"video"}],"format":{"duration":"238.5"}}'
     ;;
   *game.mp4)
     printf '{"streams":[{"codec_type":"video"}],"format":{"duration":"60.0"}}'
@@ -712,7 +722,9 @@ class CompositeTests(unittest.TestCase):
         self.assertEqual(manifest["height"], recording.HEIGHT)
         self.assertEqual(manifest["fps"], 15)
         self.assertEqual(manifest["bytes"], (self.run_dir / "recording.mp4").stat().st_size)
-        self.assertEqual(manifest["duration_s"], 240.0)
+        # The run asked for 240 s; the probe measured the file at 238.5, and the
+        # measurement is what the page shows.
+        self.assertEqual(manifest["duration_s"], 238.5)
         # The manifest a dashboard reads back says so too.
         self.assertEqual(manifest_of(self, self.run_dir)["state"], "ready")
 
@@ -779,6 +791,21 @@ class CompositeTests(unittest.TestCase):
         self.assertEqual(manifest["error"], "ffmpeg is not runnable: [Errno 2] no such file")
         self.assertFalse((self.run_dir / "recording.mp4").exists())
 
+    def test_a_short_robot_part_is_padded_on_the_robot_side(self):
+        """The game's picture is not the only one that can be demoted mid-run:
+        the robot's hold has to land on the `[r]` chain, not only on `[g]`."""
+        write_recording(self.run_dir, parts={
+            "game": "parts/capture.mp4",        # 240 s: the fake probe's default
+            "robot": "parts/short-robot.mp4",   # 60 s: the part a demotion leaves
+            "audio": "parts/audio.m4a",
+        })
+        run_composite(self.run_dir, self.cfg)
+        chains = self.graph_of().split(";")
+        right = next(chain for chain in chains if chain.endswith("[r]"))
+        left = next(chain for chain in chains if chain.endswith("[g]"))
+        self.assertIn("tpad=stop_mode=clone:stop_duration=181.000", right)
+        self.assertNotIn("181.000", left)  # the game's side is full length
+
     def test_a_composite_that_writes_nothing_is_not_published(self):
         empty = self.base / "empty-ffmpeg"
         empty.write_text(EMPTY_COMPOSITOR)
@@ -788,6 +815,70 @@ class CompositeTests(unittest.TestCase):
         self.assertEqual(manifest["state"], "failed")
         self.assertIn("wrote nothing", manifest["error"])
         self.assertFalse(manifest["available"])
+        self.assertFalse((self.run_dir / "recording.mp4").exists())
+        # What is left is the parts, which are the evidence.
+        self.assertTrue((self.run_dir / "parts" / "game.mp4").is_file())
+
+    def test_a_composite_that_fails_leaves_no_truncated_video(self):
+        """A half-written `recording.mp4` would carry `file: null`, so neither the
+        sweep nor the prune would ever come back for it."""
+        crippled = self.base / "crippled-ffmpeg"
+        crippled.write_text(
+            "#!/bin/sh\n"
+            "for a in \"$@\"; do out=\"$a\"; done\n"
+            "printf 'half-an-mp4' > \"$out\"\n"
+            "echo 'boom: the encoder died' >&2\n"
+            "exit 1\n"
+        )
+        crippled.chmod(0o755)
+        cfg = replace(self.cfg, recording=replace(self.cfg.recording, ffmpeg=str(crippled)))
+        manifest = run_composite(self.run_dir, cfg)
+        self.assertEqual(manifest["state"], "failed")
+        self.assertIn("boom", manifest["error"])
+        self.assertFalse((self.run_dir / "recording.mp4").exists())
+        self.assertTrue((self.run_dir / "parts" / "game.mp4").is_file())
+
+    def test_a_composite_whose_output_cannot_be_demuxed_is_not_published(self):
+        """Exit 0 and non-zero bytes is not "playable": the output is probed too."""
+        encoder_dir = self.base / "corrupt"
+        encoder_dir.mkdir()
+        encoder = encoder_dir / "ffmpeg"
+        encoder.write_text(
+            "#!/bin/sh\n"
+            "for a in \"$@\"; do out=\"$a\"; done\n"
+            "printf 'not-an-mp4' > \"$out\"\n"
+        )
+        encoder.chmod(0o755)
+        probe = encoder_dir / "ffprobe"
+        probe.write_text(
+            "#!/bin/sh\n"
+            "for a in \"$@\"; do part=\"$a\"; done\n"
+            "case \"$part\" in\n"
+            "  *recording.mp4) echo 'moov atom not found' >&2; exit 1 ;;\n"
+            "  *.m4a) printf '{\"streams\":[{\"codec_type\":\"audio\"}],"
+            "\"format\":{\"duration\":\"240.0\"}}' ;;\n"
+            "  *) printf '{\"streams\":[{\"codec_type\":\"video\"}],"
+            "\"format\":{\"duration\":\"240.0\"}}' ;;\n"
+            "esac\n"
+        )
+        probe.chmod(0o755)
+        cfg = replace(self.cfg, recording=replace(self.cfg.recording, ffmpeg=str(encoder)))
+        manifest = run_composite(self.run_dir, cfg)
+        self.assertEqual(manifest["state"], "failed")
+        self.assertIn("no playable video", manifest["error"])
+        self.assertIn("moov atom not found", manifest["error"])
+        self.assertFalse(manifest["available"])
+        self.assertIsNone(manifest["file"])
+        self.assertFalse((self.run_dir / "recording.mp4").exists())
+
+    def test_a_prune_that_raises_does_not_undo_the_publication(self):
+        """Housekeeping is not part of the publication: the recording is `ready`
+        whether or not the cap could be enforced."""
+        with patch.object(recording, "prune", side_effect=OSError("disk gone")):
+            manifest = run_composite(self.run_dir, self.cfg)
+        self.assertEqual(manifest["state"], "ready")
+        self.assertEqual(manifest_of(self, self.run_dir)["state"], "ready")
+        self.assertTrue((self.run_dir / "recording.mp4").is_file())
 
     def test_the_run_just_composed_is_never_pruned(self):
         """The cap deletes the oldest, and `keep` is the run that just finished:
@@ -800,7 +891,9 @@ class CompositeTests(unittest.TestCase):
         cfg = replace(self.cfg, recording=replace(self.cfg.recording, max_total_mb=1))
         manifest = run_composite(self.run_dir, cfg)
         self.assertEqual(manifest["state"], "ready")
-        self.assertFalse(other.exists())  # older than nothing: over the cap, so gone
+        # Over the cap, so its video goes: the run that was just asked for stays.
+        self.assertFalse((other / "recording.mp4").exists())
+        self.assertEqual(manifest_of(self, other)["state"], "pruned")
         self.assertTrue((self.run_dir / "recording.mp4").is_file())
 
 
@@ -874,9 +967,46 @@ class SessionsRootTests(unittest.TestCase):
             self.make_video(run_dir, 1024 * 1024)
         removed = prune(self.sessions, 2, keep=newest)
         self.assertEqual([path.name for path in removed], ["101010-aaaaaa"])
-        self.assertFalse(oldest.exists())
+        # The video goes and the run stays; see the diary test below.
+        self.assertFalse((oldest / "recording.mp4").exists())
+        self.assertEqual(manifest_of(self, oldest)["state"], "pruned")
         self.assertTrue(middle.exists())
         self.assertTrue((newest / "recording.mp4").is_file())  # never the kept run
+
+    def test_pruning_keeps_the_diary_and_the_run_record(self):
+        """The cap measures video. The brain logs are the operator's other named
+        requirement, cost kilobytes beside the megabytes, and are not what the
+        cap is holding down."""
+        old = self.make_run("101010-aaaaaa", state="ready", file="recording.mp4",
+                            started_at="2026-11-12T10:00:00.000Z")
+        self.make_video(old, 1024 * 1024)
+        (old / "brain.jsonl").write_text('{"row": 1}\n')
+        (old / "brain.log").write_text("brain output\n")
+        (old / "run.json").write_text('{"run": "101010-aaaaaa"}\n')
+        (old / "frames").mkdir()
+        (old / "frames" / "0001.jpg").write_bytes(b"frame")
+        new = self.make_run("110000-bbbbbb", state="ready", file="recording.mp4",
+                            started_at="2026-11-12T11:00:00.000Z")
+        self.make_video(new, 1024 * 1024)
+
+        self.assertEqual([path.name for path in prune(self.sessions, 1)], ["101010-aaaaaa"])
+
+        self.assertFalse((old / "recording.mp4").exists())
+        self.assertFalse((old / "parts").exists())
+        self.assertEqual((old / "brain.jsonl").read_text(), '{"row": 1}\n')
+        self.assertTrue((old / "brain.log").is_file())
+        self.assertTrue((old / "run.json").is_file())
+        self.assertTrue((old / "frames" / "0001.jpg").is_file())
+        manifest = manifest_of(self, old)
+        self.assertEqual(manifest["state"], "pruned")
+        self.assertFalse(manifest["available"])
+        self.assertIsNone(manifest["file"])
+        self.assertEqual(manifest["error"], "pruned to make room")
+        # The page still lists the run, and says there is nothing to play.
+        row = next(row for row in list_recordings(self.sessions)
+                   if row["run_id"] == "101010-aaaaaa")
+        self.assertFalse(row["has_file"])
+        self.assertTrue(row["has_diary"])
 
     def test_pruning_logs_each_deletion_to_the_session_log(self):
         old = self.make_run("101010-aaaaaa", state="ready", file="recording.mp4",

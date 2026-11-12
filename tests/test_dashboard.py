@@ -1175,9 +1175,12 @@ class RecordingSweepTests(unittest.TestCase):
     """A dashboard that died mid-run leaves parts nobody owns: the next start
     clears them before the page serves, and says how many it cleared."""
 
-    def run_dashboard_with(self, order: list, stdout) -> list[Path]:
+    sessions_root: str = ""
+
+    def run_dashboard_with(self, order: list, stdout, server=None) -> list[Path]:
         class FakeServer:
             def __init__(self, address, manager, cfg, static_dir, **kwargs) -> None:
+                order.append("bind")
                 self.server_address = address
 
             def serve_forever(self, poll_interval: float = 0.5) -> None:
@@ -1185,6 +1188,8 @@ class RecordingSweepTests(unittest.TestCase):
 
             def server_close(self) -> None:
                 pass
+
+        server = server or FakeServer
 
         class FakeManager:
             def __init__(self, cfg) -> None:
@@ -1207,12 +1212,13 @@ class RecordingSweepTests(unittest.TestCase):
                 return True
 
         with tempfile.TemporaryDirectory() as temp:
+            self.sessions_root = temp
             cfg = load_config(None, env={})
             cfg = replace(cfg, paths=replace(cfg.paths, session_root=temp))
             with contextlib.redirect_stdout(stdout), \
                     patch.object(dashboard, "SessionManager", FakeManager), \
                     patch.object(dashboard, "RunManager", FakeRun), \
-                    patch.object(dashboard, "DashboardServer", FakeServer), \
+                    patch.object(dashboard, "DashboardServer", server), \
                     patch.object(dashboard, "signal"), \
                     patch.object(dashboard, "sweep_stale", autospec=True) as sweep:
                 swept = Path(temp) / "swept"
@@ -1224,10 +1230,23 @@ class RecordingSweepTests(unittest.TestCase):
         order: list[str] = []
         out = io.StringIO()
         args = self.run_dashboard_with(order, out)
-        self.assertEqual(order, ["sweep", "serve"])
+        # After the bind: a dashboard that cannot take its port deletes nothing.
+        self.assertEqual(order, ["bind", "sweep", "serve"])
         # Once, on the configured sessions root: nothing else sweeps.
         self.assertEqual(len(args), 1)
-        self.assertIsInstance(args[0], Path)
+        self.assertEqual(Path(args[0]), Path(self.sessions_root))
         # And the number is in the log, so a sweep that found nothing is visible
         # as a zero rather than as a silence.
         self.assertIn("swept 1 stale recording(s)", out.getvalue())
+
+    def test_a_dashboard_that_cannot_bind_sweeps_nothing(self):
+        """A second dashboard on the same session root is refused at the bind; it
+        must not have deleted the live one's parts on the way there."""
+        class Occupied:
+            def __init__(self, *args, **kwargs) -> None:
+                raise OSError(98, "Address already in use")
+
+        order: list[str] = []
+        with self.assertRaises(OSError):
+            self.run_dashboard_with(order, io.StringIO(), server=Occupied)
+        self.assertEqual(order, [])  # nothing bound, and nothing swept

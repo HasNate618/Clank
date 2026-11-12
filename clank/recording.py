@@ -841,9 +841,11 @@ def run_composite(run_dir: Path, cfg: Config) -> dict:
     Synchronous and bounded, because the caller detaches it into a thread once
     the run has gone idle. It probes every part the manifest names before it
     composites them, drops the ones that cannot be demuxed with a note, and
-    never writes ``ready`` for a run with nothing playable. Every kept picture
-    is padded to the run's own length so a part demoted mid-run cannot shorten
-    the file. The parts are deleted unless `keep_parts`; a failed composite
+    probes the composite's own output before it publishes it: ``ready`` means a
+    file that demuxes and carries a picture, not a process that exited 0. Every
+    kept picture is padded to the run's own length so a part demoted mid-run
+    cannot shorten the file, and ``duration_s`` is the length the output probe
+    measured. The parts are deleted unless `keep_parts`; a failed composite
     keeps them, because they are what the failure is diagnosed from.
 
     Returns the manifest it wrote. Prunes the recordings afterwards, never
@@ -916,24 +918,42 @@ def _composite(run_dir: Path, manifest: dict, cfg: Config) -> dict:
         out=out, fps=rec.fps, crf=rec.crf, preset=rec.preset, ffmpeg=rec.ffmpeg,
         pad=pad, duration=duration,
     )
+    # A half-written, unplayable or empty `recording.mp4` is worse than none:
+    # `_fail` publishes `file: null`, so neither the sweep (only STALE_STATES)
+    # nor the prune (only `ready`) would ever come back for it.
     try:
         done = subprocess.run(
             argv, stdin=subprocess.DEVNULL, capture_output=True,
             timeout=COMPOSITE_TIMEOUT_S, check=False,
         )
     except (OSError, subprocess.SubprocessError) as exc:
+        _remove_tree(out)
         return _fail(run_dir, manifest, f"the composite could not run: {exc}",
                      notes, parts, seconds)
     if done.returncode != 0:
         lines = _lines(done.stderr)
         detail = lines[-1][:200] if lines else f"ffmpeg exited {done.returncode}"
+        _remove_tree(out)
         return _fail(run_dir, manifest, f"the composite failed: {detail}", notes, parts, seconds)
     try:
         size = out.stat().st_size
     except OSError:
         size = 0
     if size <= 0:
+        _remove_tree(out)
         return _fail(run_dir, manifest, "the composite wrote nothing", notes, parts, seconds)
+    probed_out, problem = probe_part(out, want="video", ffprobe=ffprobe)
+    if probed_out is None:
+        _remove_tree(out)
+        return _fail(run_dir, manifest,
+                     f"the composite wrote no playable video: {problem}",
+                     notes, parts, seconds)
+    measured = float(probed_out.get("duration_s") or 0.0)
+    # A measurement beats a target: the run asked for `duration`, the file is
+    # what it is, and the page shows the length a player will actually run.
+    measured_s = round(measured, 2) if measured > 0 else (
+        round(duration, 2) if duration is not None else manifest.get("duration_s")
+    )
 
     doc = dict(manifest)
     doc.update({
@@ -945,7 +965,7 @@ def _composite(run_dir: Path, manifest: dict, cfg: Config) -> dict:
         "width": WIDTH,
         "height": HEIGHT,
         "fps": rec.fps,
-        "duration_s": round(duration, 2) if duration is not None else manifest.get("duration_s"),
+        "duration_s": measured_s,
         "notes": notes,
         "parts": parts,
         "part_seconds": {name: round(value, 2) for name, value in seconds.items()},
@@ -955,14 +975,21 @@ def _composite(run_dir: Path, manifest: dict, cfg: Config) -> dict:
         doc["parts"] = {}
         doc["part_seconds"] = {}
     published = _save_manifest(run_dir, doc)
-    prune(Path(cfg.paths.session_root), rec.max_total_mb, keep=run_dir)
+    # Housekeeping, not part of the publication: a prune that raised here would
+    # hand this call's blanket `except` a `ready` run to demote to `failed`.
+    with contextlib.suppress(Exception):
+        prune(Path(cfg.paths.session_root), rec.max_total_mb, keep=run_dir)
     return published
 
 
 def _fail(
     run_dir: Path, manifest: dict, error: str, notes: dict, parts: dict, seconds: dict,
 ) -> dict:
-    """Publish the failure: what could not be done, and what is left on disk."""
+    """Publish the failure: what could not be done, and what is left on disk.
+
+    The parts stay on purpose: a failed recording is diagnosed from them, and
+    they are the one thing a re-probe or a retry has to work from.
+    """
     doc = dict(manifest)
     doc.update({
         "state": "failed",
@@ -981,13 +1008,15 @@ def _fail(
 def sweep_stale(sessions_root: Path) -> list[Path]:
     """Clean up after a dashboard that died with a run in flight.
 
-    Called once at dashboard start, before the server serves and before any run
-    exists, so nothing it meets is live. A manifest left in ``recording`` or
-    ``composing`` belongs to a dashboard that will not come back, and so does a
-    ``parts/`` directory with no manifest at all: the parts (and any composite
-    killed mid-write) are deleted and the run marked ``failed: dashboard
-    exited``. A ``ready`` run is untouched, so its ``recording.mp4`` survives; a
-    ``failed`` run keeps its parts as evidence.
+    Called once at dashboard start, after the server has bound its port and
+    before any run exists: a dashboard refused its port deletes nothing, and
+    nothing it meets can be live yet. One dashboard per ``session_root`` is the
+    rule this rests on -- two on different ports would still both sweep. A
+    manifest left in ``recording`` or ``composing`` belongs to a dashboard that
+    will not come back, and so does a ``parts/`` directory with no manifest at
+    all: the parts (and any composite killed mid-write) are deleted and the run
+    marked ``failed: dashboard exited``. A ``ready`` run is untouched, so its
+    ``recording.mp4`` survives; a ``failed`` run keeps its parts as evidence.
 
     Returns the run directories it swept. Deletion is confined to a run
     directory found under the root: a symlinked session, ``runs`` or run
@@ -1020,22 +1049,29 @@ def sweep_stale(sessions_root: Path) -> list[Path]:
 
 
 def prune(sessions_root: Path, max_total_mb: int, keep: Path | None = None) -> list[Path]:
-    """Delete the oldest finished recordings until the total fits the cap.
+    """Reclaim the oldest finished recordings' video until the total fits the cap.
 
-    Only a ``ready`` recording counts and only a ``ready`` recording is deleted:
+    Only a ``ready`` recording counts and only a ``ready`` recording is pruned:
     a run whose composite has not finished has no size to count yet, and one
     that failed has no video. ``keep`` is the run that just composed and is
-    never deleted, even when it alone is over the cap: deleting the thing that
-    was just asked for is not pruning. ``0`` disables pruning. One line per
-    deletion names the run and its bytes in the session's ``session.log``.
+    never pruned, even when it alone is over the cap: deleting the thing that
+    was just asked for is not pruning. ``0`` disables pruning.
 
-    Returns the deleted run directories.
+    The cap measures video, so the video is what goes: ``recording.mp4`` and the
+    ``parts/`` it was cut from. The run's diary (``brain.jsonl``, ``brain.log``),
+    ``run.json`` and ``frames/`` stay -- kilobytes beside the megabytes, and the
+    operator's other named requirement -- and the manifest is rewritten as
+    ``pruned`` so the page lists the run and says why there is nothing to play.
+    One line per prune names the run and its bytes in the session's
+    ``session.log``.
+
+    Returns the run directories it pruned.
     """
     if max_total_mb <= 0:
         return []
     cap = max_total_mb * 1024 * 1024
     keep_dir = Path(keep).resolve() if keep is not None else None
-    ready: list[tuple[str, Path, Path, int]] = []
+    ready: list[tuple[str, Path, Path, int, dict]] = []
     for run_dir, session_dir in _runs(sessions_root):
         manifest = read_manifest(run_dir)
         if manifest is None or manifest.get("state") != "ready":
@@ -1044,15 +1080,30 @@ def prune(sessions_root: Path, max_total_mb: int, keep: Path | None = None) -> l
             size = (run_dir / RECORDING_NAME).stat().st_size
         except OSError:
             continue  # nothing on disk to reclaim
-        ready.append((str(manifest.get("started_at") or ""), run_dir, session_dir, size))
-    total = sum(size for *_rest, size in ready)
+        ready.append((str(manifest.get("started_at") or ""), run_dir, session_dir, size,
+                      manifest))
+    total = sum(size for *_rest, size, _manifest in ready)
     removed: list[Path] = []
-    for _started, run_dir, session_dir, size in sorted(ready, key=lambda row: (row[0], row[1].name)):
+    for _started, run_dir, session_dir, size, manifest in sorted(
+        ready, key=lambda row: (row[0], row[1].name)
+    ):
         if total <= cap:
             break
         if keep_dir is not None and run_dir.resolve() == keep_dir:
             continue
-        _remove_tree(run_dir)
+        _remove_tree(run_dir / RECORDING_NAME)
+        _remove_tree(run_dir / PARTS_DIR)
+        doc = dict(manifest)
+        doc.update({
+            "state": "pruned",
+            "available": False,
+            "file": None,
+            "error": "pruned to make room",
+            "bytes": 0,
+            "parts": {},
+            "part_seconds": {},
+        })
+        _save_manifest(run_dir, doc)
         total -= size
         _append_session_log(session_dir, f"recording pruned: {run_dir.name} {size} bytes")
         removed.append(run_dir)
