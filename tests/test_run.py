@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 import tempfile
 import threading
@@ -12,6 +13,7 @@ from dataclasses import replace
 from pathlib import Path
 
 from clank import brain
+from clank import run as run_mod
 from clank.config import load_config
 from clank.orchestrator import ConflictError
 from clank.run import RunManager
@@ -316,6 +318,20 @@ class RunManagerTests(RunHarness):
         run = self.make()
         self.assertEqual(run.current_diary(), newest / "brain.jsonl")
 
+    def test_argv_and_env_name_the_run(self) -> None:
+        run = self.make()
+        run.start()
+        self.assertEqual(self.wait_state("running"), "running")
+        self.assertEqual(self.spawn_kwargs["argv"], run.brain_argv())
+        self.assertEqual(self.spawn_kwargs["argv"][1], self.cfg.run.brain_script)
+        self.assertIn("--for", self.spawn_kwargs["argv"])
+        env = self.spawn_kwargs["env"]
+        self.assertTrue(env["CLANK_BRAIN_LOG"].endswith("brain.jsonl"))
+        self.assertTrue(env["CLANK_AUTO_STATE"].endswith("frames"))
+        self.assertNotIn("PYTHONPATH", env)
+        self.assertNotIn("VIRTUAL_ENV", env)
+        self.assertEqual(Path(self.spawn_kwargs["log_path"]).name, "brain.log")
+
     def test_stop_reports_a_stopped_child_as_a_stop_not_a_failure(self) -> None:
         run = self.make()
         run.start()
@@ -344,3 +360,43 @@ class PreflightTests(RunHarness):
         with self.assertRaises(RunError):
             run.start()
         self.assertEqual(self.manager.calls, [])
+
+
+class ChildTests(unittest.TestCase):
+    """The brain loop as a process: its exit code, and stopping it for real."""
+
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.log = Path(self.temp.name) / "brain.log"
+
+    def child(self, code: str):
+        return run_mod.spawn_child(
+            [sys.executable, "-c", code], os.environ.copy(), Path.cwd(), self.log
+        )
+
+    def test_exit_code_is_recorded(self) -> None:
+        child = self.child("raise SystemExit(3)")
+        self.addCleanup(child.stop, 2)
+        deadline = time.monotonic() + 10
+        while child.alive() and time.monotonic() < deadline:
+            time.sleep(0.02)
+        self.assertFalse(child.alive())
+        self.assertEqual(child.exit_code(), 3)
+
+    def test_stop_terminates_a_lingering_child(self) -> None:
+        child = self.child("import time; time.sleep(30)")
+        self.addCleanup(child.stop, 2)
+        self.assertTrue(child.alive())
+        started = time.monotonic()
+        child.stop(2.0)
+        self.assertFalse(child.alive())
+        self.assertLess(time.monotonic() - started, 5.0)
+
+    def test_output_goes_to_the_run_log(self) -> None:
+        child = self.child("print('heard jobbot')")
+        self.addCleanup(child.stop, 2)
+        deadline = time.monotonic() + 10
+        while child.alive() and time.monotonic() < deadline:
+            time.sleep(0.02)
+        self.assertIn("heard jobbot", self.log.read_text())

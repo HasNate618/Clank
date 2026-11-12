@@ -20,6 +20,7 @@ import json
 import os
 import re
 import shlex
+import signal
 import subprocess
 import threading
 import time
@@ -103,7 +104,7 @@ class RunManager:
         self._body = body
         self._overlay = overlay
         self._probe = probe or (lambda: brain.server_status())
-        self._spawn = spawn
+        self._spawn = spawn if spawn is not None else spawn_child
 
         self._lock = threading.Lock()
         self._idle = threading.Event()
@@ -494,11 +495,67 @@ class RunManager:
             time.sleep(0.25)
 
     def _start_brain(self, run_dir: Path) -> Any:
-        if self._spawn is None:
-            raise RunError("no brain spawner configured")
         return self._spawn(
             argv=self.brain_argv(),
             env=self.brain_env(run_dir),
             cwd=Path.cwd(),
             log_path=run_dir / "brain.log",
         )
+
+
+class _Child:
+    """The brain loop as its own process group, with one log file.
+
+    A process group, not a bare child: `auto.py` starts reaches and audio capture of
+    its own, and stopping only the interpreter would leave those running against a
+    game nobody is driving.
+    """
+
+    def __init__(self, argv: list[str], env: dict[str, str], cwd: Path, log_path: Path) -> None:
+        self._log_path = Path(log_path)
+        self._log_path.parent.mkdir(parents=True, exist_ok=True)
+        self._handle = self._log_path.open("ab")
+        try:
+            self._proc = subprocess.Popen(  # noqa: S603 - fixed argv, no shell
+                argv,
+                cwd=str(cwd),
+                env=env,
+                stdout=self._handle,
+                stderr=subprocess.STDOUT,
+                stdin=subprocess.DEVNULL,
+                start_new_session=True,
+            )
+        except OSError:
+            self._handle.close()
+            raise
+        self.pid = self._proc.pid
+
+    def alive(self) -> bool:
+        return self._proc.poll() is None
+
+    def exit_code(self) -> int | None:
+        return self._proc.poll()
+
+    def stop(self, timeout: float = 10.0) -> None:
+        if self._proc.poll() is not None:
+            self._close()
+            return
+        with contextlib.suppress(OSError, ProcessLookupError):
+            os.killpg(self._proc.pid, signal.SIGTERM)
+        try:
+            self._proc.wait(timeout)
+        except subprocess.TimeoutExpired:
+            with contextlib.suppress(OSError, ProcessLookupError):
+                os.killpg(self._proc.pid, signal.SIGKILL)
+            with contextlib.suppress(subprocess.TimeoutExpired):
+                self._proc.wait(2.0)
+        self._close()
+
+    def _close(self) -> None:
+        if not self._handle.closed:
+            self._handle.close()
+
+
+def spawn_child(argv: list[str], env: dict[str, str], cwd: Path, log_path: Path) -> _Child:
+    """Start the brain loop, logging into the run directory."""
+    return _Child(argv, env, Path(cwd), Path(log_path))

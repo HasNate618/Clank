@@ -32,6 +32,7 @@ from __future__ import annotations
 import argparse
 import io
 import json
+import os
 import pathlib
 import subprocess
 import sys
@@ -60,8 +61,13 @@ VENV = do_task.VENV
 DASHBOARD = "http://127.0.0.1:8765"
 
 #: Where the frames the brain looked at are kept, so a wrong grounding can be checked
-#: after the fact instead of argued about.
-STATE = pathlib.Path.home() / ".local/state/Clank/auto"
+#: after the fact instead of argued about. The dashboard gives each run its own
+#: directory (`CLANK_AUTO_STATE`), so run N's frames cannot be mistaken for run N+1's;
+#: a hand-run keeps the shared default.
+STATE = pathlib.Path(
+    os.environ.get("CLANK_AUTO_STATE")
+    or pathlib.Path.home() / ".local/state/Clank/auto"
+)
 
 #: A session start takes about a minute; stop this long before the deadline.
 MARGIN_S = 25.0
@@ -480,6 +486,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--plan-only", action="store_true",
                     help="hear and decide, but do not move the body")
     args = ap.parse_args(argv)
+    STATE.mkdir(parents=True, exist_ok=True)
 
     started = time.monotonic()
     deadline = started + args.duration
