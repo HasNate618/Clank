@@ -146,6 +146,9 @@ game_restart_timeout_sec = 180
 stop_timeout_sec = 10
 # `rest` commands sent while resetting the body before the run starts.
 rest_ticks = 8
+# How long the body reset waits for the sidecar's control socket. start() returns
+# as soon as the process spawns; MuJoCo and the weights take seconds after that.
+body_timeout_sec = 120
 
 # The planner must be serving this model before a run spends a game restart.
 required_model = "LFM3-Omni"

@@ -523,11 +523,33 @@ class RunManager:
         problem = self._body.start()
         if problem:
             raise RuntimeError(f"body view did not start: {problem}")
-        for _ in range(self._cfg.run.rest_ticks):
+        # `start()` only spawns the sidecar; MuJoCo and the weights load after it,
+        # and `auto.py` dies on its own first `rest` if nothing is listening. So the
+        # first rest is retried until it is answered, then the rest of the ticks go
+        # out as before.
+        path = self._body.control_path()
+        resting = 0
+        deadline = time.monotonic() + self._cfg.run.body_timeout_sec
+        while resting < max(1, self._cfg.run.rest_ticks):
             self._check_cancel(generation)
-            with contextlib.suppress(OSError, ValueError):
-                send_control(self._body.control_path(), {"verb": "rest"})
-            time.sleep(0.25)
+            try:
+                send_control(path, {"verb": "rest"})
+            except OSError as exc:
+                if resting == 0 and time.monotonic() < deadline:
+                    self._set_detail("waiting for the body view…")
+                    self._cancel.wait(0.5)
+                    continue
+                log = getattr(self._body, "log_path", None)
+                where = f"; see {log}" if log else ""
+                if resting == 0:
+                    raise RuntimeError(
+                        f"the body view did not answer on {path} within "
+                        f"{self._cfg.run.body_timeout_sec:g}s{where}"
+                    ) from None
+                raise RuntimeError(f"the body view stopped answering: {exc}{where}") from exc
+            resting += 1
+            if resting < self._cfg.run.rest_ticks:
+                time.sleep(0.25)
 
     def _start_brain(self, run_dir: Path) -> Any:
         return self._spawn(

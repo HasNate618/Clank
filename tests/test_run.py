@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
+import socket
 import sys
 import tempfile
 import threading
@@ -45,9 +47,62 @@ class FakeManager:
         self.calls.append(f"mode:{mode}")
 
 
+class BodyServer:
+    """A real AF_UNIX control socket that binds late, like the sidecar does."""
+
+    def __init__(self, path: Path, delay: float = 0.0) -> None:
+        self.path = Path(path)
+        self.delay = delay
+        self.verbs: list[dict] = []
+        self._stop = threading.Event()
+        self._sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        self._ready = threading.Event()
+        self._thread = threading.Thread(target=self._serve, daemon=True)
+        self._thread.start()
+
+    def _serve(self) -> None:
+        if self.delay and self._stop.wait(self.delay):
+            return
+        try:
+            self._sock.bind(str(self.path))
+            self._sock.listen(8)
+            # Closing a socket in another thread does not wake a blocked accept(),
+            # so the loop polls and close() only has to set the flag.
+            self._sock.settimeout(0.2)
+        except OSError:
+            return
+        self._ready.set()
+        while not self._stop.is_set():
+            try:
+                conn, _ = self._sock.accept()
+            except TimeoutError:
+                continue
+            except OSError:
+                return
+            with conn:
+                data = b""
+                while b"\n" not in data:
+                    chunk = conn.recv(4096)
+                    if not chunk:
+                        break
+                    data += chunk
+                try:
+                    self.verbs.append(json.loads(data.decode() or "{}"))
+                except ValueError:
+                    self.verbs.append({})
+                conn.sendall(b'{"ok": true}\n')
+
+    def close(self) -> None:
+        self._stop.set()
+        with contextlib.suppress(OSError):
+            self._sock.close()
+        self._thread.join(timeout=2.0)
+
+
 class FakeBody:
-    def __init__(self) -> None:
+    def __init__(self, path: Path | None = None) -> None:
         self.running = False
+        self.path = path or Path("/nonexistent/body-control.sock")
 
     def start(self) -> str:
         self.running = True
@@ -57,7 +112,7 @@ class FakeBody:
         self.running = False
 
     def control_path(self) -> Path:
-        return Path("/nonexistent/body-control.sock")
+        return self.path
 
     def preflight(self) -> str:
         return ""
@@ -109,7 +164,10 @@ class RunHarness(unittest.TestCase):
         self.cfg = cfg
         self.runs_root = Path(cfg.paths.session_root)
         self.manager = FakeManager()
-        self.body = FakeBody()
+        self.body_socket = self.base / "body-control.sock"
+        self.body_server = BodyServer(self.body_socket, delay=0.0)
+        self.addCleanup(self.body_server.close)
+        self.body = FakeBody(self.body_socket)
         self.overlay = FakeOverlay()
         self.child = FakeChild()
         self.spawned: list[str] = []
@@ -388,6 +446,41 @@ class RunManagerTests(RunHarness):
         # claim "a run is already active" forever.
         with self.assertRaises(run_mod.RunError):
             run.start()
+
+    def test_body_phase_waits_for_the_control_socket(self) -> None:
+        """The sidecar returns from start() before it binds; a rest sent into the
+        void is a body that was never reset, and the brain loop then dies on its
+        own first rest."""
+        late_path = self.base / "late-body-control.sock"
+        late = BodyServer(late_path, delay=1.0)
+        self.addCleanup(late.close)
+        self.body.path = late_path
+        run = self.make()
+        run.start()
+        self.assertEqual(self.wait_state("running"), "running")
+        self.assertEqual([v.get("verb") for v in late.verbs], ["rest"])
+
+    def test_a_silent_body_view_fails_the_run_before_the_brain(self) -> None:
+        self.body.path = self.base / "never.sock"
+        cfg = replace(self.cfg, run=replace(self.cfg.run, body_timeout_sec=0.6))
+        run = RunManager(
+            self.manager,
+            cfg,
+            body=self.body,
+            overlay=self.overlay,
+            probe=lambda: brain.ServerStatus(up=True, status="ok", model="LFM3-Omni"),
+            spawn=self.spawn,
+        )
+        self.addCleanup(run.wait_idle, 2)
+        run.start()
+        self.assertTrue(run.wait_idle(5))
+        snapshot = run.snapshot()
+        self.assertEqual(snapshot["state"], "failed")
+        self.assertIn("never.sock", snapshot["error"])
+        self.assertIn("did not answer", snapshot["error"])
+        self.assertEqual(self.spawned, [])
+        # The game restart is paid first; the reset that failed is the body's.
+        self.assertEqual(self.manager.calls, ["game", "mode:body"])
 
     def test_a_stopped_stack_cancels_the_run(self) -> None:
         def stop_the_stack() -> str:

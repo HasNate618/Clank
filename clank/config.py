@@ -128,6 +128,7 @@ class RunConfig:
     game_restart_timeout_sec: float
     stop_timeout_sec: float
     rest_ticks: int
+    body_timeout_sec: float
     required_model: str
     model_timeout_sec: float
     model_autostart: bool
@@ -261,6 +262,9 @@ DEFAULTS: dict[str, dict[str, Any]] = {
         # How many `rest` commands the body reset sends before the run starts. The clip
         # answers in under a second and the command's TTL is short, so it is repeated.
         "rest_ticks": 8,
+        # `BodyPreview.start()` returns when the process spawns; the sidecar needs
+        # seconds to load MuJoCo before it binds its control socket.
+        "body_timeout_sec": 120.0,
         # The planner must be serving this model before a run spends a game restart.
         "required_model": "LFM3-Omni",
         # A 2B Q8_0 load takes tens of seconds; that is a wait, not a failure.
@@ -434,6 +438,8 @@ def _validate(cfg: Config) -> None:
             raise ConfigError(f"run.{field_name} must be positive")
     if cfg.run.rest_ticks < 0:
         raise ConfigError("run.rest_ticks must be >= 0")
+    if cfg.run.body_timeout_sec <= 0:
+        raise ConfigError("run.body_timeout_sec must be > 0")
 
 
 def validate_config(cfg: Config) -> None:
