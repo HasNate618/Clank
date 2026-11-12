@@ -177,6 +177,13 @@ def object_world(
         return (float(args.world[0]), float(args.world[1]), float(args.world[2]))
     declared = read_player_scale(session_dir)
     head = Pose(p=tuple(st["head"]["p"]), q_xyzw=tuple(st["head"]["q_xyzw"]))
+    if args.camera is not None:
+        # The pose the pixel was marked from. A marked pixel is only meaningful through the
+        # camera that saw it, and the head does not hold: measured 2026-11-08, the caller
+        # grounded the card at 0.59 m and the same pixel, read after the head pin lapsed,
+        # computed 1.44 m. `auto.py` marks the pixel and calls this in one turn, so it has
+        # the right pose and passes it.
+        head = Pose(p=tuple(args.camera[:3]), q_xyzw=tuple(args.camera[3:]))
     samples: list[tuple[float, float, float]] = []
     with Stream() as stream:
         for _ in range(PIXEL_SAMPLES):
@@ -334,6 +341,12 @@ def main() -> int:
     parser.add_argument(
         "--grab", action="store_true",
         help="close the hand on approach, mid-clip, not after it",
+    )
+    parser.add_argument(
+        "--camera", type=float, nargs=7, default=None,
+        metavar=("X", "Y", "Z", "QX", "QY", "QZ", "QW"),
+        help="the head pose the pixel was marked from; a pixel is only valid through the "
+             "camera that saw it, and the head does not hold still between marking and reaching",
     )
     parser.add_argument(
         "--tol", type=float, default=end_pose.TRACK_SUCCESS_M,

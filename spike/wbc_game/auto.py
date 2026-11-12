@@ -15,7 +15,13 @@ What it does per turn:
     ready             -> the body stands up and goes back to its clip
     brain.think       -> the model chooses one act, from the still and the speech
     sense             -> locate plus the depth gate, when the act needs a pixel
-    reach_vr          -> one continuous stream, closing inside it when the act is a grab
+    reach_ardy        -> a generated clip: the hand goes to the mark, closing inside it on a grab
+                      (reach_vr carries the left hand, and the act when the generator refuses)
+
+The generated path is the session's path now: `reach_ardy` aims a constraint at the glove, ARDY
+writes 52 frames, and SONIC tracks them. `reach_vr` is the fallback, for three measured reasons -
+the generator pins the right hand only, it needs torch and a CUDA device, and its preflight can
+refuse. All three are decided before it moves, so falling back costs a reach, not a half-reach.
 
 The ordering is the measurement: the model was never asked to choose, so nothing here reads the
 sentence for a verb. Design and its measurements: `docs/superpowers/specs/2026-11-10-brain-tools.md`
@@ -59,6 +65,15 @@ from clank.projection import Fov  # noqa: E402
 HERE = pathlib.Path(__file__).resolve().parent
 VENV = do_task.VENV
 DASHBOARD = "http://127.0.0.1:8765"
+
+#: The generated path needs torch and CUDA, so it does not run under the body's venv.
+#: On NixOS `libcuda.so.1` is off the loader path and torch then reports `cuda False` on a
+#: working driver, which is why the interpreter comes with an environment and not alone.
+ARDY_PY = HERE.parent / "ardy/.venv/bin/python"
+ARDY_LD = "/run/opengl-driver/lib"
+#: `reach_ardy` exits 3 when it cannot generate at all - no clip ring, no right-hand support,
+#: or a preflight refusal - and every one of those happens before it moves the body.
+ARDY_UNSUPPORTED = 3
 
 #: Where the frames the brain looked at are kept, so a wrong grounding can be checked
 #: after the fact instead of argued about. The dashboard gives each run its own
@@ -223,7 +238,54 @@ def grab_pixel(x: float, y: float, side: str, camera: Pose | None = None,
     `grab=False` is the model's `reach` - a hand moved to a thing without closing. The close
     never happens in a second process: measured 2026-11-09, a 2 s gap let the hand drift 0.09 m,
     which is more than the grab radius, so a brain that decides to grab must decide it here.
+
+    The right hand goes to the generated path and the left to the cruise: `ardy_gen` pins the
+    right hand only (`RightHandConstraintSet`), so a left reach would be refused anyway. A
+    generator that refuses before moving - no CUDA, no clip ring - falls back to the cruise
+    rather than failing the act, because on this machine the GPU is often off and the game does
+    not care how the hand arrived.
     """
+    if side == "right" and ARDY_PY.exists():
+        brainlog.log("act", "generated reach")
+        code = subprocess.call(_generated_argv(x, y, side, camera, grab), env=_ardy_env())
+        if code != ARDY_UNSUPPORTED:
+            return code
+        brainlog.log("act", "no generated reach here; the cruise carries it", code=code)
+    brainlog.log("act", f"cruise reach ({side})")
+    return subprocess.call(_cruise_argv(x, y, side, camera, grab))
+
+
+def _ardy_env() -> dict[str, str]:
+    """`LD_LIBRARY_PATH` carrying `libcuda.so.1`, prepended rather than overwritten."""
+    env = dict(os.environ)
+    carried = env.get("LD_LIBRARY_PATH")
+    env["LD_LIBRARY_PATH"] = f"{ARDY_LD}:{carried}" if carried else ARDY_LD
+    return env
+
+
+def _marked_camera(camera: Pose | None) -> list[str]:
+    return [] if camera is None else [
+        "--camera", *[f"{v:.5f}" for v in (*camera.p, *camera.q_xyzw)]
+    ]
+
+
+def _generated_argv(x: float, y: float, side: str, camera: Pose | None,
+                    grab: bool) -> list[str]:
+    """No `--tol`: the default is the policy's own `TRACK_SUCCESS_M`.
+
+    The cruise call's tighter 0.02 would have reported the live grab (24.7 mm achieved) as a
+    failure, and a generated reach is graded on the glove, which the script measures itself.
+    """
+    argv = [
+        str(ARDY_PY), str(HERE / "reach_ardy.py"), f"{x:.1f}", f"{y:.1f}", "--side", side,
+    ]
+    if grab:
+        argv.append("--grab")
+    return argv + _marked_camera(camera)
+
+
+def _cruise_argv(x: float, y: float, side: str, camera: Pose | None,
+                 grab: bool) -> list[str]:
     argv = [
         VENV, str(HERE / "reach_vr.py"), f"{x:.1f}", f"{y:.1f}", "--side", side,
         "--no-rest", "--no-clamp", "--tol", "0.02", "--corrections", "4",
@@ -231,9 +293,7 @@ def grab_pixel(x: float, y: float, side: str, camera: Pose | None = None,
     ]
     if grab:
         argv.append("--grab")
-    if camera is not None:
-        argv += ["--camera", *[f"{v:.5f}" for v in (*camera.p, *camera.q_xyzw)]]
-    return subprocess.call(argv)
+    return argv + _marked_camera(camera)
 
 
 def _number(value: object, default: float = 0.0) -> float:

@@ -8,6 +8,7 @@ which reads perfectly sensibly at the time.
 
 from __future__ import annotations
 
+import ast
 import pathlib
 import unittest
 
@@ -48,6 +49,61 @@ class AutoLoop(unittest.TestCase):
         # MEASURED 2026-11-09: closing from a separate process left ~2 s in which the hand
         # drifted 0.09 m - more than the grab radius - so the fingers shut on air.
         self.assertIn("grab=skill == \"grab\"", self.source)
+
+
+class TheActUsesTheGeneratedPath(unittest.TestCase):
+    """The generated reach was merged and live on 2026-11-12, and the loop still called
+    `reach_vr.py` - so a live run planned `reach(JobBot card)`, located it at 0.42 m, and the
+    cruise hand finished more than 20 mm off (exit 2). These are grep tests because importing
+    `auto.py` pulls torch, and the failure they guard is one path name.
+    """
+
+    def setUp(self) -> None:
+        self.source = SRC.read_text()
+        self.act = self.source[self.source.index("def grab_pixel("):
+                               self.source.index("def _ardy_env(")]
+        self.generated = self.source[self.source.index("def _generated_argv("):
+                                     self.source.index("def _cruise_argv(")]
+        self.cruise = self.source[self.source.index("def _cruise_argv("):]
+
+    def test_the_right_hand_is_generated(self) -> None:
+        self.assertIn("reach_ardy.py", self.generated)
+        # ardy_gen pins the right hand only, so a left reach would be refused anyway.
+        self.assertIn('side == "right"', self.act)
+
+    def test_the_left_hand_keeps_the_cruise(self) -> None:
+        self.assertIn("reach_vr.py", self.cruise)
+
+    def test_it_runs_under_the_interpreter_that_has_torch(self) -> None:
+        # The body's venv has no torch. `preflight` imports it, and on NixOS torch reports
+        # `cuda False` on a working driver unless LD_LIBRARY_PATH carries libcuda.so.1.
+        self.assertIn("ARDY_PY", self.source)
+        self.assertIn("/run/opengl-driver/lib", self.source)
+        self.assertIn("env=_ardy_env()", self.act)
+
+    def test_a_preflight_refusal_falls_back_instead_of_failing_the_act(self) -> None:
+        # Exit 3 happens before the body moves (no ring, no right-hand support, no CUDA),
+        # so the cruise can carry the act without a half-reach already in flight.
+        self.assertIn("ARDY_UNSUPPORTED", self.act)
+        self.assertIn("code != ARDY_UNSUPPORTED", self.act)
+
+    def test_the_marked_camera_reaches_both_paths(self) -> None:
+        # A pixel is only valid through the camera that saw it; the generated path was the
+        # one missing the option, not the cruise.
+        self.assertEqual(self.source.count("_marked_camera(camera)"), 2)
+
+    def test_the_generated_reach_does_not_narrow_the_policy_band(self) -> None:
+        # The cruise is called with --tol 0.02; the generated path must not be, or the live
+        # grab (24.7 mm achieved) would have been reported as a failure. The constants are
+        # read from the source tree so the docstring that says "--tol" cannot pass this.
+        tree = ast.parse(self.source)
+        flags = {
+            node.name: {c.value for c in ast.walk(node) if isinstance(c, ast.Constant)
+                        and isinstance(c.value, str)}
+            for node in ast.walk(tree) if isinstance(node, ast.FunctionDef)
+        }
+        self.assertIn("--tol", flags["_cruise_argv"], "the cruise keeps its tight band")
+        self.assertNotIn("--tol", flags["_generated_argv"])
 
 
 if __name__ == "__main__":
