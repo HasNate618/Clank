@@ -279,8 +279,8 @@ class RecordingDriver(FakeDriver):
         super().__init__()
         self.last_squeeze = (0.0, 0.0)
         self.last_trigger = (0.0, 0.0)
-        self.last_system = (False, False)
-        self.system_seen = False
+        self.last_menu = (False, False)
+        self.menu_seen = False
 
     def run(self) -> None:
         conn, _ = self.listener.accept()
@@ -305,8 +305,8 @@ class RecordingDriver(FakeDriver):
                         packet.left.trigger_value.x,
                         packet.right.trigger_value.x,
                     )
-                    self.last_system = (packet.left.system_click, packet.right.system_click)
-                    self.system_seen = self.system_seen or any(self.last_system)
+                    self.last_menu = (packet.left.a_click, packet.right.a_click)
+                    self.menu_seen = self.menu_seen or any(self.last_menu)
         finally:
             conn.close()
             self.listener.close()
@@ -743,5 +743,5 @@ class MenuClickTests(unittest.TestCase):
             pose_relay.run("127.0.0.1", driver.port, state_path, None,
                            duration=0.4, hz=50.0, click_file=str(click_path))
             driver.closed.wait(5)
-        self.assertTrue(driver.system_seen, "the menu click never reached the wire")
-        self.assertEqual(driver.last_system, (False, False), "the press was released")
+        self.assertTrue(driver.menu_seen, "the menu click never reached the wire")
+        self.assertEqual(driver.last_menu, (False, False), "the press was released")

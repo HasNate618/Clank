@@ -580,7 +580,8 @@ def run(host: str, port: int, state_path: Path, log_path: Path | None,
             curl_field = grip if grab_mode in ("curl", "both") else (0.0, 0.0)
             click = edge.update(fire)
             # The menu button: a request in a file becomes a short press here, because no joint
-            # of the simulated body can reach a controller button and JobBot asks for it.
+            # of the simulated body can reach a controller button and JobBot asks for it. The
+            # game reads this as the A (right) / X (left) button, not the system button.
             menu = clicks.pressed(now)
             packet = wire.fill(
                 wire.blank_packet(),
@@ -589,7 +590,7 @@ def run(host: str, port: int, state_path: Path, log_path: Path | None,
                 curl=curl_field,
                 trigger=fire,
                 trigger_click=click,
-                system_click=menu,
+                a_click=menu,
                 fov=fov_rad,
             )
             stream.write(bytes(packet))

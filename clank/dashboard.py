@@ -268,7 +268,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
             # The menu button lives on the controller, not on the body: no joint of the
             # simulated G1 can press it, and JobBot asks a player to press it early. So the
             # dashboard asks the relay for one press, and the relay turns that into a short
-            # system_click on the wire (XRT_INPUT_INDEX_SYSTEM_CLICK).
+            # a_click on the wire (XRT_INPUT_INDEX_A_CLICK / X), the button the game
+            # actually reads as its menu button.
             if not self._origin_allowed():
                 return self._error(403, "cross-origin input rejected")
             hand = body.get("hand", "right")

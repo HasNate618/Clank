@@ -379,6 +379,7 @@ def fill(
     trigger: tuple[float, float] = (0.0, 0.0),
     trigger_click: tuple[bool, bool] = (False, False),
     system_click: tuple[bool, bool] = (False, False),
+    a_click: tuple[bool, bool] = (False, False),
     fov: tuple[float, float] | None = None,
     ipd_m: float = 0.063,
 ) -> RemoteData:
@@ -454,6 +455,7 @@ def fill(
         # (`r_device.c`, inputs[0]), which is the Index controller's menu click - the button
         # JobBot asks a player to press and the one thing here that cannot come from the body.
         c.system_click = bool(system_click[i])
+        c.a_click = bool(a_click[i])
         c.thumbstick.x = 0.0
         c.thumbstick.y = 0.0
     return d
