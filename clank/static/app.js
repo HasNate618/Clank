@@ -688,37 +688,46 @@ function syncPreview(state) {
 
 function updatePreviewWait(state) {
   const wait = $("preview-wait");
+  const text = $("preview-wait-text");
+  // A spinner for the waits that resolve on their own; none for the ones that
+  // need the operator (stopped, failed, log in), because a turning ring would
+  // promise progress that is not coming.
+  const show = (phrase, spinning) => {
+    text.textContent = phrase;
+    $("preview-spinner").hidden = !spinning;
+    wait.style.display = "";
+  };
+  const hide = () => {
+    $("preview-spinner").hidden = true;
+    wait.style.display = "none";
+  };
   const stateText = {
     stopped: "session stopped",
     failed: "session failed",
     starting: "starting…",
   }[state.state];
   if (stateText) {
-    wait.textContent = stateText;
-    wait.style.display = "";
+    show(stateText, state.state === "starting");
     return;
   }
   if (liveActive) {
     if (liveAvailable) {
-      wait.style.display = "none";
+      hide();
     } else {
-      wait.textContent = "waiting for live capture…";
-      wait.style.display = "";
+      show("waiting for live capture…", true);
     }
     return;
   }
   const preview = state.preview || {};
   const transportAlive = Boolean(preview.vnc_alive && preview.proxy_alive);
   if (previewRfb && previewConnected) {
-    wait.style.display = "none";
+    hide();
   } else if (!transportAlive) {
-    wait.textContent = "waiting for VNC transport…";
-    wait.style.display = "";
+    show("waiting for VNC transport…", true);
   } else if (previewAuthVisible()) {
-    wait.style.display = "none";
+    hide();
   } else {
-    wait.textContent = "authenticate to view the preview";
-    wait.style.display = "";
+    show("authenticate to view the preview", false);
   }
 }
 
@@ -726,6 +735,27 @@ function applyControls(state) {
   const running = state.state === "running";
   $("start").disabled = actionInFlight || !["stopped", "failed"].includes(state.state);
   $("stop").disabled = actionInFlight || state.state === "stopped";
+  const run = state.run || null;
+  const runActive = Boolean(run && !["idle", "failed"].includes(run.state));
+  // `/api/state` already carries `model` from `brain.server_status()`. Grey the
+  // button only when nothing is listening: a `loading` server is a wait the run's
+  // own `checking` phase is built for, so disabling it would hide that path.
+  const model = state.model || {};
+  const modelDown = model.up === false;
+  $("start-run").disabled = actionInFlight || !running || runActive || modelDown;
+  $("start-run").title = modelDown
+    ? `the model server is ${model.status || "down"}${model.model ? ` (${model.model})` : ""}`
+    : "";
+  $("stop-run").disabled = actionInFlight || !runActive;
+  // What is loading, in words, while the ring turns: the game restart is 40 s of
+  // otherwise-silent waiting, and "restarting the game…" is the whole answer.
+  const runBusy = runActive || ["starting", "stopping"].includes(state.state);
+  $("run-spinner").hidden = !runBusy;
+  $("run-state").textContent = runActive
+    ? (run.detail || (run.phase ? `run ${run.phase}` : ""))
+    : (run && run.id ? `run ${run.id} · ${run.state}` : "");
+  $("run-state").title = run && run.error ? run.error : "";
+  $("brain-run").textContent = run && run.id ? run.id : "";
   const modeButton = $("mode-toggle");
   const manual = state.mode === "manual";
   // The label names where a press takes you, so it is the destination, not the
@@ -1032,6 +1062,8 @@ $("vnc-auth").addEventListener("submit", (event) => {
 $("start").onclick = () => runAction(() => post("/api/session/start"));
 
 $("stop").onclick = () => runAction(() => post("/api/session/stop"));
+$("start-run").onclick = () => runAction(() => post("/api/run/start"));
+$("stop-run").onclick = () => runAction(() => post("/api/run/stop"));
 
 $("mode-toggle").onclick = () => {
   const mode = lastState?.mode === "manual" ? "body" : "manual";

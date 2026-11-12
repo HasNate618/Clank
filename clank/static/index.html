@@ -40,13 +40,21 @@
       </div>
       <div class="status-cluster">
         <span id="session-id"></span>
+        <span id="run-state"></span>
+        <!-- The spinner is the wait, the text beside it is what for: a spinner
+             alone is an anxiety, a phrase alone looks like a stuck page. -->
+        <span id="run-spinner" class="spinner" hidden aria-hidden="true"></span>
         <span id="uptime"></span>
       </div>
       <div class="top-actions">
         <!-- The badge sits with the buttons that change it. -->
         <span id="state" class="badge">stopped</span>
         <button id="start" class="btn btn-go" disabled>Start</button>
-        <button id="stop" class="btn btn-halt" disabled>Stop</button>
+        <!-- Starting the stack is once; starting a run is the thing you repeat.
+             The stack stays up between runs, so these are two lifetimes. -->
+        <button id="start-run" class="btn btn-go" disabled>Start run</button>
+        <button id="stop-run" class="btn btn-halt" disabled>Stop run</button>
+        <button id="stop" class="btn btn-halt" disabled>Shut down</button>
         <!-- JobBot asks the player to press the controller's menu button; nothing on the robot
              can reach it, so this asks the relay for one press. -->
         <button id="menu-press" class="btn" type="button"
@@ -91,7 +99,10 @@
                    here in game-pixel coordinates. It never handles input. -->
               <canvas id="preview-overlay"></canvas>
             </div>
-            <div id="preview-wait">session stopped</div>
+            <div id="preview-wait">
+              <span id="preview-spinner" class="spinner" hidden aria-hidden="true"></span>
+              <span id="preview-wait-text">session stopped</span>
+            </div>
             <!-- The screen's own controls ride on the picture: a layout that
                  pays height for a toolbar pays for it twice, once here and
                  once in the stage budget. Hidden until frames arrive, because
@@ -155,7 +166,7 @@
 
       <aside class="col col-rail">
         <section class="panel panel-brain">
-          <h2>Brain</h2>
+          <h2>Brain <span id="brain-run"></span></h2>
           <div id="brain-messages" class="brain-messages"></div>
         </section>
 

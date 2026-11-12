@@ -318,6 +318,45 @@ h2 {
 }
 #start::before { content: "▶ "; font-size: 10px; }
 #stop::before { content: "■ "; font-size: 10px; }
+#start-run::before { content: "▶ "; font-size: 10px; }
+#stop-run::before { content: "■ "; font-size: 10px; }
+
+/* A wait has to look like a wait. The ring is a border with one side made
+   transparent, which is a ring at every zoom and needs no asset. The phrase
+   beside it says what for; the ring alone is just an anxiety. */
+.spinner {
+  display: inline-block;
+  width: 0.85em;
+  height: 0.85em;
+  margin-left: 6px;
+  border: 2px solid currentColor;
+  border-top-color: transparent;
+  border-radius: 50%;
+  vertical-align: -0.1em;
+  animation: clank-spin 0.9s linear infinite;
+}
+.spinner[hidden] { display: none; }
+@keyframes clank-spin { to { transform: rotate(360deg); } }
+#preview-wait .spinner { margin-right: 8px; margin-left: 0; }
+
+/* The run slot: short enough to sit in the topbar, and the id stays put while
+   the phrase changes, so the line does not jump every phase. */
+#run-state {
+  font: 11px var(--mono);
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+#run-state:empty { display: none; }
+#brain-run {
+  font: 600 10px var(--mono);
+  letter-spacing: 0.04em;
+  color: var(--muted);
+  opacity: 0.7;
+  margin-left: auto;
+}
+#brain-run:empty { display: none; }
 
 /* Icon-only controls: the audio button is one speaker glyph whose state is a
    stroke through it, so its own shape reports mute instead of a label. */
@@ -1002,6 +1041,9 @@ body.manual-active .manual-panel { border-color: var(--warm); }
    a `*` reset, so the guard needs no !important to beat them. */
 @media (prefers-reduced-motion: reduce) {
   .badge.running, .badge.starting, .badge.stopping { animation: none; }
+  /* A static ring still says "waiting"; a turning one is the part that is
+     motion, so only the turning goes. */
+  .spinner { animation: none; border-top-color: currentColor; opacity: 0.55; }
   .panel, .brain-row, .brand-face .eye { animation: none; }
   .look-left:hover .look-arrow, .look-right:hover .look-arrow { animation: none; }
   button, .panel, .brand-mark, .brand-face, .look, .brain-row, .badge, .log-tail { transition: none; }

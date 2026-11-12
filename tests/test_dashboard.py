@@ -662,6 +662,33 @@ class ShippedStaticAssetsTests(unittest.TestCase):
         self.assertIn(b'id="preview-overlay"', index)
         self.assertIn(b'data-layout="side"', index)
 
+    def test_run_controls_are_shipped(self) -> None:
+        _, index = self.request("/")
+        for element in (
+            "run-state",
+            "run-spinner",
+            "start-run",
+            "stop-run",
+            "brain-run",
+            "preview-wait-text",
+            "preview-spinner",
+        ):
+            with self.subTest(element=element):
+                self.assertIn(f'id="{element}"'.encode(), index)
+        self.assertIn(b"Shut down", index)
+        _, js = self.request("/app.js")
+        code = js.decode()
+        self.assertIn("/api/run/start", code)
+        self.assertIn("/api/run/stop", code)
+        self.assertIn("run-spinner", code)
+        self.assertIn("run.detail", code)
+
+    def test_spinner_is_styled_and_respects_reduced_motion(self) -> None:
+        _, css = self.request("/style.css")
+        text = css.decode()
+        self.assertIn("@keyframes clank-spin", text)
+        self.assertIn("prefers-reduced-motion", text)
+
     def test_vendored_fonts_are_served(self) -> None:
         for name in ("inter-var.woff2", "plex-mono-400.woff2", "plex-mono-600.woff2", "fredoka-600.woff2"):
             with self.subTest(name=name):
@@ -1007,7 +1034,7 @@ class RunRouteTests(unittest.TestCase):
             self.cfg,
             self.base,
             overlay=OverlayBoard(),
-            run=self.fake_run,
+            run=self.fake_run,  # type: ignore[arg-type] - a four-method stand-in
         )
         self.port = self.server.server_address[1]
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
@@ -1115,6 +1142,10 @@ class ShutdownOrderTests(unittest.TestCase):
             def stop(self) -> None:
                 order.append("stack")
 
-        shutdown_all(Body(), Run(), Manager())
+        shutdown_all(  # type: ignore[arg-type] - the three collaborators, ordered
+            Body(),  # type: ignore[arg-type]
+            Run(),  # type: ignore[arg-type]
+            Manager(),
+        )
         # A run that outlives its Steam leaves a brain loop driving nothing.
         self.assertEqual(order, ["body", "run", "run-wait", "stack"])
