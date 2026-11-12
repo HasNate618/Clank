@@ -1250,3 +1250,132 @@ class RecordingSweepTests(unittest.TestCase):
         with self.assertRaises(OSError):
             self.run_dashboard_with(order, io.StringIO(), server=Occupied)
         self.assertEqual(order, [])  # nothing bound, and nothing swept
+
+
+class RecordingRouteTests(unittest.TestCase):
+    """The listing, and the range behaviour a video player needs to seek."""
+
+    size = 4096
+
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        base = Path(self.temp.name)
+        self.root = base / "sessions"
+        static = base / "static"
+        static.mkdir()
+        (static / "recordings.html").write_text("<h1>Recordings</h1>", encoding="utf-8")
+        (static / "recordings.js").write_text("// recordings\n", encoding="utf-8")
+        self.manager = FakeManager(base)
+        self.manager.state = "running"
+        cfg = load_config(None, env={})
+        self.cfg = replace(cfg, paths=replace(cfg.paths, session_root=str(self.root)))
+        self.write_run("100000-aaaaaa", "ready", "2026-11-12T10:00:00Z", video=True)
+        self.write_run("110000-bbbbbb", "composing", "2026-11-12T11:00:00Z", video=False)
+        self.server = DashboardServer(("127.0.0.1", 0), self.manager, self.cfg, static)
+        self.port = self.server.server_address[1]
+        thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        thread.start()
+        self.addCleanup(thread.join, 2)
+        self.addCleanup(self.server.server_close)
+        self.addCleanup(self.server.shutdown)
+
+    def write_run(self, run_id: str, state: str, started: str, video: bool) -> Path:
+        run_dir = self.root / "20261112T100000Z-abc123" / "runs" / run_id
+        run_dir.mkdir(parents=True, exist_ok=True)
+        manifest = {
+            "run_id": run_id,
+            "state": state,
+            "started_at": started,
+            "duration_s": 12.5,
+            "bytes": self.size if video else 0,
+            "file": "recording.mp4" if video else None,
+        }
+        (run_dir / "recording.json").write_text(json.dumps(manifest), encoding="utf-8")
+        if video:
+            (run_dir / "recording.mp4").write_bytes(b"\x01" * self.size)
+        return run_dir
+
+    def get(self, path: str, headers: dict[str, str] | None = None):
+        request = urllib.request.Request(f"http://127.0.0.1:{self.port}{path}", headers=headers or {})
+        try:
+            with urllib.request.urlopen(request, timeout=5) as response:  # noqa: S310
+                return response.status, response.headers, response.read()
+        except urllib.error.HTTPError as exc:
+            try:
+                return exc.code, exc.headers, exc.read()
+            finally:
+                exc.close()
+
+    def test_the_listing_is_newest_first(self) -> None:
+        status, _, body = self.get("/api/recordings")
+        self.assertEqual(status, 200)
+        payload = json.loads(body)
+        self.assertEqual(
+            [row["run_id"] for row in payload["recordings"]],
+            ["110000-bbbbbb", "100000-aaaaaa"],
+        )
+        self.assertTrue(payload["recording_available"])
+
+    def test_the_page_is_served(self) -> None:
+        status, _, body = self.get("/recordings")
+        self.assertEqual(status, 200)
+        self.assertIn(b"Recordings", body)
+
+    def test_a_range_request_gets_a_206_slice(self) -> None:
+        status, headers, body = self.get(
+            "/api/recordings/100000-aaaaaa/video", headers={"Range": "bytes=0-1"}
+        )
+        self.assertEqual(status, 206)
+        self.assertEqual(headers["Content-Range"], f"bytes 0-1/{self.size}")
+        self.assertEqual(headers["Accept-Ranges"], "bytes")
+        self.assertEqual(len(body), 2)
+
+    def test_a_suffix_range_and_a_multi_range(self) -> None:
+        status, headers, _ = self.get(
+            "/api/recordings/100000-aaaaaa/video", headers={"Range": "bytes=-500"}
+        )
+        self.assertEqual(status, 206)
+        self.assertEqual(
+            headers["Content-Range"], f"bytes {self.size - 500}-{self.size - 1}/{self.size}"
+        )
+        # A multi-range is served whole rather than guessed at.
+        status, _, body = self.get(
+            "/api/recordings/100000-aaaaaa/video", headers={"Range": "bytes=0-1,5-6"}
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(len(body), self.size)
+
+    def test_a_whole_request_is_a_200(self) -> None:
+        status, headers, body = self.get("/api/recordings/100000-aaaaaa/video")
+        self.assertEqual(status, 200)
+        self.assertEqual(len(body), self.size)
+        self.assertEqual(headers["Content-Type"], "video/mp4")
+
+    def test_an_impossible_range_is_a_416(self) -> None:
+        status, headers, _ = self.get(
+            "/api/recordings/100000-aaaaaa/video", headers={"Range": f"bytes={self.size * 10}-"}
+        )
+        self.assertEqual(status, 416)
+        self.assertEqual(headers["Content-Range"], f"bytes */{self.size}")
+
+    def test_an_unknown_or_unfinished_run_is_a_404(self) -> None:
+        self.assertEqual(self.get("/api/recordings/nope/video")[0], 404)
+        self.assertEqual(self.get("/api/recordings/110000-bbbbbb/video")[0], 404)
+        # The id must be the pinned shape, and the leaf must be `video`.
+        self.assertEqual(self.get("/api/recordings/..%2F..%2Fetc/video")[0], 404)
+        self.assertEqual(self.get("/api/recordings/100000-aaaaaa/brain.jsonl")[0], 404)
+
+    def test_recording_off_is_reported_not_an_empty_list(self) -> None:
+        off = replace(self.cfg, recording=replace(self.cfg.recording, enabled=False))
+        server = DashboardServer(("127.0.0.1", 0), self.manager, off, Path(self.temp.name) / "static")
+        port = server.server_address[1]
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        self.addCleanup(thread.join, 2)
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        request = urllib.request.Request(f"http://127.0.0.1:{port}/api/recordings")
+        with urllib.request.urlopen(request, timeout=5) as response:  # noqa: S310
+            payload = json.loads(response.read())
+        self.assertFalse(payload["recording_available"])

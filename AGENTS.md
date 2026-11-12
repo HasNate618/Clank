@@ -118,6 +118,13 @@ sessions/<session-id>/runs/<HHMMSS>-<6 hex>/
   run is refused with the command to start it — before a game restart or a save wipe is
   paid for. `loading` is a wait of up to `run.model_timeout_sec`, not a failure. The
   topbar greys Start run only when nothing is listening.
+- **Start and stop the model with `llama omni` and `llama stop`, nothing hand-rolled.**
+  `llama` is a fish function over `~/AI/llama.sh`; its `omni` entry pins the flags this
+  project's brain was calibrated with — `LFM3-Omni-2B-Q8_0` + its mmproj, `-c 65536`,
+  `--jinja`, `--flash-attn on -ctk q8_0 -ctv q8_0`, `-t 12 -tb 12 -b 512 -ub 256`,
+  `--video-fps 4`. Launching `llama-server` by hand got `-b 16384 -ub 16384` and no
+  `--jinja`, which changes how many tokens a picture is allowed and therefore how the
+  locator answers. `llama stop` frees `:11434`; `llama status` says what is up.
 - **The save wipe is what makes the game restart a reset.** `paths.game_save_dirs` are
   relative to the Proton prefix and are wiped while the game is dead; absolute paths,
   `..` and symlinks out of the prefix are refused. Measured 2026-11-12: the job's save

@@ -22,7 +22,7 @@ from .manual_input import ManualInputError, ManualInputUnavailable
 from .orchestrator import ConflictError, PreflightError, SessionManager
 from .pose_relay import request_click
 from .processes import tail_stream
-from .recording import sweep_stale
+from .recording import RECORDING_NAME, list_recordings, parse_range, sweep_stale
 from .run import RUN_ID_RE, RunError, RunManager
 
 
@@ -33,6 +33,11 @@ class PayloadTooLarge(ValueError):
 #: Lines of each log the merged stream carries. Enough to read a failure, small
 #: enough that the whole payload stays well under a megabyte.
 LOG_TAIL_LINES = 250
+
+#: Bytes per socket write when a recording is served. Small enough that a browser
+#: aborting a seek costs one read, large enough that a 100 MB run is a few hundred
+#: writes instead of forty thousand.
+VIDEO_CHUNK_BYTES = 256 * 1024
 
 #: How long a grounding claim stays drawable, and how many are kept. The overlay answers
 #: "what did the brain just claim", not "what is true now", so items expire: a box left on
@@ -208,6 +213,14 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 return self._bytes(200, frame.read_bytes(), "image/jpeg")
             except OSError:
                 return self._error(404, "no body frame")
+        if path == "/api/recordings":
+            return self._recordings_index()
+        if path.startswith("/api/recordings/"):
+            return self._recording_video(path)
+        if path == "/recordings":
+            return self._static("recordings.html", "text/html; charset=utf-8")
+        if path == "/recordings.js":
+            return self._static("recordings.js", "application/javascript; charset=utf-8")
         if path == "/api/logs":
             return self._log_stream()
         if path == "/api/brain/messages":
@@ -501,6 +514,98 @@ class DashboardHandler(BaseHTTPRequestHandler):
             if candidate.is_file():
                 return candidate
         return None
+
+    def _recordings_index(self) -> None:
+        """Every run that left a manifest, newest first.
+
+        `recording_available` is the page's off-state and it is the config switch,
+        not a guess: ffmpeg is not in the flake, so a machine can have runs and no
+        video at all, and the page says that once instead of showing an empty list
+        that looks like a bug.
+        """
+        try:
+            rows = list_recordings(Path(self.server.config.paths.session_root))
+        except OSError:
+            rows = []
+        return self._json({
+            "recordings": rows,
+            "recording_available": bool(self.server.config.recording.enabled),
+        })
+
+    def _recording_row(self, run_id: str) -> dict | None:
+        """One playable recording, found by id. Never by joining the URL to a path."""
+        if not RUN_ID_RE.fullmatch(str(run_id)):
+            return None
+        try:
+            rows = list_recordings(Path(self.server.config.paths.session_root))
+        except OSError:
+            return None
+        for row in rows:
+            if (
+                row.get("run_id") == run_id
+                and row.get("state") == "ready"
+                and row.get("has_file")
+            ):
+                return row
+        return None
+
+    def _recording_video(self, path: str) -> None:
+        """One recording's bytes, seekable.
+
+        A player seeks with a `Range` request, so a usable range is a 206 with the
+        slice, an unsatisfiable one is a 416, and no range is the whole file. The
+        file is streamed rather than read: at 24 MB a minute a long run is bigger
+        than the process should hold, and a browser aborts half of these requests
+        the moment the operator scrubs.
+        """
+        run_id, _, leaf = path[len("/api/recordings/"):].partition("/")
+        if leaf != "video":
+            return self._error(404, "not found")
+        row = self._recording_row(run_id)
+        if row is None:
+            return self._error(404, "no recording")
+        target = Path(row["dir"]) / RECORDING_NAME
+        try:
+            size = target.stat().st_size
+        except OSError:
+            return self._error(404, "no recording")
+        header = self.headers.get("Range")
+        try:
+            span = parse_range(header, size) if header else None
+        except ValueError:
+            self.send_response(416)
+            self.send_header("Content-Range", f"bytes */{size}")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
+        start, end = (0, size - 1) if span is None else span
+        length = max(0, end - start + 1)
+        try:
+            handle = target.open("rb")
+        except OSError:
+            return self._error(404, "no recording")
+        with handle:
+            handle.seek(start)
+            self.send_response(200 if span is None else 206)
+            self.send_header("Content-Type", "video/mp4")
+            self.send_header("Accept-Ranges", "bytes")
+            self.send_header("Content-Length", str(length))
+            if span is not None:
+                self.send_header("Content-Range", f"bytes {start}-{end}/{size}")
+            # Long, and immutable once ready: the player may cache it.
+            self.send_header("Cache-Control", "max-age=3600")
+            self.end_headers()
+            remaining = length
+            try:
+                while remaining > 0:
+                    chunk = handle.read(min(VIDEO_CHUNK_BYTES, remaining))
+                    if not chunk:
+                        break
+                    self.wfile.write(chunk)
+                    remaining -= len(chunk)
+            except OSError:
+                # The browser scrubbed away and closed the socket. Not an error.
+                pass
 
     def _font(self, name: str) -> None:
         # Only the vendored font directory is served, and never a traversal.
