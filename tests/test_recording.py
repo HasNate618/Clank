@@ -224,6 +224,25 @@ class BrokenStream(FakeStream):
         raise OSError("mmap closed")
 
 
+class DyingStream(FakeStream):
+    """A depth stream that answers `reads` times and then raises for good.
+
+    The shape the ruling is about: a depth layer that recorded for a while and
+    then died, so the source is no longer ``ok`` but its part holds real frames.
+    """
+
+    def __init__(self, reads: int = 2) -> None:
+        super().__init__(frames=reads)
+        self.reads = reads
+
+    def read(self, timeout: float = 5.0, after_seq: int = 0, flip: bool = True) -> dict | None:
+        if self.reads <= 0:
+            self.reading.set()
+            raise OSError("mmap closed")
+        self.reads -= 1
+        return super().read(timeout, after_seq, flip)
+
+
 class SteppingClock:
     """A clock the test owns: every read advances it by one step.
 
@@ -393,6 +412,52 @@ class RecorderTests(unittest.TestCase):
         self.assertIn("stopped answering", manifest["notes"]["game"])
         self.assertNotIn("game", manifest["parts"])
         self.assertEqual(manifest["state"], "composing")
+
+    def test_a_demoted_source_keeps_the_part_it_already_wrote(self):
+        """Bytes beat status: the picture recorded before the stream died is kept.
+
+        Demotion is about reporting, never deletion. The game source ends
+        ``failed`` with its note, and the part still holds every frame written
+        before the stream died, with `part_seconds` saying how much that is so
+        Task 4 can pad the span instead of letting `-shortest` truncate the
+        composite to it.
+        """
+        stream = DyingStream(reads=2)
+        rec = Recorder(self.cfg, self.run_dir, stream_factory=lambda: stream,
+                       capture=FakeCapture)
+        rec._start_thread = lambda target, name: None   # this test drives the ticks
+        rec.start()
+        now = rec._started_monotonic
+        for tick in range(recording.STREAM_ERROR_LIMIT + 2):
+            rec._game_tick(now + tick * rec._period)
+        manifest = rec.stop()
+        self.assertEqual(manifest["sources"]["game"], "failed")
+        self.assertIn("stopped answering", manifest["notes"]["game"])
+        part = self.run_dir / "parts" / "game.mp4"
+        self.assertTrue(part.exists())
+        frames = part.stat().st_size // (GAME_WIDTH * GAME_HEIGHT * 4)
+        self.assertGreater(frames, 0)
+        self.assertIn("game", manifest["parts"])
+        self.assertEqual(manifest["parts"]["game"], "parts/game.mp4")
+        self.assertAlmostEqual(manifest["part_seconds"]["game"], frames / 15, places=2)
+        self.assertEqual(manifest["state"], "composing")
+
+    def test_a_demoted_source_that_wrote_nothing_has_no_part(self):
+        """A part with no bytes is not evidence, and Task 4 cannot composite it."""
+        stream = BrokenStream(failures=10**6)
+        rec = Recorder(self.cfg, self.run_dir, stream_factory=lambda: stream,
+                       capture=FakeCapture)
+        rec._start_thread = lambda target, name: None   # this test drives the ticks
+        rec.start()
+        now = rec._started_monotonic
+        for tick in range(recording.STREAM_ERROR_LIMIT + 2):
+            rec._game_tick(now + tick * rec._period)
+        manifest = rec.stop()
+        self.assertEqual(manifest["sources"]["game"], "failed")
+        self.assertNotIn("game", manifest["parts"])
+        self.assertFalse((self.run_dir / "parts" / "game.mp4").exists())
+        self.assertIn("part_seconds", manifest)
+        self.assertNotIn("game", manifest["part_seconds"])
 
     def test_a_read_error_is_in_the_manifest_even_when_the_stream_recovers(self):
         stream = BrokenStream(failures=1)

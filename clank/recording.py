@@ -39,7 +39,10 @@ MANIFEST_NAME = "recording.json"
 PARTS_DIR = "parts"
 PART_NAMES = {"game": "game.mp4", "robot": "robot.mp4", "audio": "audio.m4a"}
 SOURCES = ("game", "robot", "audio")
-#: 16 kHz mono s16le; half a second is what `parecord` flushes at a time.
+#: 16 kHz mono s16le, which is also the rate the audio encoder's pipe is read at.
+AUDIO_RATE = 16000
+AUDIO_BYTES_PER_S = AUDIO_RATE * 2
+#: The most one read takes from the capture file: a quarter second of that pipe.
 AUDIO_BLOCK = 8000
 #: How long one encoder is given to finish after its stdin closes.
 ENCODER_EXIT_S = 10.0
@@ -126,6 +129,16 @@ class Recorder:
     ``notes`` carries one line per source that gave a reason, whether or not the
     source recovered: a read error that came and went still explains a gap.
 
+    A source demoted mid-run keeps the part it wrote, and ``parts`` is built
+    from what is on disk, not from ``sources``: ten recorded minutes before the
+    depth layer died are the run's evidence, and ``sources`` plus ``notes`` say
+    the rest of the run is missing from it. ``part_seconds`` gives each kept
+    part's real length. Two consequences for the composite (Task 4):
+    ``composite_argv`` ends at ``-shortest``, so a demoted part truncates the
+    whole recording unless it is padded or looped to ``duration_s``; and an
+    encoder SIGKILLed mid-write (the wedged-writer path) leaves an MP4 with no
+    moov atom, so probe a kept part before trusting it to play.
+
     ``stream_factory`` and ``capture`` default to None, which means the source
     is not available in this process: the caller that owns a live stack passes
     ``clank.depth_stream.Stream`` and ``clank.ears.capture``.
@@ -163,6 +176,7 @@ class Recorder:
         self._seq = 0
         self._procs: dict[str, Any] = {}
         self._units: dict[str, int] = dict.fromkeys(SOURCES, 0)
+        self._written: dict[str, int] = dict.fromkeys(SOURCES, 0)
         self._sources: dict[str, str] = dict.fromkeys(SOURCES, "missing")
         self._notes: dict[str, str] = {}
 
@@ -388,7 +402,7 @@ class Recorder:
     def _audio_argv(self, out: Path) -> list[str]:
         return [
             self._recording.ffmpeg, "-nostdin", "-hide_banner", "-loglevel", "error", "-y",
-            "-f", "s16le", "-ar", "16000", "-ac", "1", "-i", "-",
+            "-f", "s16le", "-ar", str(AUDIO_RATE), "-ac", "1", "-i", "-",
             "-c:a", "aac", "-b:a", "96k", str(out),
         ]
 
@@ -535,6 +549,7 @@ class Recorder:
                 self._note(name, f"the {name} encoder stopped: {exc}")
             return False
         self._units[name] += 1
+        self._written[name] += len(data)
         return True
 
     def _flush_tile(self) -> None:
@@ -625,7 +640,14 @@ class Recorder:
             stream.close()
 
     def _settle_sources(self) -> None:
-        """Decide what each source really produced, and drop a part that is not it."""
+        """Decide what each source really produced, and drop a part that holds nothing.
+
+        Deletion is about bytes, never about status. A source demoted mid-run
+        keeps the part it wrote, because the minutes before the depth layer died
+        are the evidence and ``sources``/``notes`` already say the rest is gone.
+        Only a part with no bytes is deleted: Task 4 cannot composite an empty
+        file, and that is the ``missing`` case.
+        """
         for name in SOURCES:
             proc = self._procs.get(name)
             status = self._sources[name]
@@ -638,7 +660,7 @@ class Recorder:
                     status = "failed"
                     self._note(name, _stderr_line(proc) or f"the {name} encoder exited {code}")
                 self._sources[name] = status
-            if status != "ok":
+            if self._units[name] == 0 or not self._part_written(name):
                 with contextlib.suppress(OSError):
                     (self.run_dir / self._part(name)).unlink()
 
@@ -650,6 +672,28 @@ class Recorder:
     def _part_path(self, name: str) -> Path:
         return self.run_dir / self._part(name)
 
+    def _part_written(self, name: str) -> bool:
+        """Whether a part is on disk with bytes in it, whatever its source says."""
+        try:
+            return self._part_path(name).stat().st_size > 0
+        except OSError:
+            return False
+
+    def _part_seconds(self, name: str) -> float:
+        """How long a part really is, from what the recorder already counted.
+
+        The two pictures are constant-rate pipes whose every frame is written,
+        so their length is the schedule's exactly: one written frame is one
+        period. The audio pipe is a byte stream of known rate, so its length is
+        the bytes fed over that rate. Guessing from the part's file size would
+        not work: an MP4's size is its encoder's bitrate, not its duration.
+        """
+        if name == "game":
+            return round(self._units[name] * self._period, 2)
+        if name == "robot":
+            return round(self._units[name] * self._robot_period, 2)
+        return round(self._written[name] / AUDIO_BYTES_PER_S, 2)
+
     def _note(self, name: str, text: str) -> None:
         self._notes[name] = text
 
@@ -660,7 +704,9 @@ class Recorder:
         self._write_manifest("failed")
 
     def _write_manifest(self, state: str) -> dict:
-        parts = {name: self._part(name) for name in SOURCES if self._sources[name] == "ok"}
+        # A part is named because it is on disk with bytes in it, not because
+        # its source is `ok`: a demoted source keeps what it recorded.
+        parts = {name: self._part(name) for name in SOURCES if self._part_written(name)}
         total = 0
         for name in parts:
             with contextlib.suppress(OSError):
@@ -680,6 +726,7 @@ class Recorder:
             "audio_peak": int(self._peak),
             "encoder": self._encoder,
             "parts": parts,
+            "part_seconds": {name: self._part_seconds(name) for name in parts},
             "notes": {name: text for name, text in self._notes.items() if text},
             "error": self._error,
         }
