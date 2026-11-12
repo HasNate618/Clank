@@ -188,8 +188,20 @@ grab; use the other hand or release.\
 #: every constitution wording tried, and dropping the choreography turned the same call into
 #: `grab card` / `find card`. The seed is the largest single cause of a wrong verb measured here,
 #: so it now names the world and no errand. See `research/brain-tools.md`.
+#: The things the locator can confirm, and therefore the only things worth asking the body to
+#: reach for. `spike/wbc_game/locate.py` owns how each is recognised (its `_MATCH_SYNONYMS`);
+#: `tests/test_prop_vocabulary.py` fails if the two lists drift apart.
+#:
+#: Measured 2026-11-12: with the seed naming "a console, a card and a cartridge" but not saying
+#: which was grabbable, the plan answered `reach(the Job Simulator display/interface (central
+#: teal 'JOB SIMULATOR' sign and console))`. The locator refused that noun three times (it is
+#: not in the vocabulary) while the card sat at 0.28 m, and the loop ended on `hold`. The
+#: console is a destination, not a thing to pick up, and the prompt now says so.
+PROP_NOUNS = ("card", "cartridge", "lever")
+
 DEFAULT_SEED = (
-    "The game is Job Simulator. You can see a console, a card and a cartridge.\n"
+    "The game is Job Simulator. The things you can pick up are a card, a job cartridge and a "
+    "knob. The console is not a thing to pick up.\n"
     "The voice is a job instructor."
 )
 
@@ -651,7 +663,8 @@ _SKILL_WORDS = (
 NEXT_STEP_PROMPT = (
     "You are a robot playing a VR game. {situation} "
     "No further instruction was given. Decide what you are trying to do next, and "
-    'where, from what you can see. Reply with JSON only, no explanation: '
+    'where, from what you can see. The things you can pick up are a card, a job cartridge '
+    'and a lever; the console is where they go. Reply with JSON only, no explanation: '
     '{{"goal": "the outcome you want", "object": "the thing you act on or are holding", '
     '"destination": "the name of the visible thing it goes into, or none", '
     '"side": "left|right"}}'

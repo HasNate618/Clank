@@ -71,3 +71,25 @@ is the open defect, and it is in the plan step, not in the generator.
   move itself is fine: Steam launched from `/home/nate/Games/Job Simulator/` at 16:18.
 - The job's install now lives at `/home/nate/Games/Job Simulator`; `config.toml` and the
   `shortcuts.vdf` `Exe`/`StartDir` agree, and this run wiped the save and relaunched from there.
+
+## Fixed the same evening: the plan now names a prop
+
+`brain.DEFAULT_SEED` named "a console, a card and a cartridge" without saying which of them is
+grabbable, so the console — the most prominent thing on screen — read as the target. It now
+names the props, says the console is not one of them, and `PROP_NOUNS` is bound to the
+locator's own vocabulary by `tests/test_prop_vocabulary.py` in both directions.
+
+Same frame (`what-the-brain-saw.png`), same words (`Hello human, welcome to the job simulator…`),
+one call to the model after the change:
+
+```text
+skill : reach
+target: job cartridge        <- was: the Job Simulator display/interface (central teal 'JOB SIMULATOR' sign and console)
+side  : right
+note  : goal: the console
+```
+
+A locatable prop instead of an unlocatable phrase. It is not the *right* prop — JobBot is
+holding his card out, and the cartridge rack is ~1.0 m away, which is the out-of-reach case that
+has never converted — but the locate stage can now answer about it, which is what the loop was
+missing.
