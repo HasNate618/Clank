@@ -27,7 +27,11 @@ The loop, each step from a measured failure:
    hand the moment the achieved hand is within `CLASP_START_M` while the clip is still
    playing; a 2 s gap between reach and close once cost 0.09 m of drift.
 7. `end_pose.decide_next` decides once: `escalate` regenerates with a root goal, `stop`
-   reports, `saturated` reports the residual it could not beat and exits 2.
+   reports, `saturated` reports the residual it could not beat and exits 2. The root goal is
+   computed before that decision, because what it asks for is what says whether a step is a
+   step: measured, a yaw-dominant but in-reach object asked for 0.02-0.06 m and the
+   regeneration changed the hand by less than the generator's own spread. A goal under
+   `STEP_WORTH_M` is refused with its number, and the reach is reported as planted.
 8. Exit 0 when the achieved hand is within `--tol` (default 8 cm).
 
 Usage:
@@ -336,8 +340,25 @@ def main() -> int:
     # object is outside the planted envelope (`step`) or merely unresolved
     # (`need_planted_solve`, which `decide_next` treats as a planted reach).
     kind = end_pose.classify(p_root, None)
+    # What a root goal would actually ask for, decided once from the object's own geometry.
+    # `classify` answers on direction, so a yaw-dominant object that is already inside the
+    # arm's reach is a "step" whose root goal is a few centimetres of shuffle: the chain is
+    # then told the reach is planted, and the measured classification is kept for the reader.
+    placed, _ = end_pose.step_root((p_root[0], p_root[1]), args.side, (0.0, 0.0))
+    root_travel = math.dist(placed, (0.0, 0.0))
+    heading_change = end_pose.yaw_error(p_root)
+    worthwhile = end_pose.step_worthwhile(root_travel, heading_change)
+    presented = kind if worthwhile else "planted"
     print(f"object world {tuple(round(v, 3) for v in target_world)}  pelvis "
           f"{tuple(round(v, 3) for v in p_root)}  classified {kind}")
+    print(
+        f"root goal would travel {root_travel * 1000:.0f} mm "
+        f"({placed[0]:+.2f} m forward) and turn {math.degrees(heading_change):+.0f} deg: "
+        + ("one step, worth a generation" if worthwhile
+           else f"neither {end_pose.STEP_WORTH_M * 1000:.0f} mm nor "
+                f"{math.degrees(end_pose.STEP_WORTH_RAD):.0f} deg, so the chain sees a "
+                f"planted reach")
+    )
     print(f"session {session_dir}")
 
     started = time.monotonic()
@@ -380,7 +401,7 @@ def main() -> int:
         best = min(best, residual)
         print(f"gen {generated}: achieved hand residual {residual * 1000:.1f} mm")
         decision = end_pose.decide_next(
-            kind=kind,
+            kind=presented,
             residual_m=residual,
             escalated=escalated,
             gen=generated,
@@ -388,18 +409,27 @@ def main() -> int:
             generated=generated,
         )
         if decision == "escalate":
-            # One root goal: put the root where the preferred hand point lands on the
-            # object. Only the forward component is commanded - `generate`'s root path runs
-            # along the body's own heading, and the hand constraint carries the facing.
-            placed, _ = end_pose.step_root(
-                (p_root[0], p_root[1]), args.side, (0.0, 0.0)
-            )
+            if not worthwhile:
+                # The policy asked for a root goal - on the residual, or on `classify`'s
+                # direction - but this goal buys neither a walk nor a turn: a generation
+                # spent on it would move the hand by less than the generator's own spread.
+                print(
+                    f"root goal {root_travel:.2f} m and "
+                    f"{math.degrees(heading_change):+.0f} deg refused: below "
+                    f"{end_pose.STEP_WORTH_M:.2f} m and "
+                    f"{math.degrees(end_pose.STEP_WORTH_RAD):.0f} deg, so it cannot move "
+                    f"the hand further than the generator's own spread"
+                )
+                break
             if end_pose.step_too_far(placed, (0.0, 0.0)):
                 print(
-                    f"refusing a root goal {math.dist(placed, (0.0, 0.0)):.2f} m from here: "
+                    f"refusing a root goal {root_travel:.2f} m from here: "
                     f"more than MAX_STEP_M, so the object point is a bad measurement"
                 )
                 return 2
+            # One root goal: put the root where the preferred hand point lands on the
+            # object. Only the forward component is commanded - `generate`'s root path runs
+            # along the body's own heading, and the hand constraint carries the facing.
             root_forward = placed[0]
             escalated = True
             print(f"escalate: one root goal, {root_forward:+.2f} m forward")

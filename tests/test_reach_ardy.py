@@ -12,6 +12,7 @@ the target lived in.
 """
 
 import importlib.util
+import math
 import pathlib
 import unittest
 
@@ -85,6 +86,35 @@ class ChainPolicy(unittest.TestCase):
             ),
             "stop",
         )
+
+
+class CheapEscalation(unittest.TestCase):
+    """A root goal too short to change anything does not get a generation."""
+
+    def test_the_adapter_asks_the_policy_with_the_worth_it_answer(self) -> None:
+        # `classify` says "step" on direction alone. The adapter computes what the goal asks
+        # for, and hands `decide_next` "planted" when it is a shuffle - the measured
+        # classification stays in the print, the decision is presented the reachable one.
+        text = ADAPTER.read_text()
+        self.assertIn("end_pose.step_worthwhile(", text)
+        self.assertIn("end_pose.STEP_WORTH_M", text)
+        self.assertIn("end_pose.STEP_WORTH_RAD", text)
+        self.assertIn("end_pose.yaw_error(", text)
+        self.assertIn('presented = kind if worthwhile else "planted"', text)
+        self.assertIn("kind=presented", text)
+        self.assertNotIn("kind=kind", text)
+
+    def test_a_refused_root_goal_is_reported_with_its_number(self) -> None:
+        text = ADAPTER.read_text()
+        self.assertIn("root goal", text)
+        self.assertIn("refused", text)
+
+    def test_the_worth_it_threshold_is_the_policy_constant(self) -> None:
+        # One number, next to the residual gate it has to agree with, not a local 0.1.
+        self.assertEqual(end_pose.STEP_WORTH_M, 0.10)
+        self.assertFalse(end_pose.step_worthwhile(0.03, 0.05))
+        self.assertTrue(end_pose.step_worthwhile(0.55, 0.0))
+        self.assertTrue(end_pose.step_worthwhile(0.03, math.radians(53.5)))
 
 
 class ClaspOnApproach(unittest.TestCase):

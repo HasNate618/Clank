@@ -120,6 +120,57 @@ class StepPlacement(unittest.TestCase):
         self.assertEqual(end_pose.HAND_PREF_LEFT, (0.35, 0.28, 0.15))
 
 
+class StepWorth(unittest.TestCase):
+    """A root goal is worth a generation when it buys a walk or a turn, not a shuffle."""
+
+    def test_a_shuffle_with_no_turn_is_not_worth_a_generation(self) -> None:
+        # 0.02-0.06 m of travel on an object the body already points at: the measured runs
+        # that moved the hand by less than the generator's own spread.
+        self.assertFalse(end_pose.step_worthwhile(0.02, 0.0))
+        self.assertFalse(end_pose.step_worthwhile(0.06, math.radians(5)))
+
+    def test_either_quantity_alone_is_enough(self) -> None:
+        # A real walk with no turn, and a real turn with no walk: both are worth the goal.
+        self.assertTrue(end_pose.step_worthwhile(0.55, 0.0))
+        self.assertTrue(end_pose.step_worthwhile(0.0, math.radians(53.5)))
+        self.assertFalse(end_pose.step_worthwhile(0.03, math.radians(-3.0)))
+
+    def test_the_boundaries_are_inclusive_on_both_quantities(self) -> None:
+        self.assertFalse(end_pose.step_worthwhile(end_pose.STEP_WORTH_M - 0.001,
+                                                 end_pose.STEP_WORTH_RAD - 0.001))
+        self.assertTrue(end_pose.step_worthwhile(end_pose.STEP_WORTH_M, 0.0))
+        self.assertTrue(end_pose.step_worthwhile(0.0, end_pose.STEP_WORTH_RAD))
+        self.assertTrue(end_pose.step_worthwhile(0.0, -end_pose.STEP_WORTH_RAD))
+
+    def test_a_real_step_is_worth_it(self) -> None:
+        # A 0.55 m walk to an object at arm's length + 0.55 m is what the goal exists for.
+        placed, _ = end_pose.step_root((1.0, 0.0), "right", (0.0, 0.0))
+        self.assertTrue(end_pose.step_worthwhile(math.dist(placed, (0.0, 0.0)), 0.0))
+
+    def test_the_thresholds_are_10_cm_and_20_degrees(self) -> None:
+        self.assertEqual(end_pose.STEP_WORTH_M, 0.10)
+        self.assertAlmostEqual(end_pose.STEP_WORTH_RAD, math.radians(20))
+
+    def test_on_bearing_and_out_of_reach_is_refused_as_a_measurement(self) -> None:
+        # The Task 8 case: the object is nearly straight ahead, so the goal is a walk of a
+        # few centimetres, and it was escalating on the residual alone. Nothing to buy.
+        p_root = (0.42, -0.02, 0.15)
+        placed, _ = end_pose.step_root((p_root[0], p_root[1]), "right", (0.0, 0.0))
+        travel = math.dist(placed, (0.0, 0.0))
+        self.assertLess(travel, end_pose.STEP_WORTH_M)
+        self.assertFalse(end_pose.step_worthwhile(travel, end_pose.yaw_error(p_root)))
+
+    def test_yaw_dominant_and_in_reach_still_escalates_for_the_turn(self) -> None:
+        # 53.5 deg off the heading, 0.41 m away: the walk is 0.08 m, but the turn is the
+        # thing being bought, so this goal is worth a generation.
+        p_root = (0.22, -0.30, 0.15)
+        self.assertEqual(end_pose.classify(p_root, None), "step")
+        placed, _ = end_pose.step_root((p_root[0], p_root[1]), "right", (0.0, 0.0))
+        travel = math.dist(placed, (0.0, 0.0))
+        self.assertLess(travel, end_pose.STEP_WORTH_M)
+        self.assertTrue(end_pose.step_worthwhile(travel, end_pose.yaw_error(p_root)))
+
+
 class Escalation(unittest.TestCase):
     def test_success_stops(self) -> None:
         self.assertEqual(end_pose.decide_next(kind="planted", residual_m=0.06, escalated=False,

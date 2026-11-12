@@ -29,6 +29,8 @@ PLANTED_RESIDUAL_M = 0.05
 TRACK_SUCCESS_M = 0.08
 CLASP_START_M = 0.08
 ROOT_GOAL_RESIDUAL_M = 0.10
+STEP_WORTH_M = 0.10
+STEP_WORTH_RAD = math.radians(20)
 MAX_STEP_M = 1.5
 MAX_STEP_GEN = 4
 STEP_CHAIN_S = 8.0
@@ -89,6 +91,27 @@ def step_root(
     hand_x = c * pref[0] - s * pref[1]
     hand_y = s * pref[0] + c * pref[1]
     return (obj_xy[0] - hand_x, obj_xy[1] - hand_y), yaw
+
+
+def step_worthwhile(travel_m: float, heading_rad: float) -> bool:
+    """Whether a root goal that travels `travel_m` and turns `heading_rad` is worth a generation.
+
+    A root goal buys two things: distance the arm cannot cover, and a body facing where the
+    hand has to go. Measured on the ARDY chain, a yaw-dominant object already inside the arm's
+    reach asked for 0.02-0.06 m of travel, and spending a generation on it moved the achieved
+    hand 111.4 -> 76.4 and 109.6 -> 65.7 mm - inside the 33-80 mm spread the same generator
+    shows unseeded, so that generation bought a resample, not a correction. A goal has to buy
+    a real walk (``STEP_WORTH_M``) or a real turn (``STEP_WORTH_RAD``) to be worth one.
+
+    ``heading_rad`` is `yaw_error`: how far the body has to turn to point at the object. The
+    turn and the walk are separate buys - a 53.5 deg object 0.41 m away needs no walk at all
+    and still has to be turned to, and the placement's own yaw is that angle minus the hand's
+    39 deg offset, so it understates the turn the body has to make.
+
+    This is not `step_too_far`: that refuses a placement so far away it can only be a bad
+    measurement, this refuses one too short (and too square-on) to change anything.
+    """
+    return float(travel_m) >= STEP_WORTH_M or abs(float(heading_rad)) >= STEP_WORTH_RAD
 
 
 def step_too_far(root_xy: tuple[float, float], guess_xy: tuple[float, float]) -> bool:
