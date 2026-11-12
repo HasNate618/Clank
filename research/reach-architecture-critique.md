@@ -171,7 +171,7 @@ This supersedes the §14 fallback: ARDY as the author, not Kimodo. No new licenc
 | R2 | **The 80 mm threshold is an uncalibrated proxy**, and ×1.43 makes 66 mm into 94 mm | §2 |
 | R3 | **Out-of-reach escalation never proven**; generator 0.566 m of 0.60 m, tracked never | ledger, task-8 report |
 | R4 | **The look is dead, not at risk** — 35–59°; best 15° at +32 mm | design §8.5 |
-| R5 | **GPU contention** — every measurement had the GPU to itself | plan Task 9 Step 1 exists, undone |
+| R5 | ~~**GPU contention**~~ — **measured 2026-11-11**: 0.09-0.10 s steady beside the game (0.07-0.08 alone), 0.32 s on the first call, 1.63 GB with the layer up and 6 GB spare | `probe_noise.py` under a live session |
 | R6 | **50 Hz tick budget** — a 32×36 JSON ring per tick into a body at 0.89× realtime | §7 |
 | R7 | **Left hand missing** — `--side left` exits 3, while the old path could reach either side | `reach_ardy.py:326-333` |
 | R8 | **Wrist orientation is pinned as an equality**, contrary to §7.2's prose, so 3 DoF the prior would spend on looking human are fixed | `ardy_gen.hand_constraint:370-380` |
