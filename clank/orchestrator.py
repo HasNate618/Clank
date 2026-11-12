@@ -313,6 +313,50 @@ class SessionManager:
             self._thread = threading.Thread(target=self._stop_worker, name="clank-stop", daemon=True)
         self._thread.start()
 
+    def restart_game(self) -> None:
+        """Kill the game, wipe its saves and launch it again, leaving the stack up.
+
+        The OpenXR parser is reset first: `_launch_game` waits for the new client's
+        `application_name` line in monado.log, and the game that just exited is still
+        in the parser's state, so that wait would return immediately and the caller
+        would go on to believe a game it never launched is up.
+
+        A failure raises `StartupError` and leaves the stack `running`: the run that
+        asked for this fails, the session does not.
+        """
+        with self._lifecycle_lock:
+            with self._lock:
+                if self._state != State.RUNNING or self._stop_event.is_set():
+                    raise ConflictError("session is not running")
+                pids = list(self._game_pids)
+            # Kill what this process started, then wait for every process with the
+            # game's argv0 to go: Proton leaves a wineserver that can hold the exe.
+            for pid in pids:
+                self.runner.kill_pid(pid)
+            with self._lock:
+                self._game_pids = []
+            deadline = time.monotonic() + self.cfg.run.game_restart_timeout_sec
+            while self.runner.pids_by_argv0(self._game_argv0()):
+                if time.monotonic() > deadline:
+                    raise StartupError(
+                        "game did not exit; check steam.log\n--- steam.log tail ---\n"
+                        + self._step_tail("steam")
+                    )
+                self._sleep_abort(0.1)
+            self._reset_openxr()
+            self.wipe_game_saves()
+            try:
+                self._launch_game()
+            except Aborted:
+                # The stack is stopping underneath us; that is not a run failure.
+                raise
+            except Exception as exc:
+                raise StartupError(
+                    f"game restart failed: {exc}\n--- steam.log tail ---\n"
+                    + self._step_tail("steam")
+                ) from exc
+            self._session_log("game restarted")
+
     def wipe_game_saves(self) -> dict[str, int]:
         """Delete the game's saved progress so a run starts at its first frame.
 

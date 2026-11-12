@@ -23,6 +23,7 @@ from clank.orchestrator import (
     PreflightError,
     SessionManager,
     State,
+    StartupError,
     _OpenXRLogParser,
     initial_mode,
     parse_openxr_client,
@@ -185,7 +186,9 @@ class FakeRunner:
         return text
 
 
-class OrchestratorTests(unittest.TestCase):
+class SessionHarness(unittest.TestCase):
+    """A started-looking session with fake processes, shared by several suites."""
+
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
         self.base = Path(self.temp.name)
@@ -207,6 +210,7 @@ class OrchestratorTests(unittest.TestCase):
                 pose_handshake_sec=1,
                 stop_sec=1,
             ),
+            run=replace(cfg.run, game_restart_timeout_sec=2.0),
         )
         self.cfg = cfg
         self.runner = FakeRunner()
@@ -223,6 +227,8 @@ class OrchestratorTests(unittest.TestCase):
         self.assertTrue(self.manager.wait_idle(2))
         self.assertEqual(self.manager.state_value(), "running")
 
+
+class OrchestratorTests(SessionHarness):
     def test_start_reaches_running(self) -> None:
         self.start()
         self.assertEqual(
@@ -2344,3 +2350,53 @@ class SaveWipeTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "outside the Proton prefix"):
             manager.wipe_game_saves()
         self.assertTrue((outside / "keep").exists())
+
+
+class RestartGameTests(SessionHarness):
+    def test_restart_requires_a_running_stack(self) -> None:
+        with self.assertRaises(ConflictError):
+            self.manager.restart_game()
+
+    def test_restart_resets_the_openxr_parser_before_waiting(self) -> None:
+        self.start()
+        self.manager._openxr_parser.feed(
+            "[client_connected] Client 3 connected\napplication_name: 'OpenComposite_wine'\n"
+        )
+        self.assertEqual(self.manager._openxr_parser.value(), "OpenComposite_wine")
+        seen = []
+        original = self.runner.wait_log
+
+        def record(path, needle, timeout, abort=None):
+            seen.append(self.manager._openxr_parser.value())
+            return original(path, needle, timeout, abort)
+
+        self.runner.wait_log = record
+        self.manager.restart_game()
+        self.assertEqual(seen, [None])
+
+    def test_restart_kills_then_wipes_then_relaunches(self) -> None:
+        self.start()
+        order = []
+
+        def kill(pid):
+            order.append("kill")
+            self.runner.game_started = False
+
+        original = self.runner.wait_pids
+
+        def wait(argv0, timeout, abort=None):
+            order.append("rungameid")
+            return original(argv0, timeout, abort)
+
+        self.runner.kill_pid = kill
+        self.runner.wait_pids = wait
+        self.manager.wipe_game_saves = lambda: order.append("wipe") or {"files": 0, "bytes": 0}
+        self.manager.restart_game()
+        self.assertEqual(order, ["kill", "wipe", "rungameid"])
+
+    def test_restart_failure_leaves_the_stack_running(self) -> None:
+        self.start()
+        self.runner.fail_at = "wait_pids"
+        with self.assertRaises(StartupError):
+            self.manager.restart_game()
+        self.assertEqual(self.manager.state_value(), "running")
