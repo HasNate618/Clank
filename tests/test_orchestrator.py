@@ -3,6 +3,7 @@ from __future__ import annotations
 import collections
 import json
 import os
+import shutil
 import socket
 import subprocess
 import tempfile
@@ -22,9 +23,10 @@ from clank.orchestrator import (
     PreflightError,
     SessionManager,
     State,
-    initial_mode,
     _OpenXRLogParser,
+    initial_mode,
     parse_openxr_client,
+    proton_prefix,
 )
 
 
@@ -2274,3 +2276,71 @@ class OpenXRTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SaveWipeTests(unittest.TestCase):
+    """A wipe is the only thing here that deletes files, so it gets its own harness."""
+
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory()
+        self.base = Path(self.temp.name)
+        cfg = load_config(None, env={})
+        cfg = replace(
+            cfg,
+            paths=replace(cfg.paths, session_root=str(self.base / "sessions")),
+        )
+        self.cfg = cfg
+        self.prefix = self.base / "pfx"
+        self.prefix.mkdir()
+        self.manager = SessionManager(cfg, runner=FakeRunner())  # type: ignore[arg-type]
+        patcher = patch("clank.orchestrator.proton_prefix", return_value=self.prefix)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.save = (
+            self.prefix
+            / "drive_c/users/steamuser/AppData/LocalLow/Owlchemy Labs/Job Simulator/User"
+        )
+        self.save.mkdir(parents=True)
+        (self.save / "JobSimulatorSave.save.bak-002050").write_bytes(b"x" * 40)
+        (self.save.parent / "output_log.txt").write_text("log")
+
+    def tearDown(self) -> None:
+        self.temp.cleanup()
+
+    def test_proton_prefix_is_derived_from_the_config(self) -> None:
+        expected = (
+            Path.home()
+            / ".local/share/Steam/steamapps/compatdata"
+            / self.cfg.launch.proton_app_id
+            / "pfx"
+        )
+        self.assertEqual(proton_prefix(self.cfg), expected)
+
+    def test_wipe_removes_the_save_but_not_the_log(self) -> None:
+        self.assertEqual(self.manager.wipe_game_saves(), {"files": 1, "bytes": 40})
+        self.assertTrue(self.save.is_dir())
+        self.assertEqual(list(self.save.iterdir()), [])
+        self.assertTrue((self.save.parent / "output_log.txt").exists())
+
+    def test_wipe_tolerates_a_missing_dir(self) -> None:
+        shutil.rmtree(self.prefix / "drive_c")
+        self.assertEqual(self.manager.wipe_game_saves(), {"files": 0, "bytes": 0})
+
+    def test_wipe_clears_a_second_configured_dir(self) -> None:
+        cache = self.prefix / "drive_c/users/steamuser/AppData/LocalLow/Unity/Owlchemy Labs_Job Simulator"
+        cache.mkdir(parents=True)
+        (cache / "__data").write_bytes(b"y" * 10)
+        self.assertEqual(self.manager.wipe_game_saves(), {"files": 2, "bytes": 50})
+
+    def test_wipe_refuses_a_symlink_out_of_the_prefix(self) -> None:
+        outside = self.base / "outside"
+        outside.mkdir()
+        (outside / "keep").write_text("keep")
+        (self.prefix / "drive_c/escape").symlink_to(outside)
+        cfg = replace(
+            self.cfg, paths=replace(self.cfg.paths, game_save_dirs=("drive_c/escape",))
+        )
+        manager = SessionManager(cfg, runner=FakeRunner())  # type: ignore[arg-type]
+        with self.assertRaisesRegex(ValueError, "outside the Proton prefix"):
+            manager.wipe_game_saves()
+        self.assertTrue((outside / "keep").exists())

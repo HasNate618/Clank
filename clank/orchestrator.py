@@ -122,6 +122,16 @@ def parse_openxr_client(text: str) -> str | None:
     return parser.value()
 
 
+def proton_prefix(cfg: Config) -> Path:
+    """The Wine prefix this game runs in, as Proton lays it out."""
+    return (
+        Path.home()
+        / ".local/share/Steam/steamapps/compatdata"
+        / cfg.launch.proton_app_id
+        / "pfx"
+    )
+
+
 class SessionManager:
     LOG_FILES = {
         "monado": "monado.log",
@@ -302,6 +312,42 @@ class SessionManager:
             self._condition.notify_all()
             self._thread = threading.Thread(target=self._stop_worker, name="clank-stop", daemon=True)
         self._thread.start()
+
+    def wipe_game_saves(self) -> dict[str, int]:
+        """Delete the game's saved progress so a run starts at its first frame.
+
+        The game is dead when this runs, so no file is open and nothing can rewrite
+        the saves on exit. Each configured entry is resolved against the Proton
+        prefix and must stay inside it: this is the one operation here that deletes
+        files, and an operator's typo must not reach a home directory. The directory
+        is removed and recreated rather than emptied, so a save with an unexpected
+        name - the game names its backup `*.save.bak-<time>` - cannot survive.
+        """
+        prefix = proton_prefix(self.cfg).resolve()
+        files = 0
+        size = 0
+        for entry in self.cfg.paths.game_save_dirs:
+            target = (prefix / entry).resolve()
+            if target != prefix and prefix not in target.parents:
+                raise ValueError(
+                    f"save dir {entry!r} resolves outside the Proton prefix: {target}"
+                )
+            if not target.is_dir():
+                continue
+            for path in target.rglob("*"):
+                if not path.is_file():
+                    continue
+                files += 1
+                with contextlib.suppress(OSError):
+                    size += path.stat().st_size
+            try:
+                shutil.rmtree(target)
+            except OSError as exc:
+                # Fail the run rather than let it start on stale saves.
+                raise OSError(f"could not wipe {target}: {exc}") from exc
+            target.mkdir(parents=True)
+        self._session_log(f"wiped game saves: {files} file(s), {size} bytes")
+        return {"files": files, "bytes": size}
 
     def set_mode(self, mode: str) -> None:
         if mode not in MODES:
@@ -500,13 +546,9 @@ class SessionManager:
             name: str(self.log_path(name)) if self.log_path(name) is not None else None
             for name in ("session", "monado", "weston", "proxy", "steam", "pose")
         }
-        player_log = (
-            Path.home()
-            / ".local/share/Steam/steamapps/compatdata"
-            / self.cfg.launch.proton_app_id
-            / "pfx/drive_c/users/steamuser"
-            / self.cfg.paths.game_player_log
-        )
+        player_log = proton_prefix(self.cfg) / Path(
+            "drive_c/users/steamuser"
+        ) / self.cfg.paths.game_player_log
         return {
             "state": state,
             "session_id": session_id,
