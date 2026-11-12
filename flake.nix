@@ -191,6 +191,12 @@
                 # The manual-mode tests load the real pose client from here.
                 mkdir -p spike
                 cp -r ${./spike/c0} spike/c0
+                # The stdlib tests read these modules as source contracts, and several
+                # import them directly (packing, the reach envelope, path shape, the
+                # mailbox and clip player). Tracked .py only: vendor/ and weights/ are
+                # gitignored, so they never enter the store.
+                cp -r ${./spike/wbc} spike/wbc
+                cp -r ${./spike/wbc_game} spike/wbc_game
                 # test_vnc_auth imports the grabber to exercise its RSA-AES code.
                 cp ${./spike/vnc_grab.py} spike/vnc_grab.py
                 # run.sh's launcher and its dry-run tests, no layer library needed.
