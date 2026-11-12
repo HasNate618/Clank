@@ -109,6 +109,11 @@ class OverlayBoard:
             self._prune(now)
             return [self._view(item, now) for item in self._items]
 
+    def clear(self) -> None:
+        """Forget every claim: a new run starts with an empty picture."""
+        with self._lock:
+            self._items.clear()
+
     def _prune(self, now: float) -> None:
         cutoff = now - self._ttl_s
         kept = [item for item in self._items if item["t"] >= cutoff]

@@ -170,8 +170,10 @@ running/stopping: stop() -> stopping -> idle
 
 1. **checking** (0.4 s, or up to `model_timeout_sec` when loading): the model gate (§5.2). First
    because it is the cheapest phase and refuses the run without spending anything.
-2. **preparing** (instant): mkdir the run dir, write `run.json` (`run_id`, `session_id`,
-   `started_at`, `mode`, `brain_argv`, `diary`, `frames`), touch `brain.jsonl`, clear the overlay.
+2. **preparing** (instant): touch `brain.jsonl`, clear the overlay, rewrite `run.json`
+   (`run_id`, `session_id`, `started_at`, `mode`, `brain_argv`, `diary`, `frames`). The run
+   directory itself is created by the `start` call, before this thread runs, so a run refused by
+   the model gate still has a `run.json` to record why.
 3. **game** (20-40 s `[ASSUMPTION]`): `manager.restart_game()` — kill, wipe the saves, relaunch.
    This dominates wall time.
 4. **body** (~5 s): `set_mode("body")`, then `body_reset()`.

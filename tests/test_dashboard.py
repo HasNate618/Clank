@@ -861,6 +861,14 @@ class OverlayBoardTests(unittest.TestCase):
             board.add(self.claim(noun))
         self.assertEqual([item["noun"] for item in board.snapshot()], ["b", "c"])
 
+    def test_clear_forgets_every_claim(self) -> None:
+        board = OverlayBoard(ttl_s=60.0)
+        board.add(self.claim("card"))
+        board.clear()
+        # A new run starts with an empty picture: the last attempt's boxes describe
+        # a scene that no longer exists.
+        self.assertEqual(board.snapshot(), [])
+
     def test_a_claim_must_be_finite_and_ordered(self) -> None:
         board = OverlayBoard()
         with self.assertRaises(ValueError):
