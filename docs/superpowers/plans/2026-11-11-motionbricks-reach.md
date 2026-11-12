@@ -1,5 +1,8 @@
 # MotionBricks Reach Implementation Plan
 
+> **Superseded** by `2026-11-11-ardy-reach.md`. The work it describes was carried out against ARDY
+> instead; keep this for the task breakdown and the gates, not as a sequence to follow.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Replace the VR-cruise reach/grab with an IK still frame, a MotionBricks inbetween, and SONIC mode-0 tracking, so an in-front grab plants and looks, and an off-axis grab steps or pivots.

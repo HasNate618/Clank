@@ -1,7 +1,9 @@
 # MotionBricks reach — Design
 
 - Date: 2026-11-11
-- Status: draft for review; no implementation until this document is accepted
+- Status: **superseded** by `2026-11-11-ardy-reach-design.md`, which argues the same problem with a
+  generator that accepts end-effector constraints. Kept for its measurements (the MotionBricks comparison,
+  the fallback), not as a plan of record.
 - Parent: `research/humanoid-command-space.md` (BodyCommand contract), `research/upper-body-override.md`, `research/motion.md`, `research/wbc-classical-proposal.md`
 - Implements against: `spike/wbc/sonic_executor.py`, `spike/wbc/sonic_runner.py`, `spike/wbc_game/reach_vr.py`, `clank/workspace.py`, `clank/player_scale.py`
 - Does not implement: brain/planner changes, locate, glow, neck, HumanML3D training, SONIC or MotionBricks retraining
