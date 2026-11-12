@@ -16,7 +16,13 @@ Reported, with the gate from design §11:
 * **residual** - the achieved hand against the constrained point, both through the same FK,
   gate **< 8 cm**. Above **15 cm** the probe stops with exit 3: that is a
   stop-the-line result for the design, not a number to tune or a reason to fall back to the
-  `reach_vr` cruise.
+  `reach_vr` cruise. The residual is a **norm and is sign-blind**, so the same result is
+  printed three signed ways: the achieved hand against the object in MuJoCo world axes and
+  in the body's own (forward, left, up), plus the tracker's `body_state` hand - MuJoCo's
+  kinematics, sharing no code with the ARDY FK - against the same point. A hand that lands
+  2 cm from the object and a hand that lands on the *other* side of the body are the same
+  residual and opposite signed numbers; the clip's last frame is decomposed the same way,
+  so a generator error and a tracker error can be told apart.
 * **root path** - how far the root actually travelled, and how far it ended from where it
   started. A planted reach should show a small shuffle, not a walk.
 * **fall** - the body's own `FLAG_FALL_RISK` (base height and world-up threshold) at every
@@ -38,7 +44,10 @@ Reported, with the gate from design §11:
 The constrained point is placed **in front of the body**, along its own heading, from the
 achieved right hand plus `--forward` and `--up`. The first attempt added those along ARDY
 world +z instead, which put the target ~90 deg to the right of a body facing -89 deg and
-measured the tracker on a target nobody asked it to reach.
+measured the tracker on a target nobody asked it to reach. `--root-offset FWD LEFT UP` places
+it in the body's own frame from the *root* instead, which is the only way to say "to the
+robot's right" and have it mean that; `--bearing-deg` and `--radius-m` move it afterwards,
+at a fixed bearing or a fixed distance.
 
     LD_LIBRARY_PATH=/run/opengl-driver/lib spike/ardy/.venv/bin/python \\
         spike/wbc_game/probe_ardy_track.py
@@ -72,6 +81,7 @@ import ardy_gen  # noqa: E402  # pyright: ignore[reportMissingImports]
 import end_pose  # noqa: E402  # pyright: ignore[reportMissingImports]
 import mb_mailbox  # noqa: E402  # pyright: ignore[reportMissingImports]
 import reach_ardy  # noqa: E402  # pyright: ignore[reportMissingImports]
+import reach_vr  # noqa: E402  # pyright: ignore[reportMissingImports]
 
 from clank.body import FLAG_FALL_RISK  # noqa: E402
 from clank.camera import yaw_from_quat  # noqa: E402
@@ -123,6 +133,68 @@ def place_at_bearing(
     delta = math.radians(bearing_deg) - math.atan2(dx, dz)
     c, s = math.cos(delta), math.sin(delta)
     return (root[0] + dx * c + dz * s, target[1], root[2] - dx * s + dz * c)
+
+
+def body_axes(pose36: tuple[float, ...]) -> tuple[tuple[float, float, float], ...]:
+    """The body's forward, left and up as ARDY-world unit vectors at `pose36`.
+
+    ARDY world is (x left, y up, z forward) and 0 heading faces +z, so forward is
+    `(sin h, 0, cos h)` and left is that turned +90 deg, `(cos h, 0, -sin h)`. A signed error
+    read against these says "short by 3 cm and 2 cm to the wrong side" where the same vector
+    in world axes is mostly the body's heading, which is the number nobody wants.
+    """
+    heading = ardy_gen.heading_angle(pose36)
+    return (
+        (math.sin(heading), 0.0, math.cos(heading)),
+        (math.cos(heading), 0.0, -math.sin(heading)),
+        (0.0, 1.0, 0.0),
+    )
+
+
+def body_frame_point(
+    pose36: tuple[float, ...],
+    forward_m: float,
+    left_m: float,
+    up_m: float,
+) -> tuple[float, float, float]:
+    """A point `forward_m` ahead of the root, `left_m` to its left, `up_m` above it.
+
+    The body's own frame, not ARDY world: on this body a world axis turns a lateral test into
+    a test of the root's heading, and "the object is to the robot's right" is a statement
+    about the robot. `body_axes` is what that frame is; `off_bearing` of the result is
+    `atan2(left, forward)`.
+
+    The height is `pose36[2]`, the root's own world z, plus `up_m` - the ARDY y of a MuJoCo
+    world z - so `up_m` reads the way a person says it, above the pelvis.
+    """
+    root = ardy_gen.world_root(pose36)
+    forward, left, _ = body_axes(pose36)
+    return (
+        root[0] + forward[0] * float(forward_m) + left[0] * float(left_m),
+        float(pose36[2]) + float(up_m),
+        root[2] + forward[2] * float(forward_m) + left[2] * float(left_m),
+    )
+
+
+def signed_error(
+    achieved_ardy: tuple[float, float, float], target_ardy: tuple[float, float, float]
+) -> dict:
+    """`achieved - object` as signed components, not a distance.
+
+    `error_world_m` is in MuJoCo world axes (x, y, z), which on this body is mostly its
+    heading; `analyse` adds the same error against `body_axes`. A norm cannot say whether a
+    hand landed short, above, or on the wrong side, which is exactly the question when the
+    object is off the body's centre line: a lateral sign error and a lateral aim error are
+    the same number to `math.dist` and opposite numbers here.
+    """
+    achieved = reach_ardy.world_point(achieved_ardy)
+    target = reach_ardy.world_point(target_ardy)
+    error = tuple(a - t for a, t in zip(achieved, target, strict=True))
+    return {
+        "hand_world_m": [round(v, 4) for v in achieved],
+        "object_world_m": [round(v, 4) for v in target],
+        "error_world_m": [round(v, 4) for v in error],
+    }
 
 
 def place_at_radius(
@@ -236,11 +308,20 @@ def play_and_sample(session_dir: Path, seq: int) -> tuple[str, list[dict], dict 
 
 def analyse(
     samples: list[dict],
+    placed_on: tuple[float, ...],
     final_pose: tuple[float, ...],
     target: tuple[float, float, float],
     clip_look_deg: float,
+    clip_final: tuple[float, ...],
 ) -> dict:
-    """The four numbers gate 5 turns on, from the sampled body states."""
+    """The four numbers gate 5 turns on, from the sampled body states, plus the signs.
+
+    Three views of where the hand ended up, because each one can hide a different error:
+    the two ARDY-side numbers share `_motion_pose`, so a mapping error cancels out of the
+    residual the generator is judged on; the body's own `right_hand` in `body_state.json`
+    is MuJoCo's kinematics on the same joint angles and shares nothing with it. When those
+    two disagree, the disagreement is ours, not the tracker's.
+    """
     residual = reach_ardy.hand_residual(final_pose, target)
     roots = [tuple(float(v) for v in st["root_p"]) for st in samples if "root_p" in st]
     first, last = samples[0], samples[-1]
@@ -256,8 +337,35 @@ def analyse(
         tuple(first["root_q"]), tuple(first["head"]["q_xyzw"])
     )
     head_end = world_head_yaw_deg(tuple(last["root_q"]), tuple(last["head"]["q_xyzw"]))
+    # `body_state`'s hand is the wrist *plus* the 0.18 m lever the relay carries, and the
+    # ARDY skeleton's hand is `right_wrist_yaw`: `reach_vr.link` takes the lever back off so
+    # the two numbers name the same link. Neither shares code with `_motion_pose`.
+    body_hand = reach_vr.to_world(reach_vr.link(last, "right"), last)
+    body_error = tuple(
+        a - b for a, b in zip(body_hand, target_world, strict=True)
+    )
+    generator_hand = reach_ardy.world_point(ardy_gen.hand_position(clip_final))
+    generator_error = tuple(
+        a - b for a, b in zip(generator_hand, target_world, strict=True)
+    )
+    # The signed error against the body's own axes: the world triple above is mostly the
+    # heading on a body facing -90 deg, so this is the readable one.
+    achieved = ardy_gen.hand_position(final_pose)
+    error_ardy = tuple(
+        a - b for a, b in zip(achieved, target, strict=True)
+    )
+    error_body = tuple(
+        math.fsum(component * axis for component, axis in zip(error_ardy, unit, strict=True))
+        for unit in body_axes(placed_on)
+    )
+    tracked = signed_error(achieved, target)
     return {
         "residual_m": residual,
+        "error_body_m": [round(v, 5) for v in error_body],
+        **{f"tracked_{key}": value for key, value in tracked.items()},
+        "body_hand_world_m": [round(v, 4) for v in body_hand],
+        "body_error_world_m": [round(v, 4) for v in body_error],
+        "generator_error_world_m": [round(v, 4) for v in generator_error],
         "root_start": list(start),
         "root_end": list(end),
         "root_net_m": math.dist(start, end),
@@ -300,6 +408,12 @@ def main() -> int:
     )
     parser.add_argument("--up", type=float, default=ardy_gen.HAND_DELTA_UP)
     parser.add_argument(
+        "--root-offset", type=float, nargs=3, default=None, metavar=("FWD", "LEFT", "UP"),
+        help="place the object in the body's own frame, this many metres ahead of the root, "
+             "to its left and above it, instead of --forward/--up beyond the hand; left is "
+             "negative for the robot's right, which is the sign a lateral test turns on",
+    )
+    parser.add_argument(
         "--bearing-deg", type=float, default=None,
         help="swing the object to this bearing off the body's heading (0 = straight ahead, "
              "negative = to the body's right) instead of leaving it on the hand's forward "
@@ -337,14 +451,22 @@ def main() -> int:
         latest = ring["poses"][-1]
         hand = ardy_gen.hand_position(latest)
         heading = ardy_gen.heading_angle(latest)
-        # The body's forward in ARDY world, where 0 heading faces +z (`root_waypoints`).
-        forward = (math.sin(heading), 0.0, math.cos(heading))
-        target = (
-            hand[0] + forward[0] * args.forward,
-            hand[1] + args.up,
-            hand[2] + forward[2] * args.forward,
-        )
         root_ardy = ardy_gen.world_root(latest)
+        if args.root_offset is not None:
+            target = body_frame_point(latest, *args.root_offset)
+            placed_at = (
+                f"({args.root_offset[0]:+.2f} m forward, {args.root_offset[1]:+.2f} m left, "
+                f"{args.root_offset[2]:+.2f} m up from the root, body frame)"
+            )
+        else:
+            # The body's forward in ARDY world, where 0 heading faces +z (`root_waypoints`).
+            forward = (math.sin(heading), 0.0, math.cos(heading))
+            target = (
+                hand[0] + forward[0] * args.forward,
+                hand[1] + args.up,
+                hand[2] + forward[2] * args.forward,
+            )
+            placed_at = f"({args.forward:+.2f} m forward, {args.up:+.2f} m up from the hand)"
         if args.bearing_deg is not None:
             target = place_at_bearing(
                 root_ardy, target, math.degrees(heading) + args.bearing_deg
@@ -360,12 +482,12 @@ def main() -> int:
         )
         print(
             f"right hand {tuple(round(v, 3) for v in hand)} -> constrained "
-            f"{tuple(round(v, 3) for v in target)} "
-            f"({args.forward:+.2f} m forward, {args.up:+.2f} m up, ARDY world metres)"
+            f"{tuple(round(v, 3) for v in target)} {placed_at} "
+            f"= {tuple(round(v, 3) for v in reach_ardy.world_point(target))} MuJoCo world"
         )
         print(
-            f"object {off_deg:+.1f} deg off the body's heading; the torso starts "
-            f"{look_start_deg:+.1f} deg off it (gate "
+            f"object {off_deg:+.1f} deg off the body's heading (positive = left); "
+            f"the torso starts {look_start_deg:+.1f} deg off it (gate "
             f"{math.degrees(ardy_gen.LOOK_AT_OBJECT_RAD):.0f} deg)"
         )
 
@@ -397,18 +519,66 @@ def main() -> int:
         report = {
             "generator": metrics,
             "constrained_point": list(target),
+            "root_offset_m": None if args.root_offset is None else list(args.root_offset),
+            "bearing_deg": args.bearing_deg,
+            "radius_m": args.radius_m,
             "hand_at_start": list(hand),
             "forward_m": args.forward,
             "up_m": args.up,
             "object_off_bearing_deg": off_deg,
             "torso_at_start_deg": torso_start_deg,
             **frame0_continuity(latest, frames[0]),
-            **analyse(samples, final_ring["poses"][-1], target, clip_look_deg),
+            **analyse(
+                samples, latest, final_ring["poses"][-1], target, clip_look_deg, frames[-1]
+            ),
         }
         residual = float(report["residual_m"])
         print(
             f"residual {residual * 1000:.1f} mm  "
             f"(gate {TRACK_SUCCESS_M * 1000:.0f} mm, stop {STOP_M * 1000:.0f} mm)"
+        )
+        print(
+            f"object world {tuple(report['tracked_object_world_m'])}  "
+            f"achieved hand world {tuple(report['tracked_hand_world_m'])}"
+        )
+        print(
+            "signed error (achieved - object): "
+            + ", ".join(
+                f"{value * 1000:+.0f} mm {axis}"
+                for value, axis in zip(
+                    report["tracked_error_world_m"], ("x", "y", "z"), strict=True
+                )
+            )
+            + " world, "
+            + ", ".join(
+                f"{value * 1000:+.0f} mm {axis}"
+                for value, axis in zip(
+                    report["error_body_m"], ("forward", "left", "up"), strict=True
+                )
+            )
+            + " body frame"
+        )
+        print(
+            f"body's own hand (wrist link) {tuple(report['body_hand_world_m'])}  "
+            "signed error: "
+            + ", ".join(
+                f"{value * 1000:+.0f} mm {axis}"
+                for value, axis in zip(
+                    report["body_error_world_m"], ("x", "y", "z"), strict=True
+                )
+            )
+            + " world (the row above, from MuJoCo instead of our FK)"
+        )
+        print(
+            "clip's last frame against the object: "
+            + ", ".join(
+                f"{value * 1000:+.0f} mm {axis}"
+                for value, axis in zip(
+                    report["generator_error_world_m"],
+                    ("forward", "left", "up"),
+                    strict=True,
+                )
+            )
         )
         print(
             f"root: start {tuple(round(v, 3) for v in report['root_start'])} -> "
@@ -426,8 +596,9 @@ def main() -> int:
         )
         print(
             f"look: achieved torso {report['head_yaw_start_deg']:.1f} -> "
-            f"{report['head_yaw_end_deg']:.1f} deg world "
-            f"(turn {report['head_turn_deg']:+.1f}), clip {report['clip_look_deg']:.1f}, "
+            f"{report['head_yaw_end_deg']:+.1f} deg world "
+            f"(turn {report['head_turn_deg']:+.1f}, positive = left), "
+            f"clip {report['clip_look_deg']:+.1f}, "
             f"tracking error {report['look_track_error_deg']:+.1f} deg "
             f"(gate {LOOK_GATE_DEG:.0f}); object bearing "
             f"{report['look_at_object_error_deg']:+.1f} deg off "
