@@ -18,7 +18,13 @@ The loop, each step from a measured failure:
 3. The hand constraint is `right hand at that point`, with the wrist orientation inherited
    from the achieved pose. A missing torch, CUDA or checkpoint prints and exits 3 without
    touching the session: a generator that is unavailable is unsupported, not a tear-down.
-4. Generate one 52-frame window around the body's own root and heading.
+4. Generate one 52-frame window around the body's own root and heading. Turning the body to
+   face the object first was measured both ways - as a heading on this window's root goal and
+   as a turn-only clip before it - and both cost the hand ~30 mm of tracking (median 93-97 mm
+   against 65 untouched) without bringing the torso inside the 20 deg look gate: facing swings
+   the right hand away from the object, and the generator's own waist twist is what puts the
+   torso off, which a root turn cannot cancel. So the reach stays one window; the look is
+   reported, not chased.
 5. Resample 25 -> 50 Hz and deposit it as `mb_clip.npz` plus a new `mb_play.json` seq. The
    body reads the clip, not this process.
 6. Wait for the body's `done`, with two failure clocks: the 8 s play timeout, and a frozen
@@ -30,8 +36,9 @@ The loop, each step from a measured failure:
    reports, `saturated` reports the residual it could not beat and exits 2. The root goal is
    computed before that decision, because what it asks for is what says whether a step is a
    step: measured, a yaw-dominant but in-reach object asked for 0.02-0.06 m and the
-   regeneration changed the hand by less than the generator's own spread. A goal under
-   `STEP_WORTH_M` is refused with its number, and the reach is reported as planted.
+   regeneration changed the hand by less than the generator's own spread. A goal that buys
+   neither `STEP_WORTH_M` of travel nor `STEP_WORTH_RAD` of turn is refused with its numbers,
+   and the reach is reported as planted.
 8. Exit 0 when the achieved hand is within `--tol` (default 8 cm).
 
 Usage:
@@ -351,6 +358,12 @@ def main() -> int:
     presented = kind if worthwhile else "planted"
     print(f"object world {tuple(round(v, 3) for v in target_world)}  pelvis "
           f"{tuple(round(v, 3) for v in p_root)}  classified {kind}")
+    print(
+        f"object {math.degrees(ardy_gen.off_bearing(ring['poses'][-1], target)):+.1f} deg "
+        f"off the body's heading; the torso starts "
+        f"{math.degrees(ardy_gen.look_error(ring['poses'][-1], target)):+.1f} deg off it "
+        f"(gate {math.degrees(ardy_gen.LOOK_AT_OBJECT_RAD):.0f})"
+    )
     print(
         f"root goal would travel {root_travel * 1000:.0f} mm "
         f"({placed[0]:+.2f} m forward) and turn {math.degrees(heading_change):+.0f} deg: "

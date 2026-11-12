@@ -65,6 +65,14 @@ HAND_DELTA_UP = 0.15
 #: Floats in one pose: root xyz + root quat xyzw + 29 hinge angles (`g1_pack`).
 POSE_LEN = 36
 
+#: The waist yaw hinge's index in the 29 hinge angles (`g1_pack.JOINT_NAMES`). G1 has no neck,
+#: so this hinge plus the root's yaw is the torso's whole heading - the camera's, for the look.
+WAIST_YAW_HINGE = 12
+
+#: The design goal `the camera looks at the grab`, measured as `look_error`. On this body the
+#: camera is the torso, so this is how far the torso may look off the object.
+LOOK_AT_OBJECT_RAD = math.radians(20)
+
 #: MuJoCo world (x forward, y left, z up) -> ARDY world (x left, y up, z forward): `ardy = M @ mujoco`.
 MUJOCO_TO_ARDY = ((0.0, 1.0, 0.0), (0.0, 0.0, 1.0), (1.0, 0.0, 0.0))
 
@@ -140,6 +148,61 @@ def heading_angle(pose36: Sequence[float]) -> float:
     """
     rot = quat_matrix(pose36[3:7])
     return math.atan2(rot[1][0], rot[0][0])
+
+
+def bearing_to(pose36: Sequence[float], target: Sequence[float]) -> float:
+    """The world yaw from `pose36`'s root to `target`, in ARDY's convention: 0 faces +z.
+
+    ARDY's +z is the body's forward at a zero heading (`root_waypoints` builds its path from
+    the same sin/cos pair), so the result is directly comparable with `heading_angle`.
+    """
+    root = world_root(pose36)
+    return math.atan2(float(target[0]) - root[0], float(target[2]) - root[2])
+
+
+def wrap_rad(angle: float) -> float:
+    """The signed representative of `angle`: a difference across pi is not a jump."""
+    return math.atan2(math.sin(angle), math.cos(angle))
+
+
+def off_bearing(pose36: Sequence[float], target: Sequence[float]) -> float:
+    """How far the object sits off the body's heading: 0 faces it, positive to the left.
+
+    It is measured against the *root*: G1 has no neck, so the torso's world heading is the
+    root's yaw plus the waist hinge, and the waist twist the generator picks is its own answer
+    - see `look_error` for what the torso does about it, which is the design's look gate.
+    """
+    return wrap_rad(bearing_to(pose36, target) - heading_angle(pose36))
+
+
+def torso_yaw(pose36: Sequence[float]) -> float:
+    """The torso's world yaw: the root's yaw plus the waist hinge, which is all G1 has."""
+    return heading_angle(pose36) + float(pose36[7 + WAIST_YAW_HINGE])
+
+
+def look_error(pose36: Sequence[float], target: Sequence[float]) -> float:
+    """How far the torso looks off the object: 0 looks straight at it, positive to the left.
+
+    The design goal is `the camera looks at the grab`, and on this body the camera is the
+    torso. Different from `off_bearing` whenever the waist is twisted, which it is for a
+    generated right-hand reach.
+    """
+    return wrap_rad(torso_yaw(pose36) - bearing_to(pose36, target))
+
+
+def frame0_delta(
+    live: Sequence[float], generated: Sequence[float]
+) -> tuple[float, float]:
+    """Root distance in metres and heading difference in radians between two poses.
+
+    The placement (`init_global_translation`, `init_first_heading_angle`) exists so a clip
+    starts where the body is. Anything that changes the clip's frame 0 - a heading goal, say -
+    spends that continuity and SONIC has to absorb the jump, so it is measured and printed.
+    """
+    return (
+        math.dist(tuple(float(v) for v in live[:3]), tuple(float(v) for v in generated[:3])),
+        wrap_rad(heading_angle(generated) - heading_angle(live)),
+    )
 
 
 def rotation_angle_deg(

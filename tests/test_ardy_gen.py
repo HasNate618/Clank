@@ -118,6 +118,36 @@ class RootFrameTest(unittest.TestCase):
         self.assertAlmostEqual(abs(ardy_gen.heading_angle(pose36(quat=yaw_quat(math.pi)))), math.pi)
 
 
+class BearingTest(unittest.TestCase):
+    """Facing is judged in the same yaw convention the placement and the path use."""
+
+    def test_a_target_straight_ahead_is_zero_bearing(self) -> None:
+        # ARDY world is (x left, y up, z forward) and heading 0 faces +z.
+        self.assertAlmostEqual(ardy_gen.bearing_to(pose36(), (0.0, 0.9, 1.0)), 0.0)
+
+    def test_a_target_to_the_left_is_a_positive_yaw(self) -> None:
+        self.assertAlmostEqual(ardy_gen.bearing_to(pose36(), (1.0, 0.9, 0.0)), math.pi / 2)
+        self.assertAlmostEqual(ardy_gen.bearing_to(pose36(), (-1.0, 0.9, 0.0)), -math.pi / 2)
+
+    def test_the_bearing_is_measured_from_the_root_not_the_world_origin(self) -> None:
+        pose = pose36(root=(0.7, -0.2, 0.787))  # ARDY root: z = 0.7 (MuJoCo x), x = -0.2 (MuJoCo y)
+        self.assertAlmostEqual(ardy_gen.bearing_to(pose, (-0.2, 0.9, 0.7 + 0.5)), 0.0)
+        self.assertAlmostEqual(ardy_gen.bearing_to(pose, (-0.2, 0.9, 0.7 - 0.5)), math.pi)
+
+    def test_off_bearing_subtracts_the_body_heading_and_wraps(self) -> None:
+        pose = pose36(quat=yaw_quat(0.5))
+        self.assertAlmostEqual(ardy_gen.off_bearing(pose, (0.0, 0.9, 1.0)), -0.5)
+        # A heading and a bearing either side of half a turn must not read as a big turn.
+        pose = pose36(quat=yaw_quat(math.pi - 0.1))
+        self.assertAlmostEqual(
+            ardy_gen.off_bearing(pose, (math.sin(0.1), 0.9, -math.cos(0.1))), 0.0, places=6
+        )
+
+    def test_wrap_rad_keeps_the_signed_turn(self) -> None:
+        self.assertAlmostEqual(ardy_gen.wrap_rad(math.radians(350)), math.radians(-10))
+        self.assertAlmostEqual(ardy_gen.wrap_rad(math.radians(-350)), math.radians(10))
+
+
 class RotationAngleTest(unittest.TestCase):
     def test_the_same_rotation_is_zero_degrees(self) -> None:
         self.assertAlmostEqual(ardy_gen.rotation_angle_deg(rot_z(0.8), rot_z(0.8)), 0.0)
@@ -140,6 +170,43 @@ class RotationAngleTest(unittest.TestCase):
     def test_a_matrix_that_is_not_exactly_orthonormal_is_clamped(self) -> None:
         scaled = ((2.0, 0.0, 0.0), (0.0, 2.0, 0.0), (0.0, 0.0, 2.0))
         self.assertEqual(ardy_gen.rotation_angle_deg(scaled, rot_z(0.0)), 0.0)
+
+
+class LookTest(unittest.TestCase):
+    """The look goal is the torso's, and the torso is the root plus the waist hinge."""
+
+    def test_the_torso_is_the_root_yaw_plus_the_waist_hinge(self) -> None:
+        pose = list(pose36(quat=yaw_quat(0.4)))
+        pose[7 + ardy_gen.WAIST_YAW_HINGE] = 0.2
+        self.assertAlmostEqual(ardy_gen.torso_yaw(tuple(pose)), 0.6)
+
+    def test_a_waist_twist_moves_the_look_but_not_the_bearing(self) -> None:
+        # This is the measured failure: the body faces the object and the waist turns away.
+        pose = list(pose36())
+        pose[7 + ardy_gen.WAIST_YAW_HINGE] = math.radians(15)
+        target = (0.0, 0.9, 1.0)
+        self.assertAlmostEqual(ardy_gen.off_bearing(tuple(pose), target), 0.0, places=6)
+        self.assertAlmostEqual(ardy_gen.look_error(tuple(pose), target), math.radians(15))
+
+    def test_the_look_gate_is_20_degrees(self) -> None:
+        self.assertAlmostEqual(ardy_gen.LOOK_AT_OBJECT_RAD, math.radians(20))
+
+
+class Frame0Test(unittest.TestCase):
+    """A clip starts where the body is; this is the number that says whether it did."""
+
+    def test_an_identical_pose_is_no_distance_and_no_turn(self) -> None:
+        pose = pose36(root=(0.4, -0.2, 0.787), quat=yaw_quat(-0.5))
+        distance, heading = ardy_gen.frame0_delta(pose, pose)
+        self.assertAlmostEqual(distance, 0.0)
+        self.assertAlmostEqual(heading, 0.0)
+
+    def test_distance_is_metres_and_heading_is_a_signed_radian_turn(self) -> None:
+        live = pose36(root=(0.0, 0.0, 0.787))
+        turned = pose36(root=(0.03, 0.04, 0.787), quat=yaw_quat(0.25))
+        distance, heading = ardy_gen.frame0_delta(live, turned)
+        self.assertAlmostEqual(distance, 0.05)
+        self.assertAlmostEqual(heading, 0.25)
 
 
 class RootWaypointsTest(unittest.TestCase):

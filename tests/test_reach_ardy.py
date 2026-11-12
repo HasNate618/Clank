@@ -117,6 +117,26 @@ class CheapEscalation(unittest.TestCase):
         self.assertTrue(end_pose.step_worthwhile(0.03, math.radians(53.5)))
 
 
+class LookIsReported(unittest.TestCase):
+    """The torso is the camera on this body, so where it looks is measured and printed."""
+
+    def test_the_adapter_reports_the_look_against_its_gate(self) -> None:
+        # Turning the root to face the object was measured and does not serve either number:
+        # 93-97 mm of hand residual for a look the waist twist keeps outside the gate anyway.
+        text = ADAPTER.read_text()
+        self.assertIn("ardy_gen.look_error(", text)
+        self.assertIn("ardy_gen.LOOK_AT_OBJECT_RAD", text)
+        self.assertIn("ardy_gen.look_error(", PROBE.read_text())
+
+    def test_the_reach_is_one_hand_only_window(self) -> None:
+        # No root heading channel and no turn-only stage: both were measured at ~30 mm of
+        # hand tracking cost for a look the waist twist decides.
+        reach = function_body(ADAPTER.read_text(), "generate_clip")
+        self.assertIn("hand_delta=delta", reach)
+        self.assertNotIn("face_yaw", reach)
+        self.assertNotIn("facing_goal", ADAPTER.read_text())
+
+
 class ClaspOnApproach(unittest.TestCase):
     def test_the_clasp_is_decided_while_the_clip_plays(self) -> None:
         # Two seconds between reach and close once cost 0.09 m of drift, so the closure is

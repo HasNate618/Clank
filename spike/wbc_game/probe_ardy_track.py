@@ -27,8 +27,12 @@ Reported, with the gate from design §11:
   the world look is the root's yaw plus the torso's own; the clip's look is its last-frame
   root yaw plus its `waist_yaw` hinge, which is the whole chain above the pelvis on this
   body. The achieved look is also compared with the bearing to the object and printed, but
-  not gated: turning the waist towards the object is a generation question (gate 6), and
-  the last run's clip chose a left waist twist to extend the right arm's forward reach.
+  measured and printed against its own gate, not gated here: the torso is the camera on this
+  neckless body, and the number is the generator's own waist twist plus however far off the
+  object sat. Turning the root to face it was measured both as a heading on the reach's root
+  goal and as a turn-only clip before it: 93-97 mm of hand residual for 15-35 deg of torso
+  look, against 65 mm and 45 deg untouched. Facing swings the right hand away from the object
+  and the waist twist is not a root angle, so the look is a separate problem.
   Gate 5 asks whether the tracker followed the clip.
 
 The constrained point is placed **in front of the body**, along its own heading, from the
@@ -89,9 +93,6 @@ STARTUP_S = 30.0
 SETTLE_S = 2.5
 CLIP_TIMEOUT_S = 8.0
 SAMPLE_S = 0.05
-#: `pose36[7 + WAIST_YAW]` is the waist yaw hinge (`g1_pack.JOINT_NAMES` index 12). With no
-#: neck, that hinge plus the root's yaw is the torso's whole world heading in the clip.
-WAIST_YAW = 12
 
 
 def wrap(angle: float) -> float:
@@ -104,6 +105,58 @@ def up_z(root_q_wxyz: tuple[float, float, float, float]) -> float:
     w, x, y, z = (float(v) for v in root_q_wxyz)
     del w, z
     return 1.0 - 2.0 * (x * x + y * y)
+
+
+def place_at_bearing(
+    root: tuple[float, float, float],
+    target: tuple[float, float, float],
+    bearing_deg: float,
+) -> tuple[float, float, float]:
+    """`target` swung about the vertical through `root` onto a chosen bearing, in ARDY world.
+
+    ``bearing_deg`` is measured the way `ardy_gen.heading_angle` is - 0 faces ARDY +z, which
+    is the body's forward at a zero heading - so the object's own bearing off the body is
+    read from one number. The distance from the root is kept and the arm's work is not: the
+    point of this knob is to move the object around the body without moving it further away.
+    """
+    dx, dz = target[0] - root[0], target[2] - root[2]
+    delta = math.radians(bearing_deg) - math.atan2(dx, dz)
+    c, s = math.cos(delta), math.sin(delta)
+    return (root[0] + dx * c + dz * s, target[1], root[2] - dx * s + dz * c)
+
+
+def place_at_radius(
+    root: tuple[float, float, float],
+    target: tuple[float, float, float],
+    radius_m: float,
+) -> tuple[float, float, float]:
+    """`target` pulled onto a circle of `radius_m` about the root, same bearing and height.
+
+    The default placement is `--forward` beyond the *hand* along the body's heading, which is
+    0.75 m from the root - a short reach for a body that reaches straight ahead, but at the
+    arm's limit for a body that has turned to face the object. With that placement a
+    facing-against-not-facing comparison measures the radius rather than the bearing, so this
+    knob holds the radius and leaves the bearing as the variable.
+    """
+    dx, dz = target[0] - root[0], target[2] - root[2]
+    distance = math.hypot(dx, dz)
+    if distance <= 0.0:
+        return target
+    scale = float(radius_m) / distance
+    return (root[0] + dx * scale, target[1], root[2] + dz * scale)
+
+
+def frame0_continuity(
+    live: tuple[float, ...], generated: tuple[float, ...]
+) -> dict:
+    """How far a generated clip's first frame sits from the body it was placed on.
+
+    The placement (`init_global_translation`, `init_first_heading_angle`) exists so the clip
+    starts where the body is; anything that changes the clip's frame 0 spends that continuity
+    and SONIC has to absorb the jump. Two numbers, both against their gate.
+    """
+    distance, heading = ardy_gen.frame0_delta(live, generated)
+    return {"frame0_root_m": distance, "frame0_yaw_deg": math.degrees(heading)}
 
 
 def head_yaw_deg(q_xyzw: tuple[float, float, float, float]) -> float:
@@ -240,7 +293,18 @@ def main() -> int:
     parser.add_argument("--body-seconds", type=float, default=60.0)
     parser.add_argument("--steps", type=int, default=reach_ardy.STEPS)
     parser.add_argument("--forward", type=float, default=ardy_gen.HAND_DELTA_FWD)
+    parser.add_argument(
+        "--radius-m", type=float, default=None,
+        help="put the object at this distance from the root instead of --forward beyond "
+             "the hand (about 0.75 m); use it to compare bearings at one reach distance",
+    )
     parser.add_argument("--up", type=float, default=ardy_gen.HAND_DELTA_UP)
+    parser.add_argument(
+        "--bearing-deg", type=float, default=None,
+        help="swing the object to this bearing off the body's heading (0 = straight ahead, "
+             "negative = to the body's right) instead of leaving it on the hand's forward "
+             "line (about -29 deg)",
+    )
     args = parser.parse_args()
     out_dir = Path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -280,6 +344,16 @@ def main() -> int:
             hand[1] + args.up,
             hand[2] + forward[2] * args.forward,
         )
+        root_ardy = ardy_gen.world_root(latest)
+        if args.bearing_deg is not None:
+            target = place_at_bearing(
+                root_ardy, target, math.degrees(heading) + args.bearing_deg
+            )
+        if args.radius_m is not None:
+            target = place_at_radius(root_ardy, target, args.radius_m)
+        off_deg = math.degrees(ardy_gen.off_bearing(latest, target))
+        look_start_deg = math.degrees(ardy_gen.look_error(latest, target))
+        torso_start_deg = math.degrees(ardy_gen.torso_yaw(latest))
         print(
             f"body root {tuple(round(v, 3) for v in latest[:3])} "
             f"facing {math.degrees(heading):.1f} deg"
@@ -288,6 +362,11 @@ def main() -> int:
             f"right hand {tuple(round(v, 3) for v in hand)} -> constrained "
             f"{tuple(round(v, 3) for v in target)} "
             f"({args.forward:+.2f} m forward, {args.up:+.2f} m up, ARDY world metres)"
+        )
+        print(
+            f"object {off_deg:+.1f} deg off the body's heading; the torso starts "
+            f"{look_start_deg:+.1f} deg off it (gate "
+            f"{math.degrees(ardy_gen.LOOK_AT_OBJECT_RAD):.0f} deg)"
         )
 
         frames, metrics = ardy_gen.generate(
@@ -299,9 +378,7 @@ def main() -> int:
         if not reach_ardy.finite(frames):
             print("generated clip carries a non-finite value; nothing deposited")
             return 3
-        clip_look_deg = math.degrees(ardy_gen.heading_angle(frames[-1])) + math.degrees(
-            frames[-1][7 + WAIST_YAW]
-        )
+        clip_look_deg = math.degrees(ardy_gen.torso_yaw(frames[-1]))
         print(
             f"generated {len(frames)} frames in {metrics['seconds']:.3f} s, "
             f"generator residual {metrics['hand_residual_m'] * 1000:.1f} mm, "
@@ -323,6 +400,9 @@ def main() -> int:
             "hand_at_start": list(hand),
             "forward_m": args.forward,
             "up_m": args.up,
+            "object_off_bearing_deg": off_deg,
+            "torso_at_start_deg": torso_start_deg,
+            **frame0_continuity(latest, frames[0]),
             **analyse(samples, final_ring["poses"][-1], target, clip_look_deg),
         }
         residual = float(report["residual_m"])
@@ -336,6 +416,10 @@ def main() -> int:
             f"net {report['root_net_m']:.3f} m, path {report['root_path_m']:.3f} m"
         )
         print(
+            f"frame 0: {report['frame0_root_m'] * 1000:.0f} mm, "
+            f"{report['frame0_yaw_deg']:+.1f} deg from the body it was placed on"
+        )
+        print(
             f"fall: {'YES' if report['fell'] else 'no'}  "
             f"min root z {report['min_root_z_m']:.3f} m  "
             f"min up z {report['min_up_z']:.3f}  ({report['samples']} samples)"
@@ -346,7 +430,8 @@ def main() -> int:
             f"(turn {report['head_turn_deg']:+.1f}), clip {report['clip_look_deg']:.1f}, "
             f"tracking error {report['look_track_error_deg']:+.1f} deg "
             f"(gate {LOOK_GATE_DEG:.0f}); object bearing "
-            f"{report['look_at_object_error_deg']:+.1f} deg off, informational"
+            f"{report['look_at_object_error_deg']:+.1f} deg off "
+            f"(gate {math.degrees(ardy_gen.LOOK_AT_OBJECT_RAD):.0f} deg)"
         )
 
         failures: list[str] = []
