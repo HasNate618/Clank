@@ -58,7 +58,7 @@
 - [ ] **Step 1: Write the failing test** — append to `tests/test_config.py`:
 
 ```python
-class RecordingConfigTests(unittest.TestCase):
+class RecordingConfigTests(RunConfigTests):  # inherits write_toml
     def test_defaults_describe_a_small_watchable_recording(self):
         cfg = load_config(None, env={})
         self.assertTrue(cfg.recording.enabled)
@@ -71,17 +71,13 @@ class RecordingConfigTests(unittest.TestCase):
         self.assertEqual(cfg.recording.max_total_mb, 20480)
 
     def test_a_run_can_record_off(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            path = write_toml(Path(tmp) / "config.toml", "[recording]\nenabled = false\n")
-            cfg = load_config(path, env={})
-            self.assertFalse(cfg.recording.enabled)
+        cfg = load_config(self.write_toml("[recording]\nenabled = false\n"), env={})
+        self.assertFalse(cfg.recording.enabled)
 
     def test_zero_or_negative_rates_are_refused(self):
-        for bad in ('fps = 0', 'robot_fps = -1', 'crf = 60', 'max_total_mb = -1'):
-            with tempfile.TemporaryDirectory() as tmp:
-                path = write_toml(Path(tmp) / "config.toml", f"[recording]\n{bad}\n")
-                with self.assertRaises(ConfigError):
-                    load_config(path, env={})
+        for bad in ("fps = 0", "robot_fps = -1", "crf = 60", "max_total_mb = -1"):
+            with self.subTest(bad=bad), self.assertRaises(ConfigError):
+                load_config(self.write_toml(f"[recording]\n{bad}\n"), env={})
 ```
 
 - [ ] **Step 2: Run it, expect failure** — `XDG_RUNTIME_DIR=... python3 -m unittest tests.test_config.RecordingConfigTests -v`; expect `AttributeError: 'Config' object has no attribute 'recording'`.
@@ -133,7 +129,8 @@ class CompositeArgvTests(unittest.TestCase):
         argv = self.argv()
         graph = argv[argv.index("-filter_complex") + 1]
         self.assertIn("hstack", graph)
-        self.assertIn("1680", "".join(argv))
+        self.assertIn("scale=960:540", graph)
+        self.assertIn("scale=720:540", graph)
         self.assertEqual(argv[argv.index("-movflags") + 1], "+faststart")
 
     def test_audio_is_muxed_and_the_shorter_stream_wins(self):
@@ -191,7 +188,7 @@ class ParseRangeTests(unittest.TestCase):
 
 **Interfaces:**
 - Consumes: `composite_argv` (Task 2), `Config.recording` (Task 1), `clank.depth_stream.Stream`, `clank.ears.capture`.
-- Produces: `Recorder(cfg: Config, run_dir: Path, *, stream_factory=None, capture=None, spawn=None, clock=time.monotonic)` with `start() -> None`, `pump(seconds: float) -> None` (the tick: the threads' body, and what a test drives directly), `stop() -> dict` (the manifest it wrote), `manifest() -> Path`, and the module function `read_manifest(run_dir: Path) -> dict | None`.
+- Produces: `Recorder(cfg: Config, run_dir: Path, *, stream_factory=None, capture=None, spawn=None, clock=time.monotonic)` with `start() -> None`, `pump(seconds: float) -> None` (the tick: the threads' body, and what a test drives directly), `stop() -> dict` (the manifest it wrote), `manifest() -> Path`, and the module function `read_manifest(run_dir: Path) -> dict | None`. The manifest carries `parts: {"game": "parts/game.mp4", "robot": ..., "audio": ...}` (only the sources that started) — Task 4 composites from it and never guesses a filename. Each `sources` value is one of `ok`, `missing`, `failed`.
 
 - [ ] **Step 1: Write the failing test** — add to `tests/test_recording.py` a harness with a **fake encoder**: a shell script `fake-ffmpeg` that appends its stdin to the last path in its argv, standing in for both the pipes and the composite:
 
@@ -264,6 +261,7 @@ with `FakeStream` yielding dicts shaped like a real frame (`{"color": bytes(960*
 - Test: `tests/test_recording.py`
 
 **Interfaces:**
+- Consumes: `read_manifest` (Task 3) for `parts`, `sources`, `started_at`, `fps`; `composite_argv` (Task 2).
 - Produces: `run_composite(run_dir: Path, cfg: Config) -> dict` (synchronous; the caller detaches it), `sweep_stale(sessions_root: Path) -> list[Path]`, `prune(sessions_root: Path, max_total_mb: int, keep: Path | None = None) -> list[Path]`, `list_recordings(sessions_root: Path) -> list[dict]`.
 
 - [ ] **Step 1: Write the failing test** — append to `tests/test_recording.py`:
@@ -398,22 +396,26 @@ class RecorderWiringTests(RunHarness):
 ```python
 class RecordingRouteTests(DashboardHarness):
     def test_the_listing_is_newest_first(self):
-        status, body = self.get("/api/recordings")
+        status, raw = self.request("GET", "/api/recordings")
         self.assertEqual(status, 200)
+        body = json.loads(raw)
         self.assertEqual([r["run_id"] for r in body["recordings"]], ["110000-bbbbbb", "100000-aaaaaa"])
 
     def test_a_range_request_gets_a_206_slice(self):
-        status, headers, body = self.get_raw("/api/recordings/100000-aaaaaa/video", headers={"Range": "bytes=0-1"})
+        status, headers, body = self.request_with_headers(
+            "/api/recordings/100000-aaaaaa/video", headers={"Range": "bytes=0-1"})
         self.assertEqual(status, 206)
         self.assertEqual(headers["Content-Range"], f"bytes 0-1/{self.size}")
         self.assertEqual(len(body), 2)
 
     def test_a_suffix_range_and_a_multi_range(self):
-        status, headers, _ = self.get_raw("/api/recordings/100000-aaaaaa/video", headers={"Range": "bytes=-500"})
+        status, headers, _ = self.request_with_headers(
+            "/api/recordings/100000-aaaaaa/video", headers={"Range": "bytes=-500"})
         self.assertEqual(status, 206)
         self.assertEqual(headers["Content-Range"], f"bytes {self.size-500}-{self.size-1}/{self.size}")
         # A multi-range is served whole rather than guessed at.
-        status, _, body = self.get_raw("/api/recordings/100000-aaaaaa/video", headers={"Range": "bytes=0-1,5-6"})
+        status, _, body = self.request_with_headers(
+            "/api/recordings/100000-aaaaaa/video", headers={"Range": "bytes=0-1,5-6"})
         self.assertEqual(status, 200)
         self.assertEqual(len(body), self.size)
 
@@ -423,8 +425,8 @@ class RecordingRouteTests(DashboardHarness):
         self.assertEqual(headers.get("Content-Range"), f"bytes */{self.size}")
 
     def test_an_unknown_or_unfinished_run_is_a_404(self):
-        self.assertEqual(self.get_raw("/api/recordings/nope/video")[0], 404)
-        self.assertEqual(self.get_raw("/api/recordings/110000-bbbbbb/video")[0], 404)  # composing
+        self.assertEqual(self.request("GET", "/api/recordings/nope/video")[0], 404)
+        self.assertEqual(self.request("GET", "/api/recordings/110000-bbbbbb/video")[0], 404)  # composing
 
     def test_the_page_is_served(self):
         status, body = self.get_raw("/recordings")
@@ -434,7 +436,7 @@ class RecordingRouteTests(DashboardHarness):
 
 - [ ] **Step 2: Run it, expect failure** — `python3 -m unittest tests.test_dashboard.RecordingRouteTests -v`; expect 404s where 200s belong.
 
-- [ ] **Step 3: Implement** — add the two API branches and the page branch to `do_GET`, reusing `RUN_ID_RE` for the id so a traversing id is a 404 like `/api/brain/messages`. The video branch resolves the run's `recording.json` through `list_recordings` (never by joining the URL onto a path), requires `state == "ready"`, opens the file, applies `parse_range`, and writes `206` + `Content-Range` + `Content-Length` (and `Accept-Ranges: bytes`) or `416` + `Content-Range: bytes */size`. Keep HTTP/1.0. `/recordings` serves `static/recordings.html` through the existing static path resolution.
+- [ ] **Step 3: Extend the harness, then implement** — `DashboardHarness.request_with_headers(path, headers=None) -> (status, headers, body)` (today it takes only a path); it is what the Range tests read. Then add the two API branches and the page branch to `do_GET`, reusing `RUN_ID_RE` for the id so a traversing id is a 404 like `/api/brain/messages`. The video branch resolves the run's `recording.json` through `list_recordings` (never by joining the URL onto a path), requires `state == "ready"`, opens the file, applies `parse_range`, and writes `206` + `Content-Range` + `Content-Length` (and `Accept-Ranges: bytes`) or `416` + `Content-Range: bytes */size`. Keep HTTP/1.0. `/recordings` serves `static/recordings.html` through the existing static path resolution.
 
 - [ ] **Step 4: Run it, expect pass** — same command; expect `OK`.
 
@@ -456,6 +458,11 @@ class RecordingRouteTests(DashboardHarness):
 - [ ] **Step 1: Write the failing test** — extend `ShippedStaticAssetsTests`:
 
 ```python
+    def test_the_page_is_served(self):
+        status, _, body = self.request_with_headers("/recordings")
+        self.assertEqual(status, 200)
+        self.assertIn(b"recording-list", body)
+
     def test_the_recordings_page_ships_list_video_and_diary(self):
         html = (STATIC / "recordings.html").read_text()
         js = (STATIC / "recordings.js").read_text()
