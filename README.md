@@ -272,6 +272,7 @@ The dashboard is a single local page with a state badge, session id, run phase, 
 | **kill** | Force-stops the game or Steam specifically. These are force kills and they hit *your* Steam. |
 | **preview** | VNC stream with PAM login; view-only. The stream is 1280x720 at a target 30 fps; the dashboard crops the top 32 px status panel, so the display area is 1280x688. Manual mode still uses pointer lock. |
 | **body** | Optional third-person MuJoCo tile (`/api/body.jpg`), run as a sidecar that cannot delay or break a session. It needs the spike venv and weights, and is a *viewer* — it is not the pose source. |
+| **Recordings** | `GET /recordings` lists past runs and plays one: the composite video (game view left, robot view right, the game's audio) beside that run's diary. Clicking a diary row seeks the video to that moment. One file per run, written while the run happens and composed after it; `[recording]` in `config.toml` turns it off. |
 | **mute** | `POST /api/audio/mute` toggles the game’s PipeWire output mute from the dashboard header button. |
 
 In `manual` mode, click the preview to pointer-lock the browser and drive the hidden game directly: mouse look, WASD move, arrows move the active hand, wheel reaches, F throws a one-shot punch with the active hand, LMB/T fires, RMB/G grips, Tab switches hands. Esc releases the pointer immediately; the last pose keeps streaming. Browser batches go to `POST /api/manual/input` and are forwarded to the manual pose client over a per-session Unix datagram socket.

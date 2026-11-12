@@ -169,6 +169,49 @@ sessions/<session-id>/runs/<HHMMSS>-<6 hex>/
   write; pass `--path sessions/<id>/runs/<run>/brain.jsonl` for a run, or use
   `GET /api/brain/messages?run=<id>`.
 
+## Recordings, 2026-11-12
+
+Every run can leave one video: the game view on the left, the robot view on the right, the
+game's own audio in the track. `clank/recording.py` owns all of it; `GET /recordings` is the
+page that lists past runs and plays one beside that run's diary. The purpose is evaluation
+now and a demo later, so the contract is **evidence, never a dependency**: ffmpeg absent, the
+depth stream dead, a disk that will not take the file -- each is recorded in the manifest as a
+reason, and none of it fails, delays or blocks the run.
+
+- **Three encoders run during the run, one composite after it.** The game picture comes from
+  the depth-layer reader (`flip=False`, ffmpeg does the `vflip`), the robot tile from
+  `<session_root>/body/body_latest.jpg` at 10 fps behind an mtime gate, the audio from
+  `clank-game.monitor` through `ears.capture()`. The composite is **detached** into its own
+  thread after the run goes idle: `wait_idle` is 15 s and a 20-minute encode is not, and the
+  next Start run must not queue behind a video.
+- **`recording.json` states**: `recording` → `composing` → `ready` | `failed`, plus `pruned`
+  when the 20 GB cap took its video. `sources` is `{game, robot, audio}` valued exactly
+  `ok`/`missing`/`failed`, `notes` carries the reason, `parts` names the parts that wrote
+  bytes and `part_seconds` how long each really is. A demoted source **keeps** the minutes it
+  already recorded; only a part that wrote nothing is deleted.
+- **`started_at` is the recorder's clock**, not `run.started_at`: the run starts ~25 s before
+  the recorder can see a frame, and the page seeks the diary against this field.
+- **Fixed geometry 1680x540**: game 960x540, robot scaled 720x540, black padding for a missing
+  side. 15 fps, `crf 28`, `preset veryfast`, `+faststart`. Measured 24.1 MB/min at
+  `ultrafast`, so a 20-minute run is a few hundred megabytes; `max_total_mb` (20480) prunes
+  oldest-first and never the run just recorded.
+- **Pruning takes the video and keeps the diary.** `brain.jsonl`, `brain.log`, `run.json` and
+  `frames/` stay: they are kilobytes beside the megabytes, and the diary is the other half of
+  what a recording is for. The run stays listed with `state: pruned`.
+- **A sweep at dashboard start** cleans up after a dashboard that died mid-run: a manifest
+  left `recording`/`composing`, or a `parts/` with no manifest, becomes `failed: dashboard
+  exited` and its parts are removed. It runs **after** the port bind, so a second dashboard
+  refused its port deletes nothing.
+- The video is served with `Range`: 206 and `Content-Range` for a seek, 416 for an impossible
+  one, 200 whole, and it is **streamed** in 256 KB writes because a browser aborts half of
+  these the moment the operator scrubs.
+- **Traps, all of them real:** no ffmpeg in the flake means every run records `failed` with
+  that reason -- the run itself is unaffected; no depth stream means the game half is `missing`
+  and the video is the robot tile beside black; the game muted in `stream-restore` means a
+  silent track, which the manifest reports as `audio_peak: 0` and the page says out loud.
+- `[recording]` in `config.toml`: `enabled`, `fps`, `robot_fps`, `crf`, `preset`, `ffmpeg`,
+  `keep_parts`, `max_total_mb`. `keep_parts` keeps `parts/` for debugging a composite.
+
 ## Depth stream (spike/e5)
 
 - `depth_stream_layer.c` is an implicit Vulkan layer. It finds the game's
