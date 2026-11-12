@@ -82,6 +82,30 @@ class OneHandPoint(unittest.TestCase):
         self.assertIn("lever_gap_m", PROBE.read_text())
 
 
+class TheClaspIsAVerb(unittest.TestCase):
+    """A bare closure command makes the arm fall back; the verb attaches the achieved pose.
+
+    Measured live 2026-11-11: `reach_ardy` sent `authority=AUTH_CLOSURE, closure=...`, which is
+    precisely the shape `body_view.close_hand` records as wrong - "with no hand authority the
+    controller falls back and the wrist drifted 0.20 m while closing". The operator saw the arm
+    reach and then spring back to rest, and the body reported `closure (0.0, 0.0)`.
+    """
+
+    def test_the_clasp_sends_the_close_verb(self) -> None:
+        body = function_body(ADAPTER.read_text(), "clasp")
+        self.assertIn('verb=f"close_{side}"', body)
+        # The constant is named in the docstring on purpose - what must be absent is the send.
+        self.assertNotIn("reach_vr.send(authority=", body)
+
+    def test_nothing_sends_a_bare_closure_any_more(self) -> None:
+        text = ADAPTER.read_text()
+        self.assertNotIn("authority=AUTH_CLOSURE", text)
+
+    def test_the_clasp_checks_that_the_body_took_it(self) -> None:
+        body = function_body(ADAPTER.read_text(), "clasp")
+        self.assertIn('answer.get("ok"', body)
+
+
 class ChainPolicy(unittest.TestCase):
     def test_the_adapter_obeys_the_real_decision_function(self) -> None:
         text = ADAPTER.read_text()
@@ -174,12 +198,12 @@ class ClaspOnApproach(unittest.TestCase):
         # sent from inside the playback wait, on the achieved hand, not after the clip ends.
         text = ADAPTER.read_text()
         wait = function_body(text, "wait_for_play")
-        self.assertIn("AUTH_CLOSURE", wait)
+        self.assertIn("clasp(side)", wait)
         self.assertIn("end_pose.CLASP_START_M", wait)
         # The hand points in `body_state` are root-relative and the object is a world point;
         # comparing them raw measures nothing (a standing hand sits 0.2 m below the root).
         self.assertIn("reach_vr.to_world(", wait)
-        self.assertLess(text.index("AUTH_CLOSURE"), text.index("end_pose.decide_next("))
+        self.assertLess(text.index("clasp(side)"), text.index("end_pose.decide_next("))
 
     def test_the_clasp_threshold_is_the_policy_constant(self) -> None:
         # One number, defined next to the chain the adapter already imports; a local 0.08

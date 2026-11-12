@@ -73,7 +73,7 @@ import end_pose  # noqa: E402  # pyright: ignore[reportMissingImports]
 import mb_mailbox  # noqa: E402  # pyright: ignore[reportMissingImports]
 import reach_vr  # noqa: E402  # pyright: ignore[reportMissingImports]
 
-from clank.body import AUTH_CLOSURE, Pose  # noqa: E402
+from clank.body import Pose  # noqa: E402
 from clank.depth_stream import Stream  # noqa: E402
 from clank.player_scale import read as read_player_scale  # noqa: E402
 
@@ -220,8 +220,32 @@ def deposit(session_dir: Path, frames: list[tuple[float, ...]]) -> int:
 
 
 def closure_for(side: str) -> tuple[float, float]:
-    """The grip tuple with only `side`'s hand closed."""
+    """The grip tuple with only `side`'s hand closed.
+
+    Kept for the readers that report what the body is gripping; the clasp itself goes through
+    the `close_<side>` verb, see `clasp`.
+    """
     return (1.0, 0.0) if side == "left" else (0.0, 1.0)
+
+
+def clasp(side: str) -> None:
+    """Close one hand **where the body has it**, through the verb that owns that rule.
+
+    Not a bare `AUTH_CLOSURE` command. `body_view.close_hand` documents why, from measurement:
+    "drop the pose and send the closure alone" was tried and "with no hand authority the
+    controller falls back and the wrist drifted 0.20 m while closing". The verb re-sends the
+    achieved wrist pose with the closure attached, so the arm has somewhere to be.
+
+    Sent three times, 0.35 s apart, for the reason the cruise's own grab does: the grip is a
+    device button, and one press that lands between two control ticks should not be the
+    difference between a grab and an open hand.
+    """
+    for _ in range(3):
+        answer = reach_vr.send(verb=f"close_{side}")
+        if not answer.get("ok", False):
+            print(f"clasp  {side}: the body did not take the close verb: {answer}")
+            return
+        time.sleep(0.35)
 
 
 def wait_for_play(
@@ -259,11 +283,14 @@ def wait_for_play(
             achieved = reach_vr.to_world(tuple(st[f"{side}_hand"]["p"]), st)
             distance = math.dist(achieved, target_world)
             if distance <= end_pose.CLASP_START_M:
-                reach_vr.send(authority=AUTH_CLOSURE, closure=closure_for(side))
+                clasp(side)
                 clasped = True
+                st = reach_vr.state()
+                closed = tuple(float(v) for v in st.get("closure", (0.0, 0.0)))
                 print(
                     f"clasp  {side} glove {distance * 1000:.0f} mm from the object "
-                    f"(<= {end_pose.CLASP_START_M * 1000:.0f} mm), closed mid-clip"
+                    f"(<= {end_pose.CLASP_START_M * 1000:.0f} mm), closed mid-clip, "
+                    f"body reports closure {closed}"
                 )
         if status is not None and status["seq_ack"] == seq:
             if status["status"] == "failed":

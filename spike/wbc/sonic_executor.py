@@ -647,6 +647,13 @@ class SonicExecutor:
         """
         self.runner.mode = 1
         self.motion = self._hold_motion
+        # Re-latch the freeze-hold onto where the clip left the body. `_fallback` keeps its
+        # latch until the commanded poses change, and a tick with no commanded poses has the
+        # same key (`()`) it held *before* the reach - so without this the arms spring back to
+        # the pre-reach pose the moment the clip plays out. Observed live 2026-11-11: the hand
+        # reached, the clasp fired, and the arm snapped home as the clip ended.
+        self._held_key = None
+        self._held_state = self.last_state
 
     # ---- command builders the reel uses --------------------------------
 
