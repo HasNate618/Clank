@@ -8,7 +8,16 @@ Clank is a real-time controls and systems-integration project that uses a commer
 >
 > **The two halves are joined.** `body_view → body_state.json → pose_relay → Monado :4242 → game`, one simulation and no retargeting, so the body tile and the game show the same robot rather than two lookalikes. Co-residency is measured: beside the running game the body holds **44.2 Hz** against **44.5 Hz** alone, for **+177 MiB** of GPU memory.
 >
-> **Still not true: nobody has played it.** The trigger has never reached the game, the body has never walked in-game (it is clip-anchored, so it leans and reaches but does not step — the constraint-driven replacement is in progress, see `docs/superpowers/specs/2026-11-11-ardy-reach-design.md`), and no level has been cleared. With the game running the simulation advances at **0.89× real time**. Everything below is labelled with what is proven, what is not, and where the number came from.
+> **The hand closes on a real object now.** On 2026-11-12 the body reached a card in Job Simulator along a
+> **generated** path — an end-effector constraint into ARDY-G1, 52 frames, tracked by SONIC — closed its hand
+> 78 mm out, and still held it 300 ticks later (glove residual **24.7 mm**; `research/evidence/ardy-live-grab/`).
+> That is a scripted reach, not play.
+>
+> **Still not true: nobody has played it.** No level has been cleared, the body does not walk in-game (it is
+> clip-anchored: one generated window reaches, it does not step — the escalation that would walk it has never
+> converted), and the torso does not turn to look at what it reaches for (60–64° off, measured four ways and
+> recorded as a limitation, not a bug). With the game running the simulation advances at **0.89× real time**.
+> Everything below is labelled with what is proven, what is not, and where the number came from.
 
 <!-- ![clank dashboard](docs/dashboard.png) -->
 

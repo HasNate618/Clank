@@ -162,10 +162,12 @@ rebuild (`nix build .#monado`), restart the dashboard/session, and use the new
 
 ## Body control: constraints into a generator, 2026-11-11
 
-The reach/grab path is being replaced. **It is not live yet**: `reach_vr.py` is still what the session runs.
-Design: `docs/superpowers/specs/2026-11-11-ardy-reach-design.md`. Plan: `docs/superpowers/plans/2026-11-11-ardy-reach.md`
-(work happens on the `motionbricks-reach` branch in `.worktrees/`). Comparison and measurements:
-`research/motion-generators.md`.
+The reach/grab path has been replaced. **It is live**: the intro card was grabbed by the generated path
+with the game running on 2026-11-12 (`research/evidence/ardy-live-grab/`), and `reach_vr.py` is now the
+fallback rather than the session's path.
+Design: `docs/superpowers/specs/2026-11-11-ardy-reach-design.md`. Plan: `docs/superpowers/plans/2026-11-11-ardy-reach.md`.
+Critique and the open defects it found: `research/reach-architecture-critique.md`.
+Comparison and measurements: `research/motion-generators.md`.
 
 The old shape was "hand-write a reference, then ask a policy to follow it". The new shape is "state what to
 achieve, let a motion prior choose the motion, let SONIC do the physics":
@@ -178,9 +180,30 @@ right hand at the object  +  feet planted  (or a root waypoint when out of reach
 ```
 
 Measured on the 4060 `[MEASURED: research/motion-generators.md §9]`: 0.94 GB peak VRAM, 0.07–0.20 s per
-52-frame window, **45.5 mm** hand-constraint residual (33–80 mm unseeded), 0.566 m travelled of a 0.60 m root
-goal, and clip frame 0 within 1 mm / 0.8° of the live body. SONIC tracking a generated clip is still
-unmeasured — that is the gate that can still kill it.
+52-frame window, **45.5 mm** hand-constraint residual, 0.566 m travelled of a 0.60 m root goal, and clip
+frame 0 within 1 mm / 0.8° of the live body. Tracking was then measured (gate 5, game off: 66 mm wrist
+median) and finally live (`research/evidence/ardy-live-grab/`: 15.9 mm generator, 24.7 mm achieved on the **glove**).
+
+### What the live run took, and what it still does not do, 2026-11-12
+
+- **The constraint must pin the glove, not the wrist link.** The relay reports the hand 0.18 m out from
+  `right_wrist_yaw_link` (`VR_LEVER`), so a wrist-pinned constraint leaves the game's hand 0.18 m past the
+  object and makes the clasp's own measurement (0.18 m) larger than `CLASP_START_M` — it can never fire.
+  `ardy_gen.glove_position` is the point to aim, measure and clasp on.
+- **A bare closure command loses the arm.** `body_view.close_hand` records it: with no hand authority the
+  controller falls back. Send the `close_<side>` verb, which re-sends the achieved wrist pose with the
+  closure attached — three times, as the cruise's own grab does.
+- **The freeze-hold must be re-latched at clip end.** `_fallback` keeps its latch keyed on *commanded*
+  poses, and "nothing commanded" is the key it held before the reach, so the arms otherwise spring back to
+  the pre-reach pose. `_finish_clip` re-latches onto `last_state`.
+- **Scale decides whether the object is inside the arm.** Uniform scaling about the floor is the only
+  variant that keeps the VR hands consistent with the head, but at 1.43 the card maps **0.566 m** from the
+  sim's shoulder against a 0.41–0.51 m useful arm. Live runs use **1.2** (player 1.58 m, card inside the
+  arm). A wrist pivot fits the arm (0.339 m) but stops scaling the camera, and the player looks short; two
+  pivots break the hand-to-head relation. See `research/g1-scale.md`.
+- **Still open:** the look (torso starts 60–64° off the object and the reach does not turn it — §8.5 of the
+  design), the out-of-reach case (never converted), and `CLASP_START_M = 0.08`, which is **uncalibrated** and
+  was the margin on the successful run (the clasp fired at 78 mm).
 
 Four traps, all of which cost real time:
 
