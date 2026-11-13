@@ -322,12 +322,15 @@ A 3/6, C 4/6, B2 2/6.
 
 Three things this actually measured, in order of how much they matter:
 
-1. **The prose arm invents a chore from a non-order, reproducibly.** A steady hum became
-   `{"goal": "operate the JobBot machine"}` and a `reach`, 3/3, in two separate runs. This is the
-   defect the run diary keeps showing, and it is not a tool-calling problem: nothing in the
-   prose contract lets the model say "nothing was asked". The enum arm said `hold` 3/3 for the
-   same input, because the enum gives it somewhere to put the answer. Whatever the format, the
-   model needs a way to refuse a turn.
+1. **Asked a bare prompt, the model invents a chore from a non-order.** A steady hum became
+   `{"goal": "operate the JobBot machine"}` and a `reach`, 3/3, in two separate runs, and the
+   enum arm answered `hold` 3/3 for the same input. But this is **not** a live defect, and the
+   first draft of this section said it was: the loop never asks that question. `auto.py` calls
+   `brain.think()`, which returns `hold` before the model is paid whenever
+   `task_intent(heard) == ("", "")` — the gate added in `07eea01` — and the diary shows it
+   working (run `144738-015c22`, 14:53:45: hum heard, `plan: hold(-)`, zero model calls). So the
+   prose contract's inability to say "nothing" is real and already answered in code, which is
+   the better place for it: the enum arm reaches the same verdict by paying for a call.
 2. **A goal sentence carries a relation that a single tool call cannot.** "insert the cartridge
    into the slot" has two nouns and a preposition; `skill_from_goal` reads them and A answers
    `place` 3/3. A tool call must commit to one name and one destination in one breath, and
