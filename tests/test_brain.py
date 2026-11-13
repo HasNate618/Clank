@@ -9,7 +9,7 @@ import tempfile
 import unittest
 from unittest import mock
 
-from clank import brain
+from clank import brain, intent
 from clank.brain import Ground, Plan
 from clank.frames import Frame
 from clank.intent import SKILLS
@@ -1670,3 +1670,40 @@ class DirectionalTaskTest(unittest.TestCase):
         # "pull it back" names no object: the pronoun is already in the sentence, so there is a
         # task with nothing to ground - and nothing invented to ground it on.
         self.assertEqual(brain.task_intent("pull it back"), ("reach", ""))
+
+
+class ATravelIsThePullsSkillTest(ChatPatchMixin, unittest.TestCase):
+    """A direction with a full hand is a travel; the same words with an empty hand are a reach.
+
+    `clank.intent/1` cannot say "pull" and does not need to: `offset` is a displacement from
+    where the hand is, which is the whole of a pull. The occupancy half is what makes the
+    instruction work on both turns - JobBot says "pull the lever to job" before and after the
+    hand closes on it, and only the second one should move.
+    """
+
+    reply = ('{"goal": "pull the lever down", "object": "lever", '
+             '"destination": "none", "side": "right"}')
+
+    def run_think(self, heard: str, **kw):
+        return brain.think(brain.BrainConfig(), fake_frame(), heard,
+                           brain.WorkingMemory(), **kw)
+
+    def test_a_direction_with_a_full_hand_is_an_offset(self) -> None:
+        thought = self.run_think("pull the lever to job", right="holding")
+        self.assertEqual(thought.decision.intent.offset, (-brain.MOVE_M, 0.0, 0.0))
+
+    def test_the_same_words_with_an_empty_hand_are_not_a_travel(self) -> None:
+        thought = self.run_think("pull the lever to job", right="empty")
+        self.assertIsNone(thought.decision.intent.offset)
+
+    def test_the_offset_survives_validation(self) -> None:
+        thought = self.run_think("pull the lever to job", right="holding")
+        self.assertEqual(intent.validate_intent(thought.decision.intent), "")
+
+    def test_a_place_never_carries_a_travel(self) -> None:
+        # "insert the cartridge into the slot" is a destination, not a direction, and a `place`
+        # that carried an offset would hover somewhere nobody asked for.
+        self.reply = ('{"goal": "insert the cartridge into the slot", "object": "cartridge", '
+                      '"destination": "slot", "side": "right"}')
+        thought = self.run_think("insert the cartridge into the slot", right="holding")
+        self.assertIsNone(thought.decision.intent.offset)

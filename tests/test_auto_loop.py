@@ -87,10 +87,15 @@ class TheActUsesTheGeneratedPath(unittest.TestCase):
         self.assertIn("ARDY_UNSUPPORTED", self.act)
         self.assertIn("code != ARDY_UNSUPPORTED", self.act)
 
-    def test_the_marked_camera_reaches_both_paths(self) -> None:
-        # A pixel is only valid through the camera that saw it; the generated path was the
-        # one missing the option, not the cruise.
-        self.assertEqual(self.source.count("_marked_camera(camera)"), 2)
+    def test_the_marked_camera_reaches_every_path(self) -> None:
+        # A pixel is only valid through the camera that saw it; the generated path was the one
+        # missing the option, not the cruise. A count would break every time a path is added,
+        # which is what happened when `_move_argv` arrived - so the invariant is per builder.
+        builders = ("_generated_argv", "_cruise_argv", "_move_argv")
+        for name in builders:
+            body = self.source[self.source.index(f"def {name}("):
+                                self.source.index("def ", self.source.index(f"def {name}(") + 1)]
+            self.assertIn("_marked_camera(camera)", body, name)
 
     def test_the_generated_reach_does_not_narrow_the_policy_band(self) -> None:
         # The cruise is called with --tol 0.02; the generated path must not be, or the live
@@ -190,3 +195,32 @@ class TheActUsesTheGeneratedPath(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ATravelIsItsOwnVerb(unittest.TestCase):
+    """A pull is a reach that travels, so the loop runs it before it looks for anything.
+
+    The decision lives in `clank/brain.py` as `Intent.offset` - the adapter's own field for a
+    displacement - and this file only carries it to the two executables. That split is why the
+    assertion is "the offset is consulted before `sense`", not "a goal is parsed here".
+    """
+
+    def setUp(self) -> None:
+        self.source = SRC.read_text()
+
+    def test_the_move_argv_carries_three_metres_and_keeps_the_grip(self) -> None:
+        body = self.source[self.source.index("def _move_argv("):
+                            self.source.index("def _number(")]
+        self.assertIn('"--move"', body)
+        self.assertIn("--grab", body)
+
+    def test_a_travel_runs_before_anything_is_grounded(self) -> None:
+        body = self.source[self.source.index("def one_turn("):]
+        self.assertIn("intent.offset is not None", body)
+        self.assertLess(body.index("intent.offset is not None"), body.index("if seen is None"))
+
+    def test_both_hands_have_a_travel_path(self) -> None:
+        body = self.source[self.source.index("def _move_argv("):
+                            self.source.index("def _number(")]
+        self.assertIn("reach_ardy.py", body)
+        self.assertIn("reach_vr.py", body)

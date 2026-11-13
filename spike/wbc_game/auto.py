@@ -413,6 +413,23 @@ def _cruise_argv(x: float, y: float, side: str, camera: Pose | None,
     return argv + _marked_camera(camera)
 
 
+def _move_argv(offset: tuple[float, float, float], side: str,
+               camera: Pose | None) -> list[str]:
+    """A travel: the hand moves from where it is by `offset`, metres in the pelvis frame.
+
+    The same two executables as a reach, because it is the same motion pointed differently, and
+    `--move` is the one flag that distinguishes them. `--grab` is passed: a pull that let go
+    halfway would drag nothing, and the clasp is what keeps the grip through the clip.
+    """
+    forward, up, lateral = (float(value) for value in offset)
+    metres = [f"{forward:.3f}", f"{up:.3f}", f"{lateral:.3f}"]
+    if side == "right" and ARDY_PY.exists():
+        return [str(ARDY_PY), str(HERE / "reach_ardy.py"), "--move", *metres,
+                "--side", side, "--grab"] + _marked_camera(camera)
+    return [VENV, str(HERE / "reach_vr.py"), "--move", *metres,
+            "--side", side, "--no-rest", "--no-clamp", "--grab"] + _marked_camera(camera)
+
+
 def _number(value: object, default: float = 0.0) -> float:
     """A float from a value another process wrote, or `default`.
 
@@ -698,6 +715,23 @@ def one_turn(say: str = "", pattern: str = ears.DEFAULT_PATTERN,
         brainlog.log("act", f"release({intent.side})",
                      closed=reach_vr.state().get("closure"))
         return Turn(spoken=spoken)
+    if intent.offset is not None:
+        # A travel needs nothing found: the hand is already on the thing and moves. Measured
+        # 2026-11-13 (`research/brain-tools.md`): offered `move` as a typed tool, this model
+        # answered "pull the lever to job" with `{"direction": "back", "metres": 0.5}` 3/3, so
+        # the vocabulary is there - what was missing was a way for `clank.intent/1` to say it.
+        started = time.monotonic()
+        code = subprocess.call(_move_argv(intent.offset, intent.side or "right",
+                                          intent.head and Pose(
+                                              p=tuple(intent.head[:3]),
+                                              q_xyzw=tuple(intent.head[3:]))))
+        seconds = round(time.monotonic() - started, 1)
+        where = tuple(round(float(value), 2) for value in intent.offset)
+        brainlog.log("result", f"move{where} {'reached' if code == 0 else 'failed'}",
+                     ok=code == 0, code=code, seconds=seconds, hand=intent.side)
+        if session is not None:
+            session.note_result(f"move{where} code={code}")
+        return Turn(spoken=spoken, code=code)
     if skill == "place":
         return _place(thought, seen, memory, stamp, spoken, session)
     if skill not in ("reach", "grab"):

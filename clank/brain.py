@@ -1604,6 +1604,7 @@ def assemble(
     glow: str = "unknown",
     ghost: str = "unknown",
     memory: WorkingMemory | None = None,
+    offset: tuple[float, float, float] | None = None,
 ) -> Decision:
     """Turn a plan plus its grounding into an `Intent`, or explain the refusal.
 
@@ -1647,7 +1648,11 @@ def assemble(
     # told `not_located` in its last line and is expected to choose `locate` next. Auto-locating
     # here would put the choreography back in Python, which is the bug this whole slice fixes.
     sighting = memory.find(target) if (memory is not None and target) else None
-    if (memory is not None and target and skill in ("reach", "grab")
+    # A travel is not a look-and-find: the thing being acted on is already in the hand, so there
+    # is nothing to ground and no pixel to wait for. Without this the pull is refused as
+    # `not_located` and the lever is never pulled - the exact failure that kept `reach` from
+    # being usable on a held object.
+    if (memory is not None and target and skill in ("reach", "grab") and offset is None
             and (sighting is None or not sighting.present)):
         why = "never looked at it" if sighting is None else f"last look said {sighting.outcome or 'absent'}"
         return Decision(Intent(skill="hold", side="none", source="vlm", seq=seq,
@@ -1674,7 +1679,7 @@ def assemble(
                                t_mono_ns=t_mono_ns),
                         reason=f"release {side} refused: ghost is no", note=note)
 
-    needs_where = skill in ("reach", "look") and target is not None
+    needs_where = skill in ("reach", "look") and target is not None and offset is None
     if needs_where:
         if sighting is not None and sighting.present and sighting.pixel is not None:
             pixel = sighting.pixel
@@ -1725,6 +1730,7 @@ def assemble(
         t_mono_ns=t_mono_ns,
         pixel=pixel,
         yaw_rad=yaw_rad,
+        offset=offset,
     )
     reason = validate_intent(intent)
     if reason and skill in ("look", "reach", "grab", "release"):
@@ -1844,8 +1850,20 @@ def think(
             prompt_ms=step.prompt_ms,
             decode_ms=step.decode_ms,
         )
+    # A direction in the instruction, with the acting hand already closed on something, is a
+    # travel - the one motion `clank.intent/1` could not express. The occupancy half is not
+    # decoration: "pull the lever to job" arrives with an empty hand on the first turn and must
+    # *reach* the lever then, not move away from it. Read from `heard` rather than from the
+    # model's sentence, because measured 2026-11-13 the same line through the prose prompt came
+    # back as `{"goal": "job simulator"}` - the verb and its noun were both lost.
+    holding = right if plan_result.side == "right" else left
+    travel = (
+        move_from_goal(heard)
+        if holding == "holding" and (plan_result.skill or "") in ("reach", "grab", "place")
+        else None
+    )
     decision = assemble(plan_result, None, seq, t_mono_ns, left=left, right=right,
-                        memory=memory, look_step=look_step)
+                        memory=memory, look_step=look_step, offset=travel)
     sense = None
     if plan_result.ok and plan_result.skill in SENSE_SKILLS:
         sense = plan_result.skill
