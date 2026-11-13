@@ -654,6 +654,30 @@ class ShippedStaticAssetsTests(unittest.TestCase):
             finally:
                 exc.close()
 
+    def test_the_console_offers_one_start_and_a_tab_pair(self) -> None:
+        _, body = self.request("/")
+        page = body.decode()
+        self.assertIn('id="start-run"', page)
+        self.assertNotIn('id="start"', page)          # one start, not two
+        self.assertIn('data-page="recordings"', page)
+        self.assertIn('data-page="console"', page)
+        self.assertIn('aria-current="page"', page)
+
+    def test_the_recordings_page_carries_the_same_tabs(self) -> None:
+        _, body = self.request("/recordings")
+        page = body.decode()
+        self.assertIn('data-page="console"', page)
+        self.assertIn('data-page="recordings"', page)
+        self.assertIn('aria-current="page"', page)
+
+    def test_shut_down_is_behind_the_overflow(self) -> None:
+        """The rare action does not sit shoulder to shoulder with the one you repeat."""
+        _, body = self.request("/")
+        page = body.decode()
+        menu = page.split('id="shutdown-menu"', 1)[1].split("</details>", 1)[0]
+        self.assertIn('id="stop"', menu)
+        self.assertIn('id="theme-toggle"', menu)
+
     def test_shipped_assets_are_served(self) -> None:
         for path in ("/", "/app.js", "/style.css"):
             with self.subTest(path=path):

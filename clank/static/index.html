@@ -39,6 +39,8 @@
         </span>
       </div>
       <div class="status-cluster">
+        <!-- The badge sits with the words that describe it. -->
+        <span id="state" class="badge">stopped</span>
         <span id="session-id"></span>
         <span id="run-state"></span>
         <!-- The spinner is the wait, the text beside it is what for: a spinner
@@ -47,40 +49,34 @@
         <span id="uptime"></span>
       </div>
       <div class="top-actions">
-        <!-- The badge sits with the buttons that change it. -->
-        <span id="state" class="badge">stopped</span>
-        <button id="start" class="btn btn-go" disabled>Start</button>
-        <!-- Starting the stack is once; starting a run is the thing you repeat.
-             The stack stays up between runs, so these are two lifetimes. -->
+        <!-- Two pages, one control: a segmented pair in the same slot on both,
+             so the page you are not on is a click away and looks like a button. -->
+        <nav class="page-tabs" aria-label="Pages">
+          <a class="page-tab" data-page="console" href="/" aria-current="page">Console</a>
+          <a class="page-tab" data-page="recordings" href="/recordings">Recordings</a>
+        </nav>
+        <!-- One start. The stack is booted by the run when it is down, so there
+             is nothing left for a second button to do. -->
         <button id="start-run" class="btn btn-go" disabled>Start run</button>
         <button id="stop-run" class="btn btn-halt" disabled>Stop run</button>
-        <button id="stop" class="btn btn-halt" disabled>Shut down</button>
-        <!-- JobBot asks the player to press the controller's menu button; nothing on the robot
-             can reach it, so this asks the relay for one press. -->
-        <button id="menu-press" class="btn" type="button"
-                aria-label="Press the controller menu button" disabled>Menu</button>
-        <button id="mute-audio" class="btn btn-icon btn-audio" type="button" aria-label="Mute game audio" disabled>
-          <svg class="icon icon-on" viewBox="0 0 24 24" aria-hidden="true">
-            <path d="M4 9.5h3.2L12 5.6v12.8L7.2 14.5H4z"/>
-            <path class="wave" d="M15.4 8.7a4.6 4.6 0 0 1 0 6.6"/>
-            <path class="wave" d="M18.1 6.2a8.2 8.2 0 0 1 0 11.6"/>
-          </svg>
-          <svg class="icon icon-off" viewBox="0 0 24 24" aria-hidden="true">
-            <path d="M4 9.5h3.2L12 5.6v12.8L7.2 14.5H4z"/>
-            <path d="M16 9.5l5 5m0-5l-5 5"/>
-          </svg>
-        </button>
-        <a id="recordings-link" class="btn" href="/recordings">Recordings</a>
-        <button id="theme-toggle" class="btn btn-icon" type="button" aria-label="Switch theme">
-          <!-- Sun shows in the dark theme (the way out), moon in the light one. -->
-          <svg class="icon icon-sun" viewBox="0 0 24 24" aria-hidden="true">
-            <circle cx="12" cy="12" r="4.4"/>
-            <path class="ray" d="M12 2.6v2.4M12 19v2.4M2.6 12h2.4M19 12h2.4M5.4 5.4l1.7 1.7M16.9 16.9l1.7 1.7M18.6 5.4l-1.7 1.7M7.1 16.9l-1.7 1.7"/>
-          </svg>
-          <svg class="icon icon-moon" viewBox="0 0 24 24" aria-hidden="true">
-            <path d="M20 14.6A8.6 8.6 0 0 1 9.4 4a8.6 8.6 0 1 0 10.6 10.6z"/>
-          </svg>
-        </button>
+        <!-- The rare, destructive-ish action lives behind the overflow, away
+             from the button pressed ten times a session. -->
+        <details id="shutdown-menu" class="menu">
+          <summary class="btn btn-icon" aria-label="More actions" title="More actions">▾</summary>
+          <div class="menu-body">
+            <button id="stop" class="btn btn-halt" disabled>Shut down</button>
+            <button id="theme-toggle" class="btn btn-icon" type="button" aria-label="Switch theme">
+              <!-- Sun shows in the dark theme (the way out), moon in the light one. -->
+              <svg class="icon icon-sun" viewBox="0 0 24 24" aria-hidden="true">
+                <circle cx="12" cy="12" r="4.4"/>
+                <path class="ray" d="M12 2.6v2.4M12 19v2.4M2.6 12h2.4M19 12h2.4M5.4 5.4l1.7 1.7M16.9 16.9l1.7 1.7M18.6 5.4l-1.7 1.7M7.1 16.9l-1.7 1.7"/>
+              </svg>
+              <svg class="icon icon-moon" viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M20 14.6A8.6 8.6 0 0 1 9.4 4a8.6 8.6 0 1 0 10.6 10.6z"/>
+              </svg>
+            </button>
+          </div>
+        </details>
       </div>
     </header>
 
@@ -134,14 +130,27 @@
           <p id="error" class="error" role="alert"></p>
         </div>
 
-        <!-- The robot panel holds everything that steers the body: the views
-             themselves, the look pads, and the manual/robot switch. -->
+        <!-- The robot panel holds the views and nothing that steers them: every
+             control lives in one Controls panel in the rail. -->
         <aside id="body-box">
           <div class="body-head">
             <span class="body-title">Robot</span>
           </div>
           <div id="body-tiles"></div>
           <div id="body-wait">body view off</div>
+        </aside>
+      </section>
+
+      <aside class="col col-rail">
+        <section class="panel panel-brain">
+          <h2>Brain <span id="brain-run"></span>
+            <a id="watch-run" class="rec-watch" href="/recordings">watch this run</a></h2>
+          <div id="brain-messages" class="brain-messages"></div>
+        </section>
+
+        <section class="panel panel-controls" id="controls-panel">
+          <h2>Controls</h2>
+          <p id="body-state" class="body-state"></p>
           <div class="body-controls">
             <div class="verbs">
               <button type="button" data-verb="look_left" class="look look-left" aria-label="Look left">
@@ -162,14 +171,24 @@
             </div>
             <div id="verb-status" class="verb-status"></div>
           </div>
-        </aside>
-      </section>
-
-      <aside class="col col-rail">
-        <section class="panel panel-brain">
-          <h2>Brain <span id="brain-run"></span>
-            <a id="watch-run" class="rec-watch" href="/recordings">watch this run</a></h2>
-          <div id="brain-messages" class="brain-messages"></div>
+          <div class="control-actions">
+            <!-- JobBot asks the player to press the controller's menu button; nothing
+                 on the robot can reach it, so this asks the relay for one press. It is
+                 game input, not page chrome, and it lives with the other controls. -->
+            <button id="menu-press" class="btn" type="button"
+                    aria-label="Press the controller menu button" disabled>Menu press</button>
+            <button id="mute-audio" class="btn btn-icon btn-audio" type="button" aria-label="Mute game audio" disabled>
+              <svg class="icon icon-on" viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M4 9.5h3.2L12 5.6v12.8L7.2 14.5H4z"/>
+                <path class="wave" d="M15.4 8.7a4.6 4.6 0 0 1 0 6.6"/>
+                <path class="wave" d="M18.1 6.2a8.2 8.2 0 0 1 0 11.6"/>
+              </svg>
+              <svg class="icon icon-off" viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M4 9.5h3.2L12 5.6v12.8L7.2 14.5H4z"/>
+                <path d="M16 9.5l5 5m0-5l-5 5"/>
+              </svg>
+            </button>
+          </div>
         </section>
 
         <section class="panel panel-logs">

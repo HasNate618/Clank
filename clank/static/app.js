@@ -733,7 +733,6 @@ function updatePreviewWait(state) {
 
 function applyControls(state) {
   const running = state.state === "running";
-  $("start").disabled = actionInFlight || !["stopped", "failed"].includes(state.state);
   $("stop").disabled = actionInFlight || state.state === "stopped";
   const run = state.run || null;
   const runActive = Boolean(run && !["idle", "failed"].includes(run.state));
@@ -742,7 +741,9 @@ function applyControls(state) {
   // own `checking` phase is built for, so disabling it would hide that path.
   const model = state.model || {};
   const modelDown = model.up === false;
-  $("start-run").disabled = actionInFlight || !running || runActive || modelDown;
+  // No `running` here: Start run boots the stack itself now, and refusing an
+  // idle dashboard is exactly the third step this button was given to remove.
+  $("start-run").disabled = actionInFlight || runActive || modelDown;
   $("start-run").title = modelDown
     ? `the model server is ${model.status || "down"}${model.model ? ` (${model.model})` : ""}`
     : "";
@@ -1066,8 +1067,6 @@ $("vnc-auth").addEventListener("submit", (event) => {
   previewCreds = { username, password };
   connectPreview();
 });
-
-$("start").onclick = () => runAction(() => post("/api/session/start"));
 
 $("stop").onclick = () => runAction(() => post("/api/session/stop"));
 $("start-run").onclick = () => runAction(() => post("/api/run/start"));
