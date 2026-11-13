@@ -57,7 +57,7 @@ The answer is a sentence in its own words plus the fields around it:
 
 ### It finds
 
-`spike/wbc_game/locate.py`, same model, seven calls in the run above. One quadrant question about the whole frame, then a pixel question about that quadrant grown 15% so a thing on the seam is not sliced, then five box reads, then a description. The five reads and the check cost **2.32–2.94 s** and put the card **21.0 px** from hand-marked truth on a live frame. The quadrant comes first because this model collapses any image-global grid toward the centre: **3/12** on thirds, **0/12** on a nine-cell pick, **0/12** on a 4×4.
+`spike/wbc_game/locate.py`, same model, seven calls in the run above. One quadrant question about the whole frame, then a pixel question about that quadrant grown 15% so a thing on the seam is not sliced, then five box reads, then a description. The five reads and the check cost **1.38–1.40 s** with the reads on the server's four slots, down from 2.32–2.94 s when they ran one at a time, and put the card **21.0 px** from hand-marked truth on a live frame. The quadrant comes first because this model collapses any image-global grid toward the centre: **3/12** on thirds, **0/12** on a nine-cell pick, **0/12** on a 4×4.
 
 The pixel is not tracked between ticks, because it cannot be. The head will not hold a commanded pose: held against one target for ten seconds it wobbled **11.7° of yaw**, and the card moved 1009 → 1122 → 865 → 1007 px inside a single four-command reach ([`research/reach-placement.md`](research/reach-placement.md)). So the target is unprojected through the measured head into metres once and projected back every tick, and the pixel the hand aims at is re-derived rather than remembered.
 

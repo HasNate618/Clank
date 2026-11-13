@@ -23,6 +23,7 @@ stage 1, and `locate()` reports both.
 from __future__ import annotations
 
 import argparse
+import concurrent.futures
 import io
 import json
 import pathlib
@@ -310,6 +311,7 @@ def read_box(
     box: tuple[float, float, float, float],
     reads: tuple[tuple[int, float], ...] = BOX_READS,
     times: list[float] | None = None,
+    parallel: int = 4,
 ) -> tuple[
     tuple[float, float, float, float] | None,
     list[tuple[float, float, float, float]],
@@ -331,16 +333,36 @@ def read_box(
 
     Per-read durations are appended to `times` when given. They are needed because a slow
     read is one the server queued or the network retried, and a caller deciding whether it
-    can afford the grid has to know the real cost of one call.
+    can afford the grid has to know the real cost of one call. With `parallel` > 1 they are
+    wall time per read as well, but the reads share the wall clock, so five entries sum to
+    more than the time the call took - `locate()` times the whole stage separately.
+
+    The reads are independent questions about different crops on a server that serves four
+    at once (`/props` reports `total_slots: 4`), so they run concurrently; `executor.map`
+    keeps them in `reads` order, which is what makes the median and the raw-reply list
+    identical to the serial loop. Pass `parallel=1` for that loop.
     """
+
+    def read_one(
+        framing: tuple[int, float],
+    ) -> tuple[tuple[float, float, float, float] | None, str, float]:
+        width, pad = framing
+        started = time.perf_counter()
+        got, raw = ask_box(config, frame, noun, box, width, pad)
+        return got, raw, time.perf_counter() - started
+
+    if parallel > 1:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=parallel) as pool:
+            answers = list(pool.map(read_one, reads))
+    else:
+        answers = [read_one(framing) for framing in reads]
+
     boxes: list[tuple[float, float, float, float]] = []
     raws: list[str] = []
     refusals = 0
-    for width, pad in reads:
-        started = time.perf_counter()
-        one, raw = ask_box(config, frame, noun, box, width, pad)
+    for one, raw, seconds in answers:
         if times is not None:
-            times.append(time.perf_counter() - started)
+            times.append(seconds)
         raws.append(raw.strip())
         if '"none"' in raw.lower():
             refusals += 1
@@ -401,6 +423,7 @@ def locate(
     verify: bool = True,
     reads: int = 5,
     verify_mode: str = "describe",
+    parallel: int = 4,
 ) -> dict:
     """Quadrant, then box reads. Returns a dict with a full-frame pixel in px.
 
@@ -473,8 +496,11 @@ def locate(
     plan = tuple(BOX_READS[i % len(BOX_READS)] for i in range(reads))
     per_read: list[float] = []
     reads_started = time.perf_counter()
-    median, boxes, raws, refused = read_box(config, frame, noun, box, plan, times=per_read)
+    median, boxes, raws, refused = read_box(config, frame, noun, box, plan,
+                                            times=per_read, parallel=parallel)
     timings["reads_ms"] = round((time.perf_counter() - reads_started) * 1000, 1)
+    # Per-read wall time. Under `parallel` these overlap, so they sum to more than
+    # `reads_ms` - that is contention, not double counting.
     timings["read_ms"] = [round(t * 1000, 1) for t in per_read]
     calls["n"] += len(raws)
     out["stage2_raw"] = raws
@@ -612,6 +638,12 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--noun", default="JobBot ID card")
     ap.add_argument("--truth", nargs=2, type=float, metavar=("X", "Y"))
     ap.add_argument("--model")
+    ap.add_argument(
+        "--parallel",
+        type=int,
+        default=4,
+        help="how many box reads to have in flight at once (1 for the serial loop)",
+    )
     ap.add_argument(
         "--reads",
         type=int,

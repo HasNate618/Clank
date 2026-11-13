@@ -11,6 +11,7 @@ from __future__ import annotations
 import importlib.util
 import pathlib
 import unittest
+from collections.abc import Mapping
 from unittest.mock import patch
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -113,7 +114,10 @@ class RefusalTests(unittest.TestCase):
             return reply
 
         with patch.object(locate, "ask_box", fake_ask_box):
-            return locate.read_box(None, None, "job cartridge", (0.0, 0.0, 1.0, 1.0))
+            # Serial on purpose: the script means "reply N for call N", which concurrency
+            # cannot promise. ParallelReadTests owns the concurrent contract.
+            return locate.read_box(None, None, "job cartridge", (0.0, 0.0, 1.0, 1.0),
+                                   parallel=1)
 
     def test_a_majority_of_refusals_is_a_refusal(self) -> None:
         median, boxes, raws, refused = self._read(((None, '{"none": true}'),))
@@ -157,6 +161,62 @@ class RefusalTests(unittest.TestCase):
                    (wild, wild_raw), (wild, wild_raw))
         median, _, _, _ = self._read(replies)
         self.assertEqual(median, wild)
+
+
+class ParallelReadTests(unittest.TestCase):
+    """Five reads at once must decide exactly what five reads in a row decided.
+
+    The server serves four slots (`/props` reports `total_slots: 4`), and the five stage-2
+    framings are five independent questions, so they can be asked in one wave. Both the
+    per-edge median and the majority refusal are decisions about the *set* of replies, so
+    the concurrency must be invisible in the answer - only in `times`.
+    """
+
+    BOX = (0.70, 0.70, 0.90, 0.90)
+    BOX_RAW = '{"x0": 700, "y0": 700, "x1": 900, "y1": 900}'
+    WILD = (0.00, 0.00, 1.00, 1.00)
+    WILD_RAW = '{"x0": 0, "y0": 0, "x1": 1000, "y1": 1000}'
+    REFUSAL = (None, '{"none": true}')
+
+    #: One reply per send width, so the fake does not depend on the order it is called in.
+    BOXES = {
+        640: (BOX, BOX_RAW),
+        720: ((0.72, 0.70, 0.92, 0.90), '{"x0": 720, "y0": 700, "x1": 920, "y1": 900}'),
+        800: (WILD, WILD_RAW),
+        880: ((0.70, 0.72, 0.90, 0.92), '{"x0": 700, "y0": 720, "x1": 900, "y1": 920}'),
+        960: ((0.71, 0.70, 0.91, 0.90), '{"x0": 710, "y0": 700, "x1": 910, "y1": 900}'),
+    }
+    REFUSED = {640: REFUSAL, 720: REFUSAL, 800: REFUSAL, 880: (BOX, BOX_RAW), 960: (BOX, BOX_RAW)}
+
+    def _read(
+        self,
+        replies: Mapping[int, tuple[tuple[float, float, float, float] | None, str]],
+        parallel: int,
+    ):
+        def fake_ask_box(config, frame, noun, box, width, pad):
+            return replies[width]
+
+        times: list[float] = []
+        with patch.object(locate, "ask_box", fake_ask_box):
+            got = locate.read_box(
+                None, None, "card", (0.0, 0.0, 1.0, 1.0), times=times, parallel=parallel
+            )
+        return got, times
+
+    def test_the_median_does_not_depend_on_read_order(self) -> None:
+        for name, replies in (("five boxes", self.BOXES), ("three refusals", self.REFUSED)):
+            with self.subTest(name):
+                serial, serial_times = self._read(replies, parallel=1)
+                at_once, at_once_times = self._read(replies, parallel=4)
+                self.assertEqual(at_once[0], serial[0], "median box")
+                # Order-sensitive, and the canned replies are distinct per width: an
+                # implementation that collected in completion order would match on median and
+                # refusal but fail here, and `stage2_raw` would stop lining up with `reads`.
+                self.assertEqual(at_once[1], serial[1], "boxes")
+                self.assertEqual(at_once[2], serial[2], "raws")
+                self.assertIs(at_once[3], serial[3], "refusal flag")
+                self.assertEqual(len(serial_times), 5)
+                self.assertEqual(len(at_once_times), 5)
 
 
 if __name__ == "__main__":

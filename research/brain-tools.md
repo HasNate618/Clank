@@ -115,3 +115,38 @@ the nearest surface the depth buffer reports, and the grab radius is the game's,
 diary called it "failed (code=2)" because the exit code is the arm's and the confirmation was
 skipped under `--say`; confirmation now runs every time, because JobBot reacts to the game and not
 to how the instruction arrived.
+
+## The five box reads on the server's four slots, 2026-11-13
+
+`read_box` walked its five stage-2 reads in a `for` loop while the llama.cpp server was already
+serving four requests at once (`/props` reports `total_slots: 4`, and the server log cycles slots
+0-3). The reads are independent - five different crops of the same quadrant - so they belong on
+the slots.
+
+Measured on `frames/frame-190251.png`, noun `card`, real server, three runs each, one warm-up:
+
+| path | `timings.total_ms` | `reads_ms` | `pixel_px` |
+| --- | --- | --- | --- |
+| serial | 2395.8 / 2367.4 / 2379.1 | 1977.8 | 797.4, 450.5 (once) and 788.9, 450.5 |
+| parallel | 1540.5 / 1569.3 / 1557.8 | 1136.3 | 797.4, 450.5 (3/3) |
+
+**-34.5 % of locate's wall clock, -42.5 % of the reads stage.** Two waves of four-plus-one, as
+predicted. Per-read wall time goes *up* under contention (672-724 ms against 363-424 ms) because
+the reads share slots, which is why `locate()` keeps timing the stage separately from the reads.
+
+Two honest limits:
+
+- **Temperature 0 does not make the server reproducible across slots.** Both paths flip between
+  x 788.9 and 797.4 and between y 443.1 and 450.5 from run to run, which is the same jitter the
+  ensemble already reports as a 42-49 px read spread - an order of magnitude larger than the
+  centre difference. So "the pixel is unchanged" means *congruent within the model's own jitter*,
+  not identical.
+- **This buys latency, not compute.** The same tokens are generated. It is a win only while the
+  slots are otherwise idle; a second client on `:11434` (a dashboard, a probe) halves it.
+
+Not a win elsewhere: quadrant -> box -> describe is sequential by construction, and so is the
+planner chain now that session memory feeds each call the previous reply.
+
+The whole pipeline on the parallel path, measured the same day, three runs: **1579-1593 ms** total
+(quadrant ~200 ms, reads 1186-1198 ms, describe check 192-205 ms), so the reads-plus-check figure
+the README quotes is **1.38-1.40 s** rather than the 2.32-2.94 s it used to be.
