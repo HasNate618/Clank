@@ -282,3 +282,70 @@ BOTTOM-RIGHT px=(884,473) PRESENT [True, True, True] 'Card | Card | Card' 2005ms
 ```
 
 and a noun that is not in the scene refuses, 2/2 (`sign`, `Something else`).
+
+## 2026-11-13 — tool calling, measured: the brain does not use it, and it would not help
+
+`clank/brain.py` sends `{messages, max_tokens, temperature, stream}` and nothing else: no
+`tools`, no `functions`, no `response_format`. The model is asked for JSON **in prose** and
+`extract_json_object()` brace-matches the reply, tolerating fences and chatter. The skills in
+`clank.intent.SKILLS` are the adapter's, never the model's: the model writes a goal sentence and
+`_SKILL_WORDS` / `_TASK_VERBS` / `skill_from_goal` pick the skill.
+
+Since the model was trained on OpenAI-style tool calls and the server runs `--jinja`, the
+obvious question is whether a real `tools=` array beats the prose contract. Four arms, the same
+six utterances, the still from run `145444-56e4fc`, three samples each, `temperature 0.0`:
+
+| arm | input |
+| --- | --- |
+| A | the live `NEXT_STEP_PROMPT` (goal in words, JSON in prose) |
+| C | the enum-in-prose that measured 0/4 grabs on 2026-11-04 |
+| B1 | `tools=` with grab / place / reach / look / release / hold |
+| B2 | B1 plus `move(direction, metres)` — the tool a generic pull needs |
+
+**Tool calls work.** `tools` + `tool_choice: "auto"` produced clean typed arguments
+(`move({"direction": "back", "metres": 0.5})`); with `tool_choice: "required"` emission was
+**18/18 tool calls** and no prose at all. With `auto` roughly a third of replies came back as a
+scene description instead of a call — the model chatted about the Job Simulator room.
+
+**It is not more accurate.** Act choice, `tool_choice: "required"`, n=3 each:
+
+| case | wanted | A prose | C enum | B2 tools+move |
+| --- | --- | --- | --- | --- |
+| greeting, "...Here's my card" | grab | reach 0/3 | grab 3/3 | look 0/3 |
+| "take my card" | grab | grab 3/3 | grab 3/3 | grab 3/3 |
+| "grab one of the job cartridges" | grab | grab 3/3 | grab 3/3 | grab 3/3 |
+| "insert the cartridge into the slot" | place | **place 3/3** | place 3/3 | grab 0/3 |
+| "pull the lever to job" | pull | reach 0/3 | grab 0/3 | grab 0/3 |
+| "a large machine is running with a steady hum" | hold | **reach 0/3** | **hold 3/3** | look 0/3 |
+
+A 3/6, C 4/6, B2 2/6.
+
+Three things this actually measured, in order of how much they matter:
+
+1. **The prose arm invents a chore from a non-order, reproducibly.** A steady hum became
+   `{"goal": "operate the JobBot machine"}` and a `reach`, 3/3, in two separate runs. This is the
+   defect the run diary keeps showing, and it is not a tool-calling problem: nothing in the
+   prose contract lets the model say "nothing was asked". The enum arm said `hold` 3/3 for the
+   same input, because the enum gives it somewhere to put the answer. Whatever the format, the
+   model needs a way to refuse a turn.
+2. **A goal sentence carries a relation that a single tool call cannot.** "insert the cartridge
+   into the slot" has two nouns and a preposition; `skill_from_goal` reads them and A answers
+   `place` 3/3. A tool call must commit to one name and one destination in one breath, and
+   `grab({"object": "Job Cartridge"})` is what it commits to. Two-argument tools are not
+   free — the model has to already know the second argument.
+3. **"Pull the lever to job" is destroyed by the prose arm** (`goal: "job simulator"`,
+   `reach`, 0/3): the noun never survives, so no amount of direction parsing would help. The
+   tools arm at least kept `grab({"object": "lever"})` 3/3 — the first half of the pull.
+
+And the one result that survived as a positive: **a direction is expressible to this model.**
+With `move` in the tool list, "pull the lever to job" answered
+`move({"direction": "back", "metres": 0.5})` 3/3 on one run — an exact, typed pull — and
+`grab({"object": "lever"})` 3/3 on the next. Unreliable choice, correct vocabulary. That is the
+same conclusion `docs/superpowers/plans/2026-11-13-directional-motion.md` reached from the code
+side, and it is why that plan keeps the goal sentence and maps direction words in code rather
+than moving the brain onto tool calls.
+
+Caveat on all of it: `temperature 0.0` is not reproducible across the server's four slots, so a
+3/3 is a congruent run, not a guarantee — case 5's B2 arm flipped between two runs of the same
+script. n=6 cases. This is enough to say tool calling is not a free win and to name the two
+defects worth fixing; it is not enough to declare A or C the winner.
