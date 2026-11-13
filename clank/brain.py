@@ -790,6 +790,11 @@ _TASK_VERBS = (
     # controller button ("press the menu button" before the job starts), and without it the
     # greeting gate in `think()` would swallow a line that does name a task.
     ("press", "menu"),
+    # A direction is a task. Measured 2026-11-13: "pull the lever to job" matched no verb here,
+    # so `task_intent` returned ("", "") and `think()`'s gate held - the lever was never attempted
+    # on any run. They map to `reach`, not to skills of their own: the direction and its metres
+    # come from `move_from_goal`, and `clank.intent.SKILLS` gains nothing.
+    ("pull", "reach"), ("push", "reach"), ("drag", "reach"), ("slide", "reach"),
 )
 _TASK_FILLER = {
     "a", "an", "the", "my", "your", "that", "this", "one", "some", "of", "off", "from",
@@ -799,6 +804,12 @@ _TASK_STOP = {
     "on", "in", "into", "onto", "to", "and", "then", "for", "with", "at", "so", "which",
     "before", "after", "off", "from", "that",
 }
+#: Words that end the object of a task because they are the *motion*, not the thing.
+#: "pull it back" names no object; "pull the lever back" names the lever and stops. `left` and
+#: `right` are deliberately absent - "grab the right cartridge" is a thing to grab, not a side.
+_TASK_DIRECTION = frozenset({
+    "back", "backward", "backwards", "forward", "forwards", "up", "down", "away",
+})
 #: "let's get started" is not an object. A thing the game names rarely ends in -ed or -ing.
 _TASK_PARTICIPLE = re.compile(r"^[a-z]{3,}(?:ed|ing)$")
 #: JobBot does not only give orders - he holds the thing out and says what it is.
@@ -833,7 +844,7 @@ def task_intent(text: str) -> tuple[str, str]:
             noun: list[str] = []
             skipped_participle = False
             for word in tokens[i + len(parts):]:
-                if word in _TASK_STOP:
+                if word in _TASK_STOP or word in _TASK_DIRECTION:
                     break
                 if word in _TASK_FILLER:
                     continue

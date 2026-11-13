@@ -1655,3 +1655,18 @@ class MoveFromGoalTest(unittest.TestCase):
     def test_the_lever_line_is_a_backward_move(self) -> None:
         self.assertEqual(brain.move_from_goal("pull the lever to job"),
                          (-brain.MOVE_M, 0.0, 0.0))
+
+
+class DirectionalTaskTest(unittest.TestCase):
+    """A direction verb is a task, or the greeting gate holds and the lever is never tried."""
+
+    def test_pull_the_lever_is_a_reach(self) -> None:
+        self.assertEqual(brain.task_intent("pull the lever to job"), ("reach", "lever"))
+
+    def test_push_the_cartridge_in_is_a_reach(self) -> None:
+        self.assertEqual(brain.task_intent("push the cartridge in"), ("reach", "cartridge"))
+
+    def test_a_direction_word_does_not_become_the_noun(self) -> None:
+        # "pull it back" names no object: the pronoun is already in the sentence, so there is a
+        # task with nothing to ground - and nothing invented to ground it on.
+        self.assertEqual(brain.task_intent("pull it back"), ("reach", ""))
