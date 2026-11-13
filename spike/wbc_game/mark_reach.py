@@ -68,7 +68,9 @@ def grab(path: Path) -> Path:
     return path
 
 
-def overlay(src: Path, dst: Path, marks: list[tuple[str, tuple[float, float], str]]) -> None:
+def overlay(
+    src: Path, dst: Path, marks: list[tuple[str, tuple[float, float], tuple[int, int, int]]]
+) -> None:
     from PIL import Image, ImageDraw
 
     im = Image.open(src).convert("RGB")

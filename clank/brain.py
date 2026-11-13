@@ -856,6 +856,101 @@ def task_intent(text: str) -> tuple[str, str]:
     return "", ""
 
 
+#: How far a directional move travels, metres. **Not measured on this game's lever**: it is
+#: inside the arm's measured travel (0.41-0.51 m, `research/sonic-reach-envelope.md`) and about
+#: a lever's own swing, and it is the distance the model itself proposed when offered `move` as
+#: a typed tool (`research/brain-tools.md` 2026-11-13: `{"direction": "back", "metres": 0.5}`).
+#: Halved from that proposal, because the box's forward floor is 0.079 m and a hand already
+#: reaching forward has less than half a metre of pull before it is against the torso.
+MOVE_M = 0.25
+
+#: Positional words, and the axis each names in the pelvis frame `(forward, up, lateral)`,
+#: lateral positive toward the robot's own left - the order `clank.intent.Intent.offset` uses.
+#: A positional word wins over the verb that carried it: "pull the lever down" travels down.
+_MOVE_PLACES = (
+    (("towards", "me"), (-1.0, 0.0, 0.0)),
+    (("toward", "me"), (-1.0, 0.0, 0.0)),
+    (("backwards",), (-1.0, 0.0, 0.0)),
+    (("backward",), (-1.0, 0.0, 0.0)),
+    (("back",), (-1.0, 0.0, 0.0)),
+    (("forwards",), (1.0, 0.0, 0.0)),
+    (("forward",), (1.0, 0.0, 0.0)),
+    (("away",), (1.0, 0.0, 0.0)),
+    (("down",), (0.0, -1.0, 0.0)),
+    (("up",), (0.0, 1.0, 0.0)),
+    (("left",), (0.0, 0.0, 1.0)),
+    (("right",), (0.0, 0.0, -1.0)),
+)
+
+#: Verbs that are a direction on their own. `lift` is deliberately absent: it is a *grab* in
+#: `_TASK_VERBS`, and "lift the card" must stay a grab rather than become a hand moved upward.
+_MOVE_VERBS = (
+    ("pull", (-1.0, 0.0, 0.0)),
+    ("drag", (-1.0, 0.0, 0.0)),
+    ("push", (1.0, 0.0, 0.0)),
+    ("slide", (1.0, 0.0, 0.0)),
+)
+
+#: Prepositions that make a goal a *destination* rather than a direction. Kept to exactly the
+#: ones `_TASK_STOP` already treats as ending a noun phrase, so the two readings of a sentence
+#: cannot disagree about where the noun stopped.
+_MOVE_DESTINATION = frozenset({"on", "in", "into", "onto", "to"})
+
+
+def _phrase_at(tokens: list[str], phrase: tuple[str, ...]) -> int | None:
+    """Where `phrase` starts in `tokens`, or None."""
+    width = len(phrase)
+    for start in range(len(tokens) - width + 1):
+        if tuple(tokens[start:start + width]) == phrase:
+            return start
+    return None
+
+
+def move_from_goal(goal: str) -> tuple[float, float, float] | None:
+    """The displacement a goal in words asks for, or None when it asks for no movement.
+
+    `(forward, up, lateral)` metres, the `Intent.offset` order, already scaled by `MOVE_M`.
+
+    This is what makes a pull a `reach` instead of a skill. Measured 2026-11-13
+    (`research/brain-tools.md`): offered `move(direction, metres)` as a typed tool, this model
+    answered "pull the lever to job" with `{"direction": "back", "metres": 0.5}` 3/3, so the
+    vocabulary is in the weights. The prose prompt does not surface it - asked for a goal in
+    words the same line became `{"goal": "job simulator"}`, with the lever gone - so the
+    direction is read here, from the sentence the model did produce, and the metres stay here
+    rather than in a prompt that has never been able to hold a number.
+
+    A destination wins over a direction. "insert the cartridge into the slot" contains `in`,
+    and it is a `place`: the hand goes above a surface and opens, which is a different motion
+    from one that travels. The comparison is by position, so "push the cartridge in" - verb
+    first, preposition later - stays a push, which is the same sentence shape read correctly.
+    """
+    tokens = re.findall(r"[a-z][a-z'\-]*", goal.lower())
+    if not tokens:
+        return None
+    place: tuple[int, tuple[float, float, float]] | None = None
+    for phrase, direction in _MOVE_PLACES:
+        at = _phrase_at(tokens, phrase)
+        if at is not None and (place is None or at < place[0]):
+            place = (at, direction)
+    verb: tuple[int, tuple[float, float, float]] | None = None
+    for phrase, direction in _MOVE_VERBS:
+        at = _phrase_at(tokens, (phrase,))
+        if at is not None and (verb is None or at < verb[0]):
+            verb = (at, direction)
+    chosen = place if place is not None else verb
+    if chosen is None:
+        return None
+    destination = next(
+        (index for index, word in enumerate(tokens) if word in _MOVE_DESTINATION), None
+    )
+    if destination is not None:
+        earliest = min(candidate[0] for candidate in (place, verb) if candidate is not None)
+        if destination < earliest:
+            return None
+    forward, up, lateral = chosen[1]
+    return (forward * MOVE_M, up * MOVE_M, lateral * MOVE_M)
+
+
 def skill_from_goal(goal: str) -> str:
     """The intent skill a goal in words implies. `reach` when nothing matches."""
     words = goal.lower()

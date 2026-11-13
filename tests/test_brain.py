@@ -1614,3 +1614,44 @@ class SessionMemorySend(ChatPatchMixin, unittest.TestCase):
         brain.think(brain.BrainConfig(), fake_frame(), "take my card",
                     brain.WorkingMemory(), session=session)
         self.assertIn("take my card", json.dumps(session.messages))
+
+
+class MoveFromGoalTest(unittest.TestCase):
+    """A direction in the goal, in metres that code owns.
+
+    The plan is `docs/superpowers/plans/2026-11-13-directional-motion.md`. Measured
+    (research/brain-tools.md, 2026-11-13): "pull the lever to job" through the prose prompt
+    alone answers `{"goal": "job simulator"}`, so the noun dies before any direction could be
+    read - but with `move` offered as a typed tool the same model answered
+    `move(direction="back", metres=0.5)` 3/3. The vocabulary exists; only the framing was
+    missing.
+    """
+
+    def test_pulling_comes_backwards(self) -> None:
+        self.assertEqual(brain.move_from_goal("pull the lever toward me"),
+                         (-brain.MOVE_M, 0.0, 0.0))
+
+    def test_pushing_goes_forwards(self) -> None:
+        self.assertEqual(brain.move_from_goal("push the cartridge in"),
+                         (brain.MOVE_M, 0.0, 0.0))
+
+    def test_a_destination_is_a_place_not_a_move(self) -> None:
+        self.assertIsNone(brain.move_from_goal("insert the cartridge into the slot"))
+        self.assertIsNone(brain.move_from_goal("put my card on the desk"))
+
+    def test_a_named_object_with_no_direction_is_not_a_move(self) -> None:
+        self.assertIsNone(brain.move_from_goal("take the card"))
+
+    def test_a_grab_verb_is_never_a_move(self) -> None:
+        # "lift" is a grab in `_TASK_VERBS`; only a positional word may make a move.
+        self.assertIsNone(brain.move_from_goal("lift the card"))
+
+    def test_up_and_down(self) -> None:
+        self.assertEqual(brain.move_from_goal("lift the lever up"),
+                         (0.0, brain.MOVE_M, 0.0))
+        self.assertEqual(brain.move_from_goal("pull the lever down"),
+                         (0.0, -brain.MOVE_M, 0.0))
+
+    def test_the_lever_line_is_a_backward_move(self) -> None:
+        self.assertEqual(brain.move_from_goal("pull the lever to job"),
+                         (-brain.MOVE_M, 0.0, 0.0))
