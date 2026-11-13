@@ -31,7 +31,10 @@ Two measurements decided the shape of this file, both taken against the live
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
+import os
+import pathlib
 import re
 import time
 import urllib.error
@@ -233,6 +236,95 @@ class ModelReply:
     prompt_ms: float = 0.0
     decode_ms: float = 0.0
     error: str = ""
+    #: llama.cpp's own token counts, for the `llm.jsonl` trace. 0 when the call failed.
+    prompt_n: int = 0
+    predicted_n: int = 0
+
+
+def llm_log_path() -> pathlib.Path | None:
+    """Where `llm.jsonl` goes, or None for no trace.
+
+    `CLANK_LLM_LOG` names the file outright, and an empty value disables the trace, so a
+    test or a probe can opt out of the one env var the dashboard exports per run.
+    Without it the file is the diary's sibling: a run that sets `CLANK_BRAIN_LOG` gets
+    `llm.jsonl` in the same directory for free.
+
+    Set it for the **brain process only**. `clank/config.py` rejects any `CLANK_*` that is not
+    `<section>_<key>`, so exporting it before `run.sh` stops the dashboard at startup with
+    "unknown environment override". `CLANK_BRAIN_LOG` is safe for the same reason: the run
+    writes it into the child's environment and never into the shell's.
+    """
+    explicit = os.environ.get("CLANK_LLM_LOG")
+    if explicit is not None:
+        return pathlib.Path(explicit) if explicit else None
+    diary = os.environ.get("CLANK_BRAIN_LOG", "")
+    return pathlib.Path(diary).with_name("llm.jsonl") if diary else None
+
+
+def _image_digest(part: dict[str, Any]) -> str:
+    """sha256 of the JPEG inside an `image_url` part, so a still can be cited by digest."""
+    url = str((part.get("image_url") or {}).get("url") or "")
+    if not url.startswith("data:") or "," not in url:
+        return ""
+    try:
+        return hashlib.sha256(base64.b64decode(url.split(",", 1)[1])).hexdigest()
+    except ValueError:
+        return ""
+
+
+def _trace_llm(messages: list[dict[str, Any]], reply: ModelReply) -> None:
+    """Append one line per call: what was asked, what came back, and the timings.
+
+    The still is recorded by digest and never by content - a base64 JPEG is neither
+    readable nor cheap, and this file is read by a human diagnosing a run. The text of
+    the last user message is the prompt, so a call that carries a still is still
+    greppable. A trace that cannot be written (a read-only state dir, a full disk) must
+    never fail the call it describes.
+    """
+    path = llm_log_path()
+    if path is None:
+        return
+    prompt_text = ""
+    image_sha256 = ""
+    try:
+        for message in messages:
+            if message.get("role") != "user":
+                continue
+            content = message.get("content")
+            if isinstance(content, str):
+                prompt_text, image_sha256 = content, ""
+                continue
+            texts = []
+            image_sha256 = ""
+            for part in content or []:
+                if part.get("type") == "text":
+                    texts.append(str(part.get("text") or ""))
+                elif part.get("type") == "image_url":
+                    image_sha256 = _image_digest(part)
+            prompt_text = "\n".join(texts)
+    except (AttributeError, TypeError, ValueError):
+        # A malformed message is not worth failing the call over, and half a row is worse than
+        # a short one: keep whatever was read before the bad part.
+        pass
+    # One row must fit one `write()` or a parallel reader (locate's box reads) can interleave
+    # halves of two rows. CPython writes in 8 KB text chunks, so this keeps a row atomic.
+    prompt_text = prompt_text[-4000:]
+    row = {
+        "t": round(time.time(), 3),
+        "prompt_text": prompt_text,
+        "image_sha256": image_sha256,
+        "raw_reply": reply.text,
+        "prompt_ms": reply.prompt_ms,
+        "decode_ms": reply.decode_ms,
+        "prompt_n": reply.prompt_n,
+        "predicted_n": reply.predicted_n,
+        "error": reply.error,
+    }
+    try:
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(row) + "\n")
+    except OSError:
+        return
 
 
 @dataclass(frozen=True)
@@ -301,7 +393,18 @@ def _chat(
     messages: list[dict[str, Any]],
     max_tokens: int | None = None,
 ) -> ModelReply:
-    """One POST to the OpenAI-compatible endpoint. Never raises into the caller."""
+    """One POST to the OpenAI-compatible endpoint, traced to `llm.jsonl`. Never raises."""
+    reply = _chat_request(config, messages, max_tokens)
+    _trace_llm(messages, reply)
+    return reply
+
+
+def _chat_request(
+    config: BrainConfig,
+    messages: list[dict[str, Any]],
+    max_tokens: int | None = None,
+) -> ModelReply:
+    """The POST itself, so `_chat` is the one writer of the trace."""
     payload = {
         "messages": messages,
         "max_tokens": max_tokens if max_tokens is not None else config.max_tokens,
@@ -337,9 +440,24 @@ def _chat(
     timings = body.get("timings") or {}
     return ModelReply(
         text=str(text),
-        prompt_ms=float(timings.get("prompt_ms", 0.0)),
-        decode_ms=float(timings.get("predicted_ms", elapsed_ms)),
+        prompt_ms=_timing(timings, "prompt_ms", 0.0),
+        decode_ms=_timing(timings, "predicted_ms", elapsed_ms),
+        prompt_n=int(_timing(timings, "prompt_n", 0.0)),
+        predicted_n=int(_timing(timings, "predicted_n", 0.0)),
     )
+
+
+def _timing(timings: dict[str, Any], key: str, default: float) -> float:
+    """One number out of llama.cpp's `timings`, or `default`.
+
+    A server that answers `"prompt_n": null` must not turn a successful reply into an
+    exception: this function is inside `_chat_request`, which promises never to raise, and an
+    exception here would also skip the trace line for a call that did happen.
+    """
+    try:
+        return float(timings.get(key, default))
+    except (TypeError, ValueError):
+        return default
 
 
 def _image_part(frame: Frame) -> dict[str, Any]:

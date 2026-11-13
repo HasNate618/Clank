@@ -1,5 +1,11 @@
 import base64
 import email.message
+import hashlib
+import json
+import os
+import pathlib
+import shutil
+import tempfile
 import unittest
 from unittest import mock
 
@@ -1252,3 +1258,133 @@ class ServerStatusTests(unittest.TestCase):
     def test_short_model_drops_the_directory_and_extension(self) -> None:
         self.assertEqual(brain.short_model("/a/b/LFM3-Omni-2B-Q8_0.gguf"), "LFM3-Omni-2B-Q8_0")
         self.assertEqual(brain.short_model("omni"), "omni")
+
+
+class LlmTrace(unittest.TestCase):
+    """Every `_chat` call writes one line to `llm.jsonl`, and never the image.
+
+    These tests patch `urlopen`, not `_chat`, so the real writer runs: the file is
+    the thing under test, and a patched `_chat` would leave it unexercised.
+    """
+
+    reply_text = '{"goal":"take the card"}'
+    body = json.dumps(
+        {
+            "choices": [{"message": {"content": reply_text}}],
+            "timings": {"prompt_ms": 12.5, "predicted_ms": 34.0, "prompt_n": 517, "predicted_n": 12},
+        }
+    ).encode("utf-8")
+
+    def setUp(self) -> None:
+        self.dir = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.dir, ignore_errors=True)
+        self.log = self.dir / "llm.jsonl"
+        env = mock.patch.dict(
+            os.environ,
+            {"CLANK_LLM_LOG": str(self.log), "CLANK_BRAIN_LOG": str(self.dir / "brain.jsonl")},
+        )
+        env.start()
+        self.addCleanup(env.stop)
+        urlopen = mock.patch.object(
+            brain.urllib.request, "urlopen", side_effect=lambda *args, **kwargs: _Response(self.body)
+        )
+        urlopen.start()
+        self.addCleanup(urlopen.stop)
+
+    def chat(self, text: str, frame: Frame | None = None) -> brain.ModelReply:
+        content: list[dict] | str = text
+        if frame is not None:
+            content = [brain._image_part(frame), {"type": "text", "text": text}]
+        return brain._chat(brain.BrainConfig(), [{"role": "user", "content": content}])
+
+    def test_a_chat_writes_the_prompt_and_not_the_image(self) -> None:
+        frame = fake_frame()
+        reply = self.chat('This is what was heard: "take my card".', frame=frame)
+        self.assertEqual(reply.text, self.reply_text)
+
+        row = json.loads(self.log.read_text(encoding="utf-8").splitlines()[0])
+        self.assertEqual(
+            set(row),
+            {
+                "t",
+                "prompt_text",
+                "image_sha256",
+                "raw_reply",
+                "prompt_ms",
+                "decode_ms",
+                "prompt_n",
+                "predicted_n",
+                "error",
+            },
+        )
+        self.assertIn("take my card", row["prompt_text"])
+        self.assertNotIn("base64", row["prompt_text"])
+        self.assertNotIn("data:image", row["prompt_text"])
+        self.assertEqual(row["image_sha256"], hashlib.sha256(frame.jpeg).hexdigest())
+        self.assertEqual(len(row["image_sha256"]), 64)
+        self.assertEqual(row["raw_reply"], self.reply_text)
+        self.assertEqual(row["error"], "")
+        self.assertEqual((row["prompt_n"], row["predicted_n"]), (517, 12))
+        self.assertEqual((row["prompt_ms"], row["decode_ms"]), (12.5, 34.0))
+        self.assertGreater(row["t"], 1_600_000_000)
+
+        # No still on the call means no digest, and the prompt is still the text.
+        self.chat("just words")
+        row = json.loads(self.log.read_text(encoding="utf-8").splitlines()[1])
+        self.assertEqual(row["prompt_text"], "just words")
+        self.assertEqual(row["image_sha256"], "")
+
+    def test_a_broken_log_path_does_not_fail_the_call(self) -> None:
+        # The parent is a file, so open() raises NotADirectoryError - an OSError that
+        # works under root too, unlike a chmod 0 directory.
+        blocked = self.dir / "blocked"
+        blocked.write_text("not a directory", encoding="utf-8")
+        with mock.patch.dict(os.environ, {"CLANK_LLM_LOG": str(blocked / "llm.jsonl")}):
+            reply = self.chat('This is what was heard: "take my card".')
+        self.assertEqual(reply.text, self.reply_text)
+        self.assertEqual(reply.error, "")
+        self.assertFalse((blocked / "llm.jsonl").exists())
+
+    def test_the_log_path_follows_the_diary_and_can_be_named_or_disabled(self) -> None:
+        diary = self.dir / "runs" / "r1" / "brain.jsonl"
+        with mock.patch.dict(os.environ, {"CLANK_BRAIN_LOG": str(diary)}):
+            os.environ.pop("CLANK_LLM_LOG", None)
+            self.assertEqual(brain.llm_log_path(), diary.with_name("llm.jsonl"))
+
+        with mock.patch.dict(os.environ, {"CLANK_LLM_LOG": str(self.log)}):
+            self.assertEqual(brain.llm_log_path(), self.log)
+
+        with mock.patch.dict(os.environ, {"CLANK_LLM_LOG": ""}):
+            self.assertIsNone(brain.llm_log_path())
+
+        with mock.patch.dict(os.environ, {}):
+            os.environ.pop("CLANK_LLM_LOG", None)
+            os.environ.pop("CLANK_BRAIN_LOG", None)
+            self.assertIsNone(brain.llm_log_path())
+
+    def test_an_error_reply_is_traced_too(self) -> None:
+        # The trace has to cover the failures, or a run that spent its turns on a dead server
+        # leaves no evidence of what it asked.
+        import urllib.error
+        boom = urllib.error.HTTPError("http://x", 500, "boom", email.message.Message(), None)
+        with mock.patch.object(brain.urllib.request, "urlopen", side_effect=boom):
+            reply = self.chat('This is what was heard: "take my card".')
+        self.assertTrue(reply.error.startswith("http "), reply.error)
+        row = json.loads(self.log.read_text(encoding="utf-8").splitlines()[0])
+        self.assertEqual(row["raw_reply"], "")
+        self.assertTrue(row["error"].startswith("http "))
+        self.assertIn("take my card", row["prompt_text"])
+
+    def test_a_conversation_logs_its_last_prompt_and_that_still(self) -> None:
+        # The shape SessionMemory will send: history first, the still and the prompt last.
+        frame = fake_frame()
+        messages = [
+            {"role": "user", "content": 'This is what was heard: "here is my card"'},
+            {"role": "assistant", "content": '{"goal": "take the card"}'},
+            {"role": "user", "content": [
+                brain._image_part(frame), {"type": "text", "text": "the newest prompt"}]},
+        ]
+        brain._chat(brain.BrainConfig(), messages)
+        row = json.loads(self.log.read_text(encoding="utf-8").splitlines()[0])
+        self.assertEqual(row["prompt_text"], "the newest prompt")
+        self.assertEqual(row["image_sha256"], hashlib.sha256(frame.jpeg).hexdigest())
