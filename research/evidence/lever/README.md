@@ -39,23 +39,30 @@ forward**: it chose a *turn*. Two generations, glove residual 47.1 then 28.0 mm,
 numbers says so: a 56 mm clasp is inside `CLASP_START_M` but on a 4 cm knob it is not proof of
 contact, and the hand sits low and to the side of the frame.
 
-## The one-shot, which is the oracle
+## The one-shot: recorded, but not placed
 
-`parecord --device=clank-game.monitor`, 54 s across the attempt. 50 ms blocks, floor (p20) 596,
-median 844, peak 5331:
+`parecord --device=clank-game.monitor` across the attempt. 50 ms blocks, floor (p20) 596, median
+844, peak 5331:
 
 ```text
 event 31.10 s - 31.45 s   (0.35 s)   peak 5331
 ```
 
-One event, 0.35 s long, no speech anywhere else in the capture. That is the lever's sound effect
-and it is the only thing in this attempt that a command cannot satisfy. `pull-one-shot.wav` is
-the 4.5 s around it.
+One event, 0.35 s long, no speech anywhere else. **It is not evidence of the pull, and the first
+draft of this file said it was.** The clip finished at 18:28:55 (`mb_play` seq 2, the successful
+run's second generation); the capture holds 54.0 s of audio written between 18:29:06 and 18:30:00
+- 54 s of audio across ~105 s of wall clock, so the recorder stalled and its timeline cannot be
+aligned to the body's. The transient sits after the pull, not at it, and the game's
+`output_log.txt` has no lever line to arbitrate.
 
-**This is the lever's success signal, and it is better than the diary's.** `CLASP_START_M` fires
-at 80 mm on a 4 cm knob; the sound fires only when the game agrees the handle moved. The loop
-should listen for it the way `confirm()` listens for JobBot - a short window, ungated, around the
-pull - rather than asking the model whether it thinks the pull worked.
+So the oracle for this pull is the **operator's eyes**, and the lesson for the next attempt is
+procedural: timestamp the recorder's first byte, log the pull's own wall-clock time, and only then
+call a transient the lever's sound. `pull-one-shot.wav` is kept as the candidate, not as proof.
+
+**If it is the lever's sound, it is the success signal worth wiring**: `CLASP_START_M` fires at
+80 mm on a 4 cm knob, while a sound effect fires only when the game agrees the handle moved. That
+would be a `confirm()`-style short ungated window around the pull rather than asking the model
+whether it thinks the pull worked. Unproven until the timing above is done properly.
 
 ## What the operator says is wrong with the reach
 
