@@ -670,13 +670,43 @@ class ShippedStaticAssetsTests(unittest.TestCase):
         self.assertIn('data-page="recordings"', page)
         self.assertIn('aria-current="page"', page)
 
-    def test_shut_down_is_behind_the_overflow(self) -> None:
-        """The rare action does not sit shoulder to shoulder with the one you repeat."""
+    def test_the_topbar_keeps_the_controls_it_had(self) -> None:
+        """No Controls panel and no overflow menu: mute, shut down and the theme
+        stay in the bar, and the body's controls stay with the body."""
         _, body = self.request("/")
         page = body.decode()
-        menu = page.split('id="shutdown-menu"', 1)[1].split("</details>", 1)[0]
-        self.assertIn('id="stop"', menu)
-        self.assertIn('id="theme-toggle"', menu)
+        top = page.split('<div class="top-actions">', 1)[1].split("</header>", 1)[0]
+        for control in ("stop", "theme-toggle", "mute-audio"):
+            self.assertIn(f'id="{control}"', top, control)
+        self.assertNotIn('id="controls-panel"', page)
+        self.assertNotIn("shutdown-menu", page)
+
+    def test_the_robot_panel_holds_the_body_controls(self) -> None:
+        _, body = self.request("/")
+        page = body.decode()
+        robot = page.split('id="body-box"', 1)[1].split("</aside>", 1)[0]
+        for control in ("mode-toggle", "body-start", "body-stop", "menu-press", "body-state"):
+            self.assertIn(f'id="{control}"', robot, control)
+        self.assertIn("data-verb=", robot)
+
+    def test_the_body_buttons_are_off_only_when_they_cannot_act(self) -> None:
+        """They used to grey out exactly when the body was already in that state,
+        which is exactly when an operator would try them."""
+        _, js = self.request("/app.js")
+        code = js.decode()
+        self.assertIn('$("body-start").disabled =', code)
+        self.assertIn('$("body-stop").disabled =', code)
+        # The old rules greys each one out when the body is already in that state.
+        self.assertNotIn("!body.enabled || bodyRunning", code)
+        self.assertNotIn("!body || !bodyRunning", code)
+        self.assertIn('$("body-state").textContent', code)
+
+    def test_the_menu_press_says_it_is_game_input(self) -> None:
+        """`Menu` beside the theme toggle read as a dashboard menu. It is not."""
+        _, body = self.request("/")
+        page = body.decode()
+        self.assertIn('title="Presses the controller', page)
+        self.assertIn(">Menu press<", page)
 
     def test_shipped_assets_are_served(self) -> None:
         for path in ("/", "/app.js", "/style.css"):

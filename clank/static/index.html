@@ -59,24 +59,28 @@
              is nothing left for a second button to do. -->
         <button id="start-run" class="btn btn-go" disabled>Start run</button>
         <button id="stop-run" class="btn btn-halt" disabled>Stop run</button>
-        <!-- The rare, destructive-ish action lives behind the overflow, away
-             from the button pressed ten times a session. -->
-        <details id="shutdown-menu" class="menu">
-          <summary class="btn btn-icon" aria-label="More actions" title="More actions">▾</summary>
-          <div class="menu-body">
-            <button id="stop" class="btn btn-halt" disabled>Shut down</button>
-            <button id="theme-toggle" class="btn btn-icon" type="button" aria-label="Switch theme">
-              <!-- Sun shows in the dark theme (the way out), moon in the light one. -->
-              <svg class="icon icon-sun" viewBox="0 0 24 24" aria-hidden="true">
-                <circle cx="12" cy="12" r="4.4"/>
-                <path class="ray" d="M12 2.6v2.4M12 19v2.4M2.6 12h2.4M19 12h2.4M5.4 5.4l1.7 1.7M16.9 16.9l1.7 1.7M18.6 5.4l-1.7 1.7M7.1 16.9l-1.7 1.7"/>
-              </svg>
-              <svg class="icon icon-moon" viewBox="0 0 24 24" aria-hidden="true">
-                <path d="M20 14.6A8.6 8.6 0 0 1 9.4 4a8.6 8.6 0 1 0 10.6 10.6z"/>
-              </svg>
-            </button>
-          </div>
-        </details>
+        <button id="stop" class="btn btn-halt" disabled>Shut down</button>
+        <button id="mute-audio" class="btn btn-icon btn-audio" type="button" aria-label="Mute game audio" disabled>
+          <svg class="icon icon-on" viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M4 9.5h3.2L12 5.6v12.8L7.2 14.5H4z"/>
+            <path class="wave" d="M15.4 8.7a4.6 4.6 0 0 1 0 6.6"/>
+            <path class="wave" d="M18.1 6.2a8.2 8.2 0 0 1 0 11.6"/>
+          </svg>
+          <svg class="icon icon-off" viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M4 9.5h3.2L12 5.6v12.8L7.2 14.5H4z"/>
+            <path d="M16 9.5l5 5m0-5l-5 5"/>
+          </svg>
+        </button>
+        <button id="theme-toggle" class="btn btn-icon" type="button" aria-label="Switch theme">
+          <!-- Sun shows in the dark theme (the way out), moon in the light one. -->
+          <svg class="icon icon-sun" viewBox="0 0 24 24" aria-hidden="true">
+            <circle cx="12" cy="12" r="4.4"/>
+            <path class="ray" d="M12 2.6v2.4M12 19v2.4M2.6 12h2.4M19 12h2.4M5.4 5.4l1.7 1.7M16.9 16.9l1.7 1.7M18.6 5.4l-1.7 1.7M7.1 16.9l-1.7 1.7"/>
+          </svg>
+          <svg class="icon icon-moon" viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M20 14.6A8.6 8.6 0 0 1 9.4 4a8.6 8.6 0 1 0 10.6 10.6z"/>
+          </svg>
+        </button>
       </div>
     </header>
 
@@ -130,28 +134,17 @@
           <p id="error" class="error" role="alert"></p>
         </div>
 
-        <!-- The robot panel holds the views and nothing that steers them: every
-             control lives in one Controls panel in the rail. -->
+        <!-- The robot panel holds the views and everything that steers them. -->
         <aside id="body-box">
           <div class="body-head">
             <span class="body-title">Robot</span>
           </div>
           <div id="body-tiles"></div>
           <div id="body-wait">body view off</div>
-        </aside>
-      </section>
-
-      <aside class="col col-rail">
-        <section class="panel panel-brain">
-          <h2>Brain <span id="brain-run"></span>
-            <a id="watch-run" class="rec-watch" href="/recordings">watch this run</a></h2>
-          <div id="brain-messages" class="brain-messages"></div>
-        </section>
-
-        <section class="panel panel-controls" id="controls-panel">
-          <h2>Controls</h2>
-          <p id="body-state" class="body-state"></p>
+          <!-- The panel that shows the body is the panel that steers it: the look
+               pads, the manual/robot switch and the body's own start/stop. -->
           <div class="body-controls">
+            <p id="body-state" class="body-state"></p>
             <div class="verbs">
               <button type="button" data-verb="look_left" class="look look-left" aria-label="Look left">
                 <span class="look-arrow" aria-hidden="true"></span>
@@ -169,26 +162,21 @@
               <button id="body-start" type="button" disabled>Start</button>
               <button id="body-stop" type="button" disabled>Stop</button>
             </div>
+            <!-- JobBot asks the player to press the controller's menu button; nothing
+                 on the robot can reach it, so this asks the relay for one press. -->
+            <button id="menu-press" class="btn" type="button"
+                    title="Presses the controller's menu button in the game"
+                    aria-label="Press the controller menu button" disabled>Menu press</button>
             <div id="verb-status" class="verb-status"></div>
           </div>
-          <div class="control-actions">
-            <!-- JobBot asks the player to press the controller's menu button; nothing
-                 on the robot can reach it, so this asks the relay for one press. It is
-                 game input, not page chrome, and it lives with the other controls. -->
-            <button id="menu-press" class="btn" type="button"
-                    aria-label="Press the controller menu button" disabled>Menu press</button>
-            <button id="mute-audio" class="btn btn-icon btn-audio" type="button" aria-label="Mute game audio" disabled>
-              <svg class="icon icon-on" viewBox="0 0 24 24" aria-hidden="true">
-                <path d="M4 9.5h3.2L12 5.6v12.8L7.2 14.5H4z"/>
-                <path class="wave" d="M15.4 8.7a4.6 4.6 0 0 1 0 6.6"/>
-                <path class="wave" d="M18.1 6.2a8.2 8.2 0 0 1 0 11.6"/>
-              </svg>
-              <svg class="icon icon-off" viewBox="0 0 24 24" aria-hidden="true">
-                <path d="M4 9.5h3.2L12 5.6v12.8L7.2 14.5H4z"/>
-                <path d="M16 9.5l5 5m0-5l-5 5"/>
-              </svg>
-            </button>
-          </div>
+        </aside>
+      </section>
+
+      <aside class="col col-rail">
+        <section class="panel panel-brain">
+          <h2>Brain <span id="brain-run"></span>
+            <a id="watch-run" class="rec-watch" href="/recordings">watch this run</a></h2>
+          <div id="brain-messages" class="brain-messages"></div>
         </section>
 
         <section class="panel panel-logs">

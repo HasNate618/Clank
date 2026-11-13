@@ -785,8 +785,19 @@ function applyControls(state) {
   const bodyRunning = Boolean(body && body.running);
   // The menu button needs a running session: without one there is no relay to ask.
   $("menu-press").disabled = actionInFlight || !running;
-  $("body-start").disabled = actionInFlight || !body || !body.enabled || bodyRunning;
-  $("body-stop").disabled = actionInFlight || !body || !bodyRunning;
+  // Off only when the body cannot act at all. Greying a button because the body is
+  // already in that state made both look broken: that is the state you arrive in.
+  const bodyIdle = actionInFlight || !body || !body.enabled;
+  $("body-start").disabled = bodyIdle;
+  $("body-stop").disabled = bodyIdle;
+  // What is true, in words, so two buttons do not have to imply it.
+  $("body-state").textContent = !body
+    ? "no body view"
+    : body.enabled === false
+      ? `off${body.error ? `: ${body.error}` : ""}`
+      : `${bodyRunning ? "running" : "stopped"}${body.error ? ` - ${body.error}` : ""}`;
+  $("body-state").classList.toggle("is-running", bodyRunning);
+  $("body-state").classList.toggle("is-bad", Boolean(body && body.error));
 }
 
 function clamp(value, limit) {
