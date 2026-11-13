@@ -109,3 +109,52 @@ here that cannot be satisfied by the command.
 2. `WRIST_BOX` x floor 0.079 is where the *resting* glove sits, so any backward travel from rest is
    clamped to zero. A pull needs the box's retraction limit measured separately from its forward
    reach.
+
+## The remaining contradiction, stated exactly
+
+Two readings of "where is the hand" disagree, and the reach's aim depends on one of them:
+
+| reading | source | value on a standing body |
+| --- | --- | --- |
+| achieved glove | `ardy_gen.glove_position(pose36[-1])`, world | x **−0.266**, y −0.166, z 0.596 |
+| relay hand | `body_state.json` `right_hand.p`, pelvis | x **+0.177**, y −0.275, z −0.194 |
+
+Put through the root transform both land at the same **height** (0.596 vs 0.593) and within 4 cm
+in **y**, and differ by **0.5 m in x**. When the cruise moved the arm, *both* readings moved
+forward by 0.2-0.3 m - so `glove_position` tracks the body correctly and this is a **constant
+offset**, not a bad forward kinematics. A constant 0.5 m in x with y and z agreeing is not the
+0.18 m `VR_LEVER`, so the two are not the same point under the same transform.
+
+Ordering was checked and is **not** the explanation, contrary to the first guess in this file:
+
+- `pose36` hinges are `g1_pack.QPOS_QADR` order = left leg, right leg, waist, left arm, right arm,
+  which is `g1_pack.JOINT_NAMES` order.
+- `ardy_gen._motion_pose` indexes the converter by pose36 slot, and
+  `converter._mujoco_indices_to_ardy_indices` is `[1..6, 8..13, 15..24, 26..32]` - a slot-identity
+  map that skips the root and the two hand groups. So ARDY's FK reads the ring's order correctly.
+- `jp`/`jv` in a deposited clip are **policy/CSV** order (`g1_pack.jp_from_pose36`), which is the
+  interleaved order `sonic_runner._jp` feeds the encoder. Also correct.
+
+So both sides are internally consistent, and the 0.5 m is a *frame* question: which point the relay
+calls the hand, and through which transform. That is the next thing to measure - not `MOVE_M`, and
+not the clip.
+
+## Harness for whoever picks this up
+
+```bash
+# achieved pose (world), and the same in the pelvis frame
+LD_LIBRARY_PATH=/run/opengl-driver/lib spike/ardy/.venv/bin/python - <<'PY'
+import json, pathlib, sys
+sys.path.insert(0, 'spike/wbc'); sys.path.insert(0, 'spike/wbc_game')
+import ardy_gen, reach_vr
+p = pathlib.Path.home()/'.local/state/Clank/sessions/body'
+ring = json.loads((p/'pose36.json').read_text()); st = json.loads((p/'body_state.json').read_text())
+g = ardy_gen.glove_position(ring['poses'][-1], hand='right')
+print('glove world', [round(v,3) for v in (g[2], g[0], g[1])])
+print('glove pelvis', [round(v,3) for v in reach_vr.to_rel((g[2], g[0], g[1]), st)])
+print('relay hand  ', [round(float(v),3) for v in st['right_hand']['p']])
+PY
+```
+
+Poll that during a clip and during a cruise and the difference is visible in seconds. **Do not
+trust `reach_ardy`'s "achieved glove residual" until it agrees with the relay on a still body.**
