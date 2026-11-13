@@ -105,10 +105,6 @@ class TheActUsesTheGeneratedPath(unittest.TestCase):
         self.assertIn("--tol", flags["_cruise_argv"], "the cruise keeps its tight band")
         self.assertNotIn("--tol", flags["_generated_argv"])
 
-
-if __name__ == "__main__":
-    unittest.main()
-
     def test_confirm_records_a_window_instead_of_listening(self) -> None:
         # The gate's job is "wait for the next line"; confirm's question is "what did the game
         # just say", and the game talks over the grab. MEASURED 2026-11-13: a listen that opened
@@ -117,3 +113,41 @@ if __name__ == "__main__":
         self.assertIn("ears.record(", confirm)
         self.assertNotIn("ears.listen(", confirm)
         self.assertIn("max_s: float = 8.0", confirm)
+
+    def test_one_session_memory_lives_in_main(self) -> None:
+        main = self.source[self.source.index("def main("):]
+        self.assertIn("brain.SessionMemory()", main)
+        self.assertEqual(main.count("SessionMemory()"), 1, "one conversation per run")
+        # WorkingMemory stays per turn: its pixels are the turn's geometry, not the run's words.
+        self.assertNotIn("WorkingMemory()", main)
+        self.assertIn("WorkingMemory()", self.source[self.source.index("def one_turn("):])
+
+    def test_think_receives_the_session(self) -> None:
+        turn = self.source[self.source.index("def one_turn("):]
+        self.assertIn("session=session", turn)
+
+    def test_confirm_feeds_the_next_turn(self) -> None:
+        # JobBot's reply after the grab is the next instruction, already transcribed.
+        self.assertIn("pending_heard", self.source)
+        self.assertIn("pending=spoken_after", self.source)
+
+    def test_the_body_is_reset_once_not_once_per_turn(self) -> None:
+        main = self.source[self.source.index("def main("):]
+        self.assertIn("ready()", main, "the run stands the body up once")
+        turn = self.source[self.source.index("def one_turn("):self.source.index("def main(")]
+        self.assertIn("_body_needs_reset(last_code)", turn, "and only on recovery after that")
+        # Nothing after the grab may reset: a reset re-opens the hand that holds the card.
+        after = turn[turn.index("grab_pixel("):]
+        self.assertNotIn("ready(", after)
+
+    def test_refusals_are_results_not_acts(self) -> None:
+        self.assertIn('log("result", f"refused ', self.source)
+        self.assertNotIn('hold ({thought.decision.reason})', self.source)
+
+    def test_results_reach_the_session(self) -> None:
+        self.assertIn("session.note_result(", self.source)
+        self.assertIn("session.cap()", self.source)
+
+
+if __name__ == "__main__":
+    unittest.main()

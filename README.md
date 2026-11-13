@@ -142,7 +142,7 @@ The game is both the sensor and the actuator: the layer reads the frame it has a
 - **The clasp threshold is a guess.** 80 mm has fired twice, at 60 and 78 mm, and has never been swept either way.
 - **The model is not reliable about its own tools.** One run planned `reach(the display interface)` again and again, located nothing, and never acted on the card.
 - **Three of the five fields in the `self:` line are constants.** The loop passes the hands and the last outcome; `yaw`, `glow` and `ghost` sit at their defaults, because nothing computes them yet.
-- **There is no transcript yet.** Each plan sees the last outcome and the newest sentence, not the whole conversation.
+- **The transcript is the run.** Every planner call carries every utterance heard, every prompt, every raw reply and every result, in order; only the newest still is an image, because a pixel from last turn is a guess. It is capped at ~8k tokens of text, and a heard line is never trimmed.
 - **Controller orientation is unverified.** Positions are exact, but the wrist frame is not an OpenXR grip, so the in-game aim may be rotated by a fixed offset.
 
 ## Quick start

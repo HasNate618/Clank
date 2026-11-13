@@ -43,6 +43,7 @@ import pathlib
 import subprocess
 import sys
 import time
+from dataclasses import dataclass
 import urllib.error
 import urllib.request
 
@@ -118,6 +119,33 @@ MIN_OBJ_M = 0.10
 MAX_OBJ_M = 1.0
 
 
+@dataclass
+class Turn:
+    """What one pass through the loop produced, including what the next pass must not re-hear."""
+
+    spoken: str = ""
+    #: JobBot's reply after a grab. It is the next instruction, already transcribed, so the next
+    #: turn plans from it instead of listening for it again - and instead of missing it, which is
+    #: what happened to "Here's my card" when a capture dropout ate the pause.
+    pending: str = ""
+    #: The grab's exit code, or None if nothing was grabbed. It decides whether the next turn
+    #: pays 5.8 s for a body reset: a reset after a successful grab opens the hands.
+    code: int | None = None
+
+
+def _body_needs_reset(code: int | None) -> bool:
+    """Reset is recovery, not a schedule.
+
+    MEASURED 2026-11-13: `ready()` costs 5.8 s per turn, moves the root yaw (~+13 deg, varying
+    run to run) and clears the freeze latch, so a reset before every turn changes the goal it is
+    about to aim at. It is worth paying after a failed motor or a dead socket, and not after a
+    grab that worked - a reset there re-opens the hand that is holding the card.
+    """
+    if code is not None and code != 0:
+        return True
+    return not reach_vr.SOCK.exists()
+
+
 def _post(path: str, payload: dict, timeout: float = 30.0) -> dict:
     body = json.dumps(payload).encode()
     req = urllib.request.Request(  # noqa: S310 - fixed http://127.0.0.1 dashboard url
@@ -133,9 +161,10 @@ def _post(path: str, payload: dict, timeout: float = 30.0) -> dict:
 def ready(mode: str = "body") -> bool:
     """Put the session in `mode` and reset the body. A reach from wherever the policy
     wandered measured 49-79 mm of residual; from a reset root it is 37 mm."""
+    started = time.monotonic()
     if mode:
         _post("/api/session/mode", {"mode": mode})
-    brainlog.log("think", "standing up before I look", mode=mode or "unchanged")
+    brainlog.log("act", "reset body", mode=mode or "unchanged")
     for command in ("stop", "start"):
         out = _post(f"/api/body/{command}", {})
         if out.get("error"):
@@ -148,6 +177,7 @@ def ready(mode: str = "body") -> bool:
     for _ in range(REST_TICKS):
         reach_vr.send(verb="rest")
         time.sleep(REST_PERIOD_S)
+    brainlog.log("act", "reset body", seconds=round(time.monotonic() - started, 1))
     return True
 
 
@@ -413,36 +443,58 @@ def hands_holding() -> tuple[str, str]:
 
 
 def one_turn(say: str = "", pattern: str = ears.DEFAULT_PATTERN,
-             max_s: float = 25.0, plan_only: bool = False) -> str:
-    """Hear, think, find, act. Returns the words heard ("" if the game was quiet).
+             max_s: float = 25.0, plan_only: bool = False, *,
+             session: brain.SessionMemory | None = None,
+             pending_heard: str = "",
+             last_code: int | None = None) -> Turn:
+    """Hear, think, find, act. Returns what happened, including what the next turn inherits.
 
     The model chooses the act: which skill, on which thing, with which hand. Nothing here reads
     the sentence for a verb - that was `task_intent`, and it made the brain a parser. What this
-    function owns is the body: reset, the still, the depth gate, and the one measured way to
-    find a pixel. See `docs/superpowers/specs/2026-11-10-brain-tools.md`.
+    function owns is the body: the still, the depth gate, and the one measured way to find a
+    pixel. See `docs/superpowers/specs/2026-11-10-brain-tools.md`.
+
+    `session` is the run's conversation, and it is the reason a lost capture no longer loses the
+    instruction: everything heard, asked, answered and done goes into it, and every planner call
+    reads all of it. `pending_heard` is the previous turn's confirmed reply - JobBot's answer to
+    the grab, already transcribed, which is the next instruction. The body is reset only when
+    `last_code` says something went wrong; see `_body_needs_reset`.
     """
     if say:
         spoken = say
         brainlog.log("heard", spoken, source="typed")
+    elif pending_heard:
+        # JobBot's answer to the last act, captured as part of the confirmation rather than
+        # listened for again. MEASURED 2026-11-13: "Here's my card" fell in a 0.6 s gap inside
+        # the opening, so the pause rule cannot be the only way an instruction arrives.
+        spoken = pending_heard
+        brainlog.log("heard", spoken, source="confirm")
     else:
         try:
             hearing = ears.listen(pattern=pattern, max_s=max_s)
         except ears.EarsError as exc:
-            return f"waiting: {exc}"
+            return Turn(spoken=f"waiting: {exc}")
         if not hearing.ok:
-            return ""
+            # The gate never opened: nothing was said, so there is no event to write. The
+            # numbers go to the caller's quiet count, not to the diary.
+            return Turn()
         heard = brain.transcribe(BrainConfig(), hearing.wav)
         if heard.error:
             brainlog.log("error", f"transcribe failed: {heard.error}")
-            return ""
+            return Turn()
         if heard.empty:
-            return ""
+            # Speech over the gate that transcribed to nothing IS an event: it is the shape of
+            # a silent miss, and the numbers are what turn it into a one-line diagnosis.
+            brainlog.log("heard", "", ms=heard.decode_ms, speech_s=hearing.speech_s,
+                         peak=hearing.peak, floor=round(hearing.floor, 1),
+                         gate=round(hearing.gate, 1), ended_by=hearing.ended_by)
+            return Turn()
         spoken = heard.text
         brainlog.log("heard", spoken, ms=heard.decode_ms, speech_s=hearing.speech_s,
                      peak=hearing.peak, cut=heard.ellipsis)
 
-    if not plan_only and not ready():
-        return spoken
+    if not plan_only and _body_needs_reset(last_code) and not ready():
+        return Turn(spoken=spoken)
 
     stamp = time.strftime("%H%M%S")
     memory = brain.WorkingMemory()
@@ -458,19 +510,22 @@ def one_turn(say: str = "", pattern: str = ears.DEFAULT_PATTERN,
         left, right = hands_holding()
         thought = brain.think(
             BrainConfig(max_tokens=160), Frame(0, 0.0, jpeg, "live"),
-            spoken, memory, left=left, right=right, last=last,
+            spoken, memory, left=left, right=right, last=last, session=session,
         )
         if thought.plan.error:
             brainlog.log("error", f"the model did not answer: {thought.plan.error}")
-            return spoken
+            return Turn(spoken=spoken)
         target = thought.plan.target or ""
         brainlog.log("think", f"plan: {thought.plan.skill}({target or '-'})",
                      side=thought.plan.side, frame=sight.name, note=thought.plan.note)
         if plan_only:
-            return spoken
+            return Turn(spoken=spoken)
         if thought.sense == "locate":
             found, seen = sense(target, memory, stamp)
             last = brain.last_line("locate", "none", target, found.outcome)
+            if session is not None:
+                session.note_result(f"locate({target}) {found.outcome}"
+                                    + (f" at {found.metres:.2f} m" if found.metres else ""))
             continue
         intent = thought.decision.intent
         # What the model ASKED for, not what the refusal handed back: a plan for an unlocated
@@ -486,6 +541,9 @@ def one_turn(say: str = "", pattern: str = ears.DEFAULT_PATTERN,
                 brainlog.log("think", f"the {target} is not found yet - finding it")
                 found, seen = sense(target, memory, stamp)
                 last = brain.last_line("locate", "none", target, found.outcome)
+                if session is not None:
+                    session.note_result(f"locate({target}) {found.outcome}"
+                                        + (f" at {found.metres:.2f} m" if found.metres else ""))
                 thought.decision = brain.assemble(
                     thought.plan, None, 0, 0, memory=memory, left=left, right=right)
                 intent = thought.decision.intent
@@ -496,44 +554,46 @@ def one_turn(say: str = "", pattern: str = ears.DEFAULT_PATTERN,
         break
 
     if intent is None or thought is None:
-        return spoken
+        return Turn(spoken=spoken)
     if not thought.decision.accepted and intent.skill not in ("hold", "rest"):
         # A refused plan is not an action. MEASURED 2026-11-10: a menu press with no hand was
         # refused by assemble and then executed here anyway, which is the loop doing something
         # the brain did not validly ask for - the one class of bug this design cannot tolerate.
-        brainlog.log("act", f"hold ({thought.decision.reason})")
-        return spoken
+        brainlog.log("result", f"refused {intent.skill}: {thought.decision.reason}", ok=False)
+        if session is not None:
+            session.note_result(f"refused {intent.skill}: {thought.decision.reason}")
+        return Turn(spoken=spoken)
     skill = intent.skill
     # `thought` cannot be None here, and saying so once keeps every later `thought.plan` honest
     # instead of a chain of "is not a known attribute of None" warnings that hide a real one.
     assert thought is not None
     if skill in ("hold", "rest"):
         brainlog.log("act", "hold")
-        return spoken
+        return Turn(spoken=spoken)
     if skill == "look":
         yaw_deg = math.degrees(intent.yaw_rad or 0.0)
         look(yaw_deg, "right")
         brainlog.log("act", f"look({yaw_deg:+.0f} deg)")
-        return spoken
+        return Turn(spoken=spoken)
     if skill == "menu":
         # JobBot asks a player to press the controller's menu button, and no joint of the
         # simulated body can press it: the press goes out on the wire as a short system_click
         # from the relay, which is the same path the dashboard button uses.
         request = pose_relay.request_click(intent.side)
         brainlog.log("act", f"menu({intent.side})", seq=request.get("seq"))
-        return spoken
+        return Turn(spoken=spoken)
     if skill == "release":
         reach_vr.send(verb=f"open_{intent.side}")
         brainlog.log("act", f"release({intent.side})",
                      closed=reach_vr.state().get("closure"))
-        return spoken
+        return Turn(spoken=spoken)
     if skill not in ("reach", "grab"):
         brainlog.log("think", f"{skill} is not wired yet")
-        return spoken
+        return Turn(spoken=spoken)
     if seen is None:
         brainlog.log("result", f"cannot {skill} the {thought.plan.target or 'thing'} - "
                                "nothing was found", ok=False)
-        return spoken
+        return Turn(spoken=spoken)
 
     pixel, png, camera, side = seen
     started = time.monotonic()
@@ -543,13 +603,18 @@ def one_turn(say: str = "", pattern: str = ears.DEFAULT_PATTERN,
                            f"{'reached' if code == 0 else 'failed'}",
                  ok=code == 0, code=code, seconds=seconds, pixel=pixel, hand=side,
                  marked=f"marked-{stamp}.png")
+    if session is not None:
+        session.note_result(f"{skill}({thought.plan.target or '-'}) "
+                            f"{'reached' if code == 0 else 'failed'} code={code}")
     if skill != "grab":
-        return spoken
+        return Turn(spoken=spoken, code=code)
     # The game says whether it worked, and it is asked every time - including on a typed line,
     # because JobBot reacts to the *game* and not to how the instruction arrived. MEASURED
     # 2026-11-10: with the confirmation skipped under --say, the diary wrote "grab failed
     # (code=2)" for a grab the game had accepted and the operator watched succeed.
     spoken_after = confirm(pattern)
+    if session is not None and spoken_after:
+        session.note_result(f"JobBot said: {spoken_after[:120]}")
     if spoken_after:
         moved_on = "cartridge" in spoken_after.lower()
         brainlog.log(
@@ -564,7 +629,8 @@ def one_turn(say: str = "", pattern: str = ears.DEFAULT_PATTERN,
     if code == 2:
         brainlog.log("think", f"the {thought.plan.target or 'thing'} is out of reach - "
                               "the body cannot turn")
-    return spoken
+    # What JobBot says after the act is the next instruction, already in hand.
+    return Turn(spoken=spoken, code=code, pending=spoken_after)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -582,6 +648,13 @@ def main(argv: list[str] | None = None) -> int:
     if not args.plan_only:
         warm_generator()
 
+    # One session for the whole run: everything heard, asked, answered and done. One reset
+    # here, before the first turn, and afterwards only when something went wrong.
+    session = brain.SessionMemory()
+    pending = ""
+    last_code: int | None = None
+    if not args.plan_only and not ready():
+        brainlog.log("error", "the body did not come back up; a turn may still find it")
     started = time.monotonic()
     deadline = started + args.duration
     turns = 0
@@ -589,9 +662,15 @@ def main(argv: list[str] | None = None) -> int:
     waiting = False
     while True:
         budget = max(1.0, deadline - time.monotonic())
-        spoken = one_turn(args.say, args.pattern, min(args.max_s, budget),
-                          plan_only=args.plan_only)
+        turn = one_turn(args.say, args.pattern, min(args.max_s, budget),
+                        plan_only=args.plan_only, session=session,
+                        pending_heard=pending, last_code=last_code)
+        spoken = turn.spoken
+        pending = turn.pending
+        if turn.code is not None:
+            last_code = turn.code
         args.say = ""  # a typed line happens once
+        session.cap()
         if spoken.startswith("waiting"):
             if not waiting:
                 brainlog.log("heard", spoken)

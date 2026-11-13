@@ -911,6 +911,7 @@ def next_step(
     default_side: str = "right",
     *,
     session: SessionMemory | None = None,
+    heard: str = "",
 ) -> NextStep:
     """Ask what to do next, given the situation in words and one still.
 
@@ -942,6 +943,10 @@ def next_step(
         # times is the class of text that overrode the newest utterance once already. The exact
         # prompt of every call is in `llm.jsonl`, so nothing is lost from the record.
         session.remember_turn(situation, reply.text)
+    elif session is not None and heard:
+        # A failed call still happened to a sentence: keep the sentence, so the next call reads
+        # it instead of the run losing an instruction to one bad reply.
+        session.note_heard(heard)
     if reply.error:
         return NextStep(raw=reply.text, error=reply.error)
 
@@ -1710,7 +1715,8 @@ def think(
     # was told, are exactly the context a choice needs, and NEXT_STEP_PROMPT has a slot for it.
     # Without this the model reasons about the scene with no memory of the last outcome.
     situation = f"{said}\n{live}"
-    step = next_step(config, frame, situation, default_side=default_side, session=session)
+    step = next_step(config, frame, situation, default_side=default_side,
+                     session=session, heard=heard)
     if step.error:
         plan_result = Plan(raw=step.raw, error=step.error, prompt_ms=step.prompt_ms,
                            decode_ms=step.decode_ms)

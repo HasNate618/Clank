@@ -1605,3 +1605,12 @@ class SessionMemorySend(ChatPatchMixin, unittest.TestCase):
         history = "".join(m["content"] for m in sent if isinstance(m.get("content"), str))
         self.assertLessEqual(len(history) // 4, brain.MEMORY_TOKEN_BUDGET + 200)
         self.assertIn("here is my card", history)
+
+    def test_a_failed_call_does_not_lose_the_sentence(self) -> None:
+        # The reply is gone, but the utterance is still what the run was told. Losing it as well
+        # is how a capture dropout became a lost instruction.
+        self.reply = "not json at all"
+        session = brain.SessionMemory()
+        brain.think(brain.BrainConfig(), fake_frame(), "take my card",
+                    brain.WorkingMemory(), session=session)
+        self.assertIn("take my card", json.dumps(session.messages))
