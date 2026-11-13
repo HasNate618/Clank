@@ -357,6 +357,16 @@ def finite(frames: list[tuple[float, ...]]) -> bool:
     return all(math.isfinite(value) for row in frames for value in row)
 
 
+def _gb(value: float | None) -> str:
+    """Peak VRAM for a report, or "n/a" when the generator ran without a GPU.
+
+    `peak_vram_gb` is `None` on a CPU generator, and `f"{None:.2f}"` raises - measured live: the
+    reach generated a clip, then died formatting the line that was going to announce it, before
+    the clip was deposited. A report must never be able to lose the work it reports on.
+    """
+    return "n/a" if value is None else f"{value:.2f} GB"
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(prog="reach_ardy")
     parser.add_argument("px", type=float, nargs="?", default=None, metavar="PX")
@@ -490,7 +500,7 @@ def main() -> int:
             f"gen {generated}: {len(frames)} frames in {metrics['seconds']:.3f} s, "
             f"glove residual {metrics['hand_residual_m'] * 1000:.1f} mm "
             f"(wrist {metrics['wrist_residual_m'] * 1000:.1f} mm), "
-            f"vram {metrics['peak_vram_gb']:.2f} GB{root_note}"
+            f"vram {_gb(metrics.get('peak_vram_gb'))}{root_note}"
         )
         seq = deposit(session_dir, frames)
         outcome, detail = wait_for_play(

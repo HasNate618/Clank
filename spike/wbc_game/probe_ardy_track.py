@@ -409,6 +409,16 @@ def analyse(
     }
 
 
+def _gb(value: float | None) -> str:
+    """Peak VRAM for a report, or "n/a" when the generator ran without a GPU.
+
+    `peak_vram_gb` is `None` on a CPU generator, and `f"{None:.2f}"` raises - measured live: the
+    reach generated a clip, then died formatting the line that was going to announce it, before
+    the clip was deposited. A report must never be able to lose the work it reports on.
+    """
+    return "n/a" if value is None else f"{value:.2f} GB"
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(prog="probe_ardy_track")
     parser.add_argument("--out", type=Path, default=OUT_DIR)
@@ -526,7 +536,7 @@ def main() -> int:
         print(
             f"generated {len(frames)} frames in {metrics['seconds']:.3f} s, "
             f"glove residual {metrics['hand_residual_m'] * 1000:.1f} mm, "
-            f"vram {metrics['peak_vram_gb']:.2f} GB"
+            f"vram {_gb(metrics.get('peak_vram_gb'))}"
         )
         seq = reach_ardy.deposit(session_dir, frames)
         print(f"deposited clip seq {seq}; watching the tracked body")

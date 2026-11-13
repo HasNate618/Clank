@@ -21,7 +21,7 @@ import json
 import socket
 import subprocess
 import time
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -86,6 +86,7 @@ def ensure(
     spawn: Sequence[str],
     wait_s: float = 30.0,
     log: Path | str | None = None,
+    env: Mapping[str, str] | None = None,
 ) -> bool:
     """Make a daemon be answering this socket, spawning `spawn` if nothing is.
 
@@ -106,6 +107,7 @@ def ensure(
     try:
         child = subprocess.Popen(  # noqa: S603 - the argv comes from the caller, not a shell
             list(spawn),
+            env=None if env is None else dict(env),
             stdin=subprocess.DEVNULL,
             stdout=handle,
             stderr=subprocess.STDOUT,
