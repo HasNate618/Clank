@@ -18,6 +18,8 @@ These describe code that runs today. A claim here that disagrees with the code i
 | `superpowers/specs/2026-11-12-runs-design.md` | Stack versus run: what costs a boot and what is repeatable. |
 | `superpowers/specs/2026-11-12-recordings-design.md` | The video pipeline and its evidence-not-dependency contract. |
 | `superpowers/specs/2026-11-13-console-and-recordings-ui-design.md` | The console page and the recordings page. |
+| `setup.md` | Install list, `config.toml` keys, ports, controls, safety. The README's five commands get you a run; this is the rest. |
+| `superpowers/specs/2026-11-13-readme-design.md` | Why the README is shaped the way it is, and the figure plan for the GIFs still to come. |
 | `media/title-card.svg` | The image at the top of the README. |
 
 ## Archived
