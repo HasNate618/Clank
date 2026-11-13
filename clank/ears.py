@@ -241,6 +241,29 @@ def move_game_streams(pattern: str = DEFAULT_PATTERN, sink: str = SINK_NAME) -> 
     return moved
 
 
+def unmute_game_streams(pattern: str = DEFAULT_PATTERN) -> list[int]:
+    """Clear a remembered mute on the game's streams. Returns the indices it unmuted.
+
+    MEASURED, twice: `module-stream-restore` remembers `Mute: yes` for `JobSimulator.exe`, and
+    it reapplies it to every NEW sink-input the game opens - so a restarted game is silent while
+    the recorder works perfectly, the route is correct, the loopback is running and the monitor
+    reads peak 0 for the whole session. Nothing in the pipeline can tell that from a quiet game.
+
+    The mute is per stream, so this has to run after the game has opened one, and it has to run
+    again after every restart. `route()` calls it for that reason.
+    """
+    cleared: list[int] = []
+    for stream in game_streams(pattern):
+        index = stream.get("index")
+        if not isinstance(index, int):
+            continue
+        if not stream.get("mute"):
+            continue
+        _pactl("set-sink-input-mute", str(index), "0")
+        cleared.append(index)
+    return cleared
+
+
 def _sink_id(name: str) -> str:
     for entry in sinks():
         if entry.get("name") == name:
@@ -265,8 +288,11 @@ def route(pattern: str = DEFAULT_PATTERN, sink: str = SINK_NAME) -> dict[str, An
     created = ensure_sink(sink)
     looped = ensure_loopback(sink)
     moved = move_game_streams(pattern, sink)
+    # A muted stream is silence that looks like a quiet game, so it is cleared here: measured,
+    # `module-stream-restore` re-mutes every new sink-input the game opens.
+    unmuted = unmute_game_streams(pattern)
     return {"sink": sink, "created": created, "loopback": looped,
-            "moved": moved, "device": capture_device(pattern, sink)}
+            "moved": moved, "unmuted": unmuted, "device": capture_device(pattern, sink)}
 
 
 def _playing() -> str:

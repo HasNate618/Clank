@@ -112,6 +112,11 @@ FOV = Fov.from_degrees(70.0, 70.0, 57.11, 57.11)
 #: How many times one turn may look for a thing before it gives up on it. Two is enough for
 #: "find it, then find it from another angle"; the third is a loop an operator has to watch, and
 #: MEASURED 2026-11-10 the model does not learn from a refusal, so more ticks do not help it.
+#: The game opens its audio stream a second or two after its window appears, and `route()`
+#: refuses to run against nothing, so the loop waits for it: 10 s in 1 s steps.
+ROUTE_TRIES = 10
+ROUTE_WAIT_S = 1.0
+
 SENSE_BUDGET = 2
 #: A grounded point outside this distance from the *resting hand* is not the object being
 #: reached for. The bound is reach_vr's own: it refuses past MAX_PLAUSIBLE_M from the hand,
@@ -352,7 +357,12 @@ def warm_generator() -> None:
         str(ARDY_PY), str(HERE.parent / "wbc" / "ardy_daemon.py"), "--socket", str(sock),
     ]
     try:
-        up = ardy_client.ensure(sock, spawn, wait_s=30.0)
+        # With `_ardy_env()`, and that is the whole point of this being one place: measured, a
+        # daemon spawned without `LD_LIBRARY_PATH=/run/opengl-driver/lib` reports `cuda False`,
+        # generates on the CPU, and hands every later reach a `peak_vram_gb` of `None`. The
+        # reaches each carried the path; the resident generator - the one that does the work -
+        # did not.
+        up = ardy_client.ensure(sock, spawn, wait_s=30.0, env=_ardy_env())
     except OSError as exc:
         brainlog.log("act", f"generator not resident: {exc}")
         return
@@ -758,6 +768,22 @@ def main(argv: list[str] | None = None) -> int:
     last_code: int | None = None
     if not args.plan_only and not ready():
         brainlog.log("error", "the body did not come back up; a turn may still find it")
+    # Put the game behind the capture sink before listening to it, every run. Measured: nothing
+    # else calls `ears.route()`, so a restarted game played to the operator's speakers with a
+    # remembered `Mute: yes` on its new stream, and the loop sat deaf for six minutes while the
+    # game talked. `route()` also clears that mute, which `module-stream-restore` reapplies to
+    # every new stream. Idempotent. A game with no stream *yet* is a queue, not a failure - the
+    # stream appears a second or two after the window - so this waits for it rather than dying
+    # deaf, and a game that never routes is reported and the loop still runs.
+    for attempt in range(ROUTE_TRIES):
+        try:
+            brainlog.log("act", f"route audio {ears.route(pattern=args.pattern)}")
+            break
+        except Exception as exc:  # noqa: BLE001 - no stream yet is a state, not a crash
+            if attempt == ROUTE_TRIES - 1:
+                brainlog.log("error", f"could not route the game's audio: {exc}")
+            else:
+                time.sleep(ROUTE_WAIT_S)
     started = time.monotonic()
     deadline = started + args.duration
     turns = 0
