@@ -695,11 +695,23 @@ class ShippedStaticAssetsTests(unittest.TestCase):
         self.assertIn('id="run-strip"', page)
         # The video comes before the diary in document order: the picture is the page.
         self.assertLess(page.index('id="recording-video"'), page.index('id="run-diary"'))
-        self.assertNotIn('class="panel rec-list-panel"', page)
         _, js = self.request("/recordings.js")
         code = js.decode()
         # Old 1680x540 recordings must keep playing: the aspect comes from the file.
         self.assertIn("--rec-aspect", code)
+
+    def test_the_runs_are_a_vertical_list_and_the_diary_fills_its_panel(self) -> None:
+        """The strip cost more than it saved, and a `max-height` on the diary made
+        the panel grow a row at a time as playback revealed it."""
+        _, css = self.request("/style.css")
+        text = css.decode()
+        deck = text.split(".rec-deck {", 1)[1].split("}", 1)[0]
+        self.assertIn("grid-template-columns", deck)     # a list column beside the page
+        self.assertIn("overflow: hidden", deck)          # the page does not grow
+        listing = text.split(".rec-list {", 1)[1].split("}", 1)[0]
+        self.assertNotIn("display: flex", listing)       # a column, not a chip row
+        diary = text.split(".rec-diary-panel .brain-messages {", 1)[1].split("}", 1)[0]
+        self.assertNotIn("max-height", diary)            # it fills, it does not resize
 
     def test_the_topbar_can_say_what_happened_to_the_video(self) -> None:
         _, body = self.request("/")

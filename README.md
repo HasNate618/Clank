@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="docs/media/title-card.svg" width="608" alt="Clank - probationary unit">
+</p>
+
 # Clank
 
 **A Unitree G1 humanoid simulated in MuJoCo, a released NVIDIA whole-body controller, and a commercial VR game that renders from head and hand poses we send through Monado. No headset, no controllers, no game files touched.**

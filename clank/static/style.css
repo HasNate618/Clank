@@ -85,15 +85,16 @@
 
 [data-theme="light"] {
   color-scheme: light;
-  /* Sand paper, deep teal, burnt orange: the same ten swatches read as a 70s
-     catalogue spread instead of a night room. */
-  --bg: #efe3bd;
-  --panel: #f8f2de;
-  --card: #e9d8a6;
-  --edge: #cdb884;
+  /* White paper, deep teal, burnt orange: the same ten swatches read as a
+     printed spec sheet instead of a night room. The paper is the title card's
+     own ground (#fffdf7) so the banner and the console are one artefact. */
+  --bg: #fffdf7;
+  --panel: #ffffff;
+  --card: #f5f1e6;
+  --edge: #e9e3d3;
   --text: #001219;
   --muted: #4a6a6a;
-  --accent: #0a9396;
+  --accent: #005f73;
   --accent-ink: #f2fbf8;
   --warm: #ca6702;
   --warm-ink: #fff3e0;
@@ -233,20 +234,21 @@ h2 {
   95% { transform: scaleY(0.1); }
 }
 .brand-lockup { display: grid; justify-items: start; gap: 0; }
-/* The wordmark is the one place the display face shouts. A slight tilt and a
-   solid shadow make it read as a logo on a toy box rather than a label. */
+/* The wordmark is set in the mono face, as it is on the title card: a
+   designation stamped on the unit rather than a slogan. Straight, not tilted
+   - the tilt belonged to the display face - and the solid shadow stays, which
+   is what keeps it reading as a logo instead of a label. */
 .brand-mark {
-  font-family: var(--display);
-  font-size: 25px;
+  font-family: var(--mono);
+  font-size: 21px;
   font-weight: 600;
-  letter-spacing: 0.02em;
+  letter-spacing: 0.06em;
   line-height: 1;
   color: var(--accent);
   text-shadow: 0 2px 0 color-mix(in srgb, var(--accent) 35%, black);
-  transform: rotate(-1.5deg);
   transition: transform 0.25s cubic-bezier(0.34, 1.56, 0.64, 1);
 }
-.brand:hover .brand-mark { transform: rotate(1.5deg) scale(1.03); }
+.brand:hover .brand-mark { transform: translateY(-1px) scale(1.02); }
 /* A rivetted nameplate under the word. Sized to sit inside the wordmark's
    width: at 9px with wide tracking it ran past the end of CLANK and read as a
    badge stuck on afterwards. */
@@ -1123,19 +1125,16 @@ body.manual-active .manual-panel { border-color: var(--warm); }
 }
 
 /* ---- Recordings page ------------------------------------------------ */
-/* The picture is the page: one column, the run strip above it, the diary
-   beneath. Widened rather than stretched, because a recording wider than this
-   is a sight line nobody has. */
+/* The runs are a column you scroll; the picture and its diary share what is
+   left. The deck fills the window rather than growing past it, so the diary has
+   a fixed slot to fill instead of a `max-height` it can push against. */
 .rec-deck {
   display: grid;
-  /* Rows size to their content and the deck scrolls: a 1680x540 picture at full
-     width is taller than the window, and clipping the transport under it was the
-     first thing this layout did. */
-  grid-auto-rows: max-content;
-  align-content: start;
+  grid-template-columns: minmax(220px, 300px) minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr);
   gap: 12px;
   min-height: 0;
-  overflow-y: auto;
+  overflow: hidden;
   width: 100%;
   max-width: 1680px;
   margin: 0 auto;
@@ -1143,29 +1142,28 @@ body.manual-active .manual-panel { border-color: var(--warm); }
 .rec-deck .panel { min-height: 0; }
 .rec-hint { font: 600 12px/1 var(--sans); color: var(--muted); }
 
-/* The runs, as chips on one scrolling line: choosing a run must not cost the
-   video its width, which is exactly what a sidebar did. */
-.rec-strip {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  min-width: 0;
-  overflow-x: auto;
-  padding-bottom: 2px;
+/* The list owns the whole left column and scrolls inside it: adding a run must
+   never push the picture or the diary around. */
+.rec-list-panel {
+  grid-column: 1;
+  grid-row: 1 / -1;
+  grid-template-rows: auto minmax(0, 1fr);
+  align-content: stretch;
 }
+.rec-stage { grid-column: 2; grid-row: 1; }
+.rec-diary-panel { grid-column: 2; grid-row: 2; grid-template-rows: auto minmax(0, 1fr); align-content: stretch; }
 
 .rec-list {
-  display: flex;
-  flex: 1 1 auto;
+  display: grid;
   gap: 8px;
-  min-width: 0;
+  align-content: start;
+  min-height: 0;
+  overflow-y: auto;
 }
 .rec-row {
   display: grid;
-  gap: 4px;
-  flex: 0 0 auto;
-  min-width: 200px;
-  max-width: 260px;
+  gap: 6px;
+  width: 100%;
   text-align: left;
   padding: 10px 12px;
   border-radius: var(--r-md);
@@ -1231,12 +1229,28 @@ body.manual-active .manual-panel { border-color: var(--warm); }
 .rec-note { margin: 0; min-height: 1.2em; font: 400 12px/1.4 var(--sans); color: var(--muted); }
 .rec-meta { font: 400 12px/1.4 var(--mono); color: var(--muted); }
 
-/* The diary under the video. One column, not three: the rows are a transcript
-   (JobBot left, Clank right) and they arrive one at a time as playback reaches
-   them, so a multi-column flow would re-shuffle a row while you are reading it. */
+/* A narrow window stacks them: the list keeps a short box of its own so the
+   picture and the diary still get the page, and the deck scrolls here because
+   there is no room left to fill. */
+@media (max-width: 900px) {
+  .rec-deck {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto auto minmax(0, 1fr);
+    overflow-y: auto;
+  }
+  .rec-list-panel { grid-column: 1; grid-row: 1; max-height: 30vh; }
+  .rec-stage { grid-column: 1; grid-row: 2; }
+  .rec-diary-panel { grid-column: 1; grid-row: 3; }
+}
+
+/* The diary under the video fills the height the deck gives it. One column, not
+   three: the rows are a transcript (JobBot left, Clank right) and they arrive one
+   at a time as playback reaches them, so a multi-column flow would re-shuffle a
+   row while you are reading it. No `max-height`: a panel that grows by one row
+   per event resizes under the cursor. */
 .rec-diary-panel .brain-messages {
   overflow-y: auto;
-  max-height: 46vh;
+  min-height: 0;
 }
 .rec-diary-row { cursor: pointer; }
 .rec-diary-row:hover { outline: 1px solid var(--accent); }
