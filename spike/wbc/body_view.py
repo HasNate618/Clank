@@ -75,6 +75,12 @@ class BodyRenderer:
         self, model: mujoco.MjModel, width: int = 640, height: int = 480,  # pyright: ignore[reportAttributeAccessIssue]
                  follow: FollowCamera | None = None,
                  extra_views: tuple[str, ...] = ()) -> None:
+        # The model's XML declares a 480-tall offscreen buffer, and MuJoCo refuses a renderer
+        # bigger than that: "Image height 720 > framebuffer height 480". The recording wants a
+        # portrait 405x720 tile, so grow the buffer to whatever is asked for rather than pinning
+        # the view to the size the XML happened to declare.
+        model.vis.global_.offwidth = max(model.vis.global_.offwidth, width)
+        model.vis.global_.offheight = max(model.vis.global_.offheight, height)
         self.renderer = mujoco.Renderer(model, height=height, width=width)
         self.camera = mujoco.MjvCamera()  # pyright: ignore[reportAttributeAccessIssue]
         self.camera.type = mujoco.mjtCamera.mjCAMERA_FREE  # pyright: ignore[reportAttributeAccessIssue]
