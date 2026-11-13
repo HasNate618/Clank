@@ -731,11 +731,52 @@ function updatePreviewWait(state) {
   }
 }
 
+// What became of the run's video, as one phrase and a place to click.
+// `run.recording` is the manifest the recorder wrote; a run without one -- a
+// recording switched off, or a run that never reached `running` -- says nothing.
+function recordingStatus(recording, runId) {
+  if (!recording) return null;
+  const link = runId ? `/recordings?run=${encodeURIComponent(runId)}` : "/recordings";
+  switch (recording.state) {
+    case "recording":
+    case "composing":
+      return { text: "saving video…", href: null, tone: "busy" };
+    case "ready":
+      return { text: "video saved · watch", href: link, tone: "ok" };
+    case "pruned":
+      return { text: "video pruned to make room", href: link, tone: "bad" };
+    case "failed": {
+      const notes = recording.notes || {};
+      const reason = recording.error || Object.values(notes).find(Boolean) || "no reason recorded";
+      return { text: `no video: ${reason}`, href: null, tone: "bad" };
+    }
+    default:
+      return null;
+  }
+}
+
+function renderRecording(run) {
+  const element = $("run-recording");
+  const status = recordingStatus(run && run.recording, run && run.id);
+  element.hidden = !status;
+  if (!status) {
+    element.textContent = "";
+    element.removeAttribute("href");
+    return;
+  }
+  element.textContent = status.text;
+  element.title = status.text;
+  element.className = `rec-status ${status.tone}`;
+  if (status.href) element.href = status.href;
+  else element.removeAttribute("href");
+}
+
 function applyControls(state) {
   const running = state.state === "running";
   $("stop").disabled = actionInFlight || state.state === "stopped";
   const run = state.run || null;
   const runActive = Boolean(run && !["idle", "failed"].includes(run.state));
+  renderRecording(run);
   // `/api/state` already carries `model` from `brain.server_status()`. Grey the
   // button only when nothing is listening: a `loading` server is a wait the run's
   // own `checking` phase is built for, so disabling it would hide that path.

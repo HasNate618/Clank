@@ -528,6 +528,37 @@ h2 {
   justify-content: center;
   gap: 8px;
 }
+/* What happened to the video, in the status cluster: busy, saved, or why not.
+   It ellipsises instead of wrapping, because a long failure reason must not push
+   the bar into two lines. */
+.rec-status {
+  max-width: 34ch;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.03em;
+  color: var(--muted);
+  text-decoration: none;
+}
+.rec-status[href] { text-decoration: underline dotted; text-underline-offset: 3px; }
+.rec-status.busy::before {
+  content: "";
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  margin-right: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+  animation: pulse 1.4s ease-in-out infinite;
+}
+.rec-status.ok { color: var(--accent); }
+.rec-status.bad { color: var(--warm); }
+@media (prefers-reduced-motion: reduce) {
+  .rec-status.busy::before { animation: none; }
+}
+
 /* What the body is doing, in words: two buttons should not have to imply it. */
 .body-state {
   flex: 1 1 100%;

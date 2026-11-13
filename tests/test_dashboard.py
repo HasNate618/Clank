@@ -689,6 +689,19 @@ class ShippedStaticAssetsTests(unittest.TestCase):
             self.assertIn(f'id="{control}"', robot, control)
         self.assertIn("data-verb=", robot)
 
+    def test_the_topbar_can_say_what_happened_to_the_video(self) -> None:
+        _, body = self.request("/")
+        page = body.decode()
+        self.assertIn('id="run-recording"', page)
+        # It sits in the status cluster, not among the buttons: it is news.
+        cluster = page.split('<div class="status-cluster">', 1)[1].split("</div>", 1)[0]
+        self.assertIn('id="run-recording"', cluster)
+        _, js = self.request("/app.js")
+        code = js.decode()
+        self.assertIn("recordingStatus", code)
+        for phrase in ("saving video", "video saved", "video pruned", "no video:"):
+            self.assertIn(phrase, code, phrase)
+
     def test_the_body_buttons_are_off_only_when_they_cannot_act(self) -> None:
         """They used to grey out exactly when the body was already in that state,
         which is exactly when an operator would try them."""
