@@ -43,7 +43,7 @@
 - Consumes: `clamp_offset(forward_m, lateral_m, up_m, max_m=MAX_OFFSET_M, max_lateral_m=MAX_LATERAL_OFFSET_M) -> tuple[float, float, float]` and `clamp_wrist(point) -> tuple[float, float, float]`, both already in `clank/workspace.py`.
 - Produces: `moved_point(point: tuple[float, ...], forward_m: float, up_m: float, lateral_m: float) -> tuple[float, float, float]` — the point `point` displaced by the clamped offset, then clamped into `WRIST_BOX`. `point` is `(x, y, z)` = (forward, left, up) in the pelvis frame.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 In `tests/test_workspace.py`, add a class:
 
@@ -68,21 +68,21 @@ class MovedPointTests(unittest.TestCase):
         self.assertEqual(x, workspace.WRIST_BOX.bounds()[0][0])
 ```
 
-- [ ] **Step 2: Run the tests to verify they fail**
+- [x] **Step 2: Run the tests to verify they fail**
 
 Run: `XDG_RUNTIME_DIR=/tmp/clank-xdg python3 -m unittest tests.test_workspace -v`
 Expected: FAIL — `AttributeError: module 'clank.workspace' has no attribute 'moved_point'`
 
-- [ ] **Step 3: Implement `moved_point` in `clank/workspace.py`**
+- [x] **Step 3: Implement `moved_point` in `clank/workspace.py`**
 
 Signature and behaviour are fixed by the tests above. The one choice the tests do not make: clamp the offset with `clamp_offset(forward_m, lateral_m, up_m)` — note its argument order is `(forward, lateral, up)` while this function's is `(forward, up, lateral)` — then add it to the point as `(x + fwd, y + lat, z + up)`, then pass through `clamp_wrist`. Docstring must record why both clamps exist: `clamp_offset` for the magnitude the arm is measured to survive, `clamp_wrist` for the box, and that a pulled hand near the box floor is the case that needs the second one.
 
-- [ ] **Step 4: Run the tests to verify they pass**
+- [x] **Step 4: Run the tests to verify they pass**
 
 Run: `XDG_RUNTIME_DIR=/tmp/clank-xdg python3 -m unittest tests.test_workspace -v`
 Expected: PASS (all four)
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add clank/workspace.py tests/test_workspace.py
@@ -101,7 +101,7 @@ git commit -F /tmp/msg.txt   # "feat(workspace): move a wrist point by a clamped
 - Consumes: nothing from earlier tasks.
 - Produces: `MOVE_M: float = 0.25`; `MOVE_WORDS: tuple[tuple[str, tuple[float, float, float]], ...]` keyed by phrase with values `(forward_m, up_m, lateral_m)`; `move_from_goal(goal: str) -> tuple[float, float, float] | None`, which returns the *unscaled unit direction times `MOVE_M`*, or `None` when the goal names no direction **or names a destination** (see Review Focus 3).
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 In `tests/test_brain.py`:
 
@@ -129,21 +129,21 @@ class MoveFromGoalTests(unittest.TestCase):
                          (0.0, -brain.MOVE_M, 0.0))
 ```
 
-- [ ] **Step 2: Run the tests to verify they fail**
+- [x] **Step 2: Run the tests to verify they fail**
 
 Run: `XDG_RUNTIME_DIR=/tmp/clank-xdg python3 -m unittest tests.test_brain.MoveFromGoalTests -v`
 Expected: FAIL — `AttributeError: module 'clank.brain' has no attribute 'move_from_goal'`
 
-- [ ] **Step 3: Implement `MOVE_M`, `MOVE_WORDS` and `move_from_goal` in `clank/brain.py`**
+- [x] **Step 3: Implement `MOVE_M`, `MOVE_WORDS` and `move_from_goal` in `clank/brain.py`**
 
 `MOVE_WORDS` maps phrase → direction, at minimum: `"back"`/`"backwards"`/`"toward me"`/`"towards me"`/`"pull"` → `(-1, 0, 0)`; `"forward"`/`"forwards"`/`"push"`/`"away"` → `(1, 0, 0)`; `"up"`/`"lift"` → `(0, 1, 0)`; `"down"`/`"lower"` → `(0, -1, 0)`; `"left"` → `(0, 0, 1)`; `"right"` → `(0, 0, -1)`. First match in table order wins, so the longer phrases come before the shorter ones that contain them. The destination check comes **first**: reuse the existing `_TASK_STOP` set — a goal whose words contain `on`, `in`, `into`, `onto`, `to` before any direction word is a `place` and returns `None`. Docstring must say why the destination check precedes the direction check, with the "insert the cartridge into the slot" measurement.
 
-- [ ] **Step 4: Run the tests to verify they pass**
+- [x] **Step 4: Run the tests to verify they pass**
 
 Run: `XDG_RUNTIME_DIR=/tmp/clank-xdg python3 -m unittest tests.test_brain.MoveFromGoalTests -v`
 Expected: PASS (all five)
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add clank/brain.py tests/test_brain.py
@@ -162,7 +162,7 @@ git commit -F /tmp/msg.txt   # "feat(brain): read a direction out of a goal, in 
 - Consumes: `MOVE_WORDS` / `move_from_goal` from Task 2 — the verb table only has to stop the greeting gate swallowing the line; the direction comes from Task 2.
 - Produces: `task_intent("pull the lever to job") == ("reach", "lever")`. `"pull"`, `"push"`, `"drag"`, `"slide"` map to skill `"reach"`.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```python
 class DirectionalTaskTests(unittest.TestCase):
@@ -177,21 +177,21 @@ class DirectionalTaskTests(unittest.TestCase):
         self.assertEqual(brain.task_intent("pull it back"), ("reach", ""))
 ```
 
-- [ ] **Step 2: Run the tests to verify they fail**
+- [x] **Step 2: Run the tests to verify they fail**
 
 Run: `XDG_RUNTIME_DIR=/tmp/clank-xdg python3 -m unittest tests.test_brain.DirectionalTaskTests -v`
 Expected: FAIL on the first two — `('', '') != ('reach', 'lever')`
 
-- [ ] **Step 3: Add the verbs to `_TASK_VERBS` in `clank/brain.py`**
+- [x] **Step 3: Add the verbs to `_TASK_VERBS` in `clank/brain.py`**
 
 Append after the `("press", "menu")` row, and **keep `press` before them** so its documented precedence is unchanged: `("pull", "reach"), ("push", "reach"), ("drag", "reach"), ("slide", "reach")`. Extend the comment above the tuple with the measurement that forced this: `"pull the lever to job"` returned `("", "")`, so `think()`'s greeting gate held and the lever was never attempted.
 
-- [ ] **Step 4: Run the tests to verify they pass, and the whole brain suite**
+- [x] **Step 4: Run the tests to verify they pass, and the whole brain suite**
 
 Run: `XDG_RUNTIME_DIR=/tmp/clank-xdg python3 -m unittest tests.test_brain -v`
 Expected: PASS, including every pre-existing `task_intent` assertion
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add clank/brain.py tests/test_brain.py
@@ -210,7 +210,7 @@ git commit -F /tmp/msg.txt   # "feat(brain): a direction verb is a task, read as
 - Consumes: `clank.workspace.moved_point` (Task 1); `reach_vr.to_world(p, st)`; `reach_vr.state()`.
 - Produces: `reach_ardy.py --move FWD UP LAT --side right` — the same script, a target computed instead of measured. Exit 2 when `reach_vr.state()` reports no hand for that side.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 `tests/test_reach_move.py`, following the existing convention for `spike/` (source-text assertions, as `tests/test_auto_loop.py` does):
 
@@ -264,23 +264,23 @@ class TheFrameOfAMove(unittest.TestCase):
                                self.workspace.MAX_OFFSET_M, places=6)
 ```
 
-- [ ] **Step 2: Run the test to verify it fails**
+- [x] **Step 2: Run the test to verify it fails**
 
 Run: `XDG_RUNTIME_DIR=/tmp/clank-xdg python3 -m unittest tests.test_reach_move -v`
 Expected: FAIL on `test_the_flag_takes_three_metres` and `test_a_move_with_no_reported_hand_refuses`; the frame test either passes or skips.
 
-- [ ] **Step 3: Implement in `spike/wbc_game/reach_ardy.py`**
+- [x] **Step 3: Implement in `spike/wbc_game/reach_ardy.py`**
 
 Add `move_target(st: dict, side: str, fwd: float, up: float, lat: float) -> tuple[float, float, float] | None`: reads `st[f"{side}_hand"]["p"]` (pelvis frame — the same field `reach_vr` compares `to_rel` against), passes it through `workspace.moved_point`, converts with `reach_vr.to_world`, returns `None` when the hand field is absent or not three finite numbers. Add `--move` with `nargs=3` and extend the existing "give a pixel pair or --world X Y Z" `parser.error` so it also accepts `--move` and refuses two sources at once. Wire the value in where `target_world = object_world(...)` is set today: a `--move` target skips `object_world` entirely and prints the hand it started from, so Review Focus 4 is visible in the log.
 
 `move_target` reads the hand on **every** call and holds no cache — that is Review Focus 1 and 4 in one line: a second pull must start from where the first one ended, and a hand the body cannot report is a refusal, not a guess.
 
-- [ ] **Step 4: Run the test to verify it passes**
+- [x] **Step 4: Run the test to verify it passes**
 
 Run: `XDG_RUNTIME_DIR=/tmp/clank-xdg python3 -m unittest tests.test_reach_move -v`
 Expected: PASS (all five, or four plus one skip when `reach_vr` will not import)
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add spike/wbc_game/reach_ardy.py tests/test_reach_move.py
@@ -300,7 +300,7 @@ git commit -F /tmp/msg.txt   # "feat(reach): a generated reach can move the hand
 - Consumes: `brain.move_from_goal` (Task 2), `reach_ardy.py --move` (Task 4), `reach_vr.to_world`.
 - Produces: `_move_argv(fwd: float, up: float, lat: float, side: str, camera: Pose | None) -> list[str]` in `auto.py`; `clank.workspace.moved_point` reused identically in `reach_vr` so the cruise and the generator agree on where a move ends.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 In `tests/test_auto_loop.py`:
 
@@ -320,21 +320,21 @@ class AMoveIsItsOwnVerb(unittest.TestCase):
         self.assertLess(body.index("move_from_goal"), body.index("sense("))
 ```
 
-- [ ] **Step 2: Run the tests to verify they fail**
+- [x] **Step 2: Run the tests to verify they fail**
 
 Run: `XDG_RUNTIME_DIR=/tmp/clank-xdg python3 -m unittest tests.test_auto_loop.AMoveIsItsOwnVerb -v`
 Expected: FAIL — `ValueError: substring not found` for `def _move_argv(`
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 In `reach_vr.py`: mirror Task 4 — `--move FWD UP LAT`, `workspace.moved_point` on `st[f"{side}_hand"]["p"]`, `to_world`. In `auto.py`: `_move_argv(...)` next to `_generated_argv`/`_cruise_argv`, carrying `--move` and the same `--side`/camera handling as the others; in `one_turn`, before the sense branch, `direction = brain.move_from_goal(plan.goal)` and when it is not `None` run the move and return a `Turn` whose `spoken` is unchanged. A move logs `act: move(fwd=…, up=…, lat=…)` and its exit code as the result, in the same shape as a reach.
 
-- [ ] **Step 4: Run the tests to verify they pass, then the whole suite**
+- [x] **Step 4: Run the tests to verify they pass, then the whole suite**
 
 Run: `XDG_RUNTIME_DIR=/tmp/clank-xdg python3 -m unittest discover -s tests -t . 2>&1 | tail -3`
 Expected: PASS, 1435 + the new tests
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add spike/wbc_game/reach_vr.py spike/wbc_game/auto.py tests/test_auto_loop.py
@@ -353,19 +353,19 @@ git commit -F /tmp/msg.txt   # "feat(auto): a direction in the goal moves the ha
 - Consumes: everything above, on the live stack.
 - Produces: a measurement, not code. If it fails, the failure is the record.
 
-- [ ] **Step 1: Start a run and let it reach the lever**
+- [x] **Step 1: Start a run and let it reach the lever**
 
 Dashboard up (`127.0.0.1:8765`), `POST /api/run/start`. Card, cartridge and slot are not this plan's gate; drive the loop to the lever with JobBot's own line if the earlier beats are still unsolved, using `POST /api/run/start` plus the trajectory already in `brain.jsonl`.
 
-- [ ] **Step 2: Record what the move did**
+- [x] **Step 2: Record what the move did**
 
 Capture, per attempt: the hand's reported point before the move, the commanded direction, the achieved residual, and JobBot's next line. `reach_ardy --move` prints the first and third; the diary carries the fourth.
 
-- [ ] **Step 3: Report the measured result honestly**
+- [x] **Step 3: Report the measured result honestly**
 
 Write `research/evidence/lever-pull/README.md` with the numbers, the run id, and the stills. A pull that misses is a recorded negative result, not a failure of the plan; say which of the five Review Focus items it hit.
 
-- [ ] **Step 4: Commit the record**
+- [x] **Step 4: Commit the record**
 
 ```bash
 git add research/evidence/lever-pull/README.md research/brain-tools.md
@@ -373,6 +373,29 @@ git commit -F /tmp/msg.txt   # "docs(research): a directional pull on the lever,
 ```
 
 ---
+
+## What changed while building it
+
+Tasks 1-5 are implemented (`5a80366`, `ce21c6b`, `cf8dd2c`, `86f9c9e`, `e9a08b2`), suite 1473.
+Two decisions differ from the plan above, both because the code was a better authority than the
+plan was:
+
+- **The offset rides on the `Intent`, not in `auto.py`.** The plan had `auto.py` call
+  `brain.move_from_goal(plan.goal)`. `Plan` has no goal field - it carries `skill`, `target`,
+  `side`, `note` - so that call would have needed a new field, and it would have put a parse of
+  the instruction back in the loop, which `tests/test_auto_loop.py` forbids by name. Instead
+  `think()` computes the travel from `heard` (it already owns the utterance and the occupancy)
+  and hands it to `assemble()`, which sets `Intent.offset` - the field `clank.intent/1` already
+  had for exactly this. `auto.py` only reads it.
+- **`assemble()` had to learn that a travel needs no pixel.** A `reach` with a target and no
+  sighting was refused as `not_located` and became a `hold`, which is right for reaching a thing
+  and wrong for pulling one the hand already holds. Both the sighting guard and `needs_where` now
+  stand aside when `offset is not None`.
+- **The occupancy gate is what makes one sentence work on two turns.** "Pull the lever to job"
+  arrives with an empty hand first, so the offset is only set when the acting hand is `holding`;
+  the first turn reaches the lever and the second travels. A test pins both halves.
+
+Task 6 is the live gate and has not been run: it needs the stack up and a body holding the lever.
 
 ## Not in this plan
 
