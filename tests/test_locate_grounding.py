@@ -221,3 +221,47 @@ class ParallelReadTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class StageThreeVoteTests(unittest.TestCase):
+    """Stage 3 is a vote of closed questions, and every one of these was measured.
+
+    MEASURED 2026-11-13 on JobBot's card: `DESCRIBE_PROMPT` on that crop reads the card's own
+    printed text back - "JobBot", "Job Bot sign", "A label" - so the right object is refused. The
+    closed question is right on every case measured: the card says "Card" 3/3, the console's OFF
+    button "Sign" 3/3, the glove and the console "Something else" and "Sign" 3/3 each.
+    """
+
+    def test_the_question_offers_a_way_to_say_no(self) -> None:
+        prompt = locate.VERIFY_PROMPT
+        self.assertIn("{noun}", prompt)
+        self.assertIn("something else", prompt.lower(),
+                      "a two-way question let the OFF button answer 'card' 3/3")
+        self.assertNotIn("yes or no", prompt.lower())
+
+    def _locate(self, descriptions: list[str]):
+        with patch.object(locate, "ask_quadrant") as quadrant, \
+                patch.object(locate, "read_box") as read_box, \
+                patch.object(locate, "describe_crop") as describe:
+            quadrant.return_value = locate.brain.Ground(
+                noun="card", box=(0.5, 0.5, 1.0, 1.0), quadrant="BOTTOM-RIGHT", raw="BOTTOM-RIGHT")
+            box = (0.80, 0.77, 0.99, 0.95)
+            read_box.return_value = (box, [box], ['{"x0": 800, "y0": 770, "x1": 990, "y1": 950}'], False)
+            describe.side_effect = lambda *a, **k: descriptions.pop(0)
+            return locate.locate(None, None, "card", (960, 540))
+
+    def test_a_majority_of_card_reads_is_a_present(self) -> None:
+        out = self._locate(["Card", "Card", "Sign"])
+        self.assertIs(out["present"], True)
+        # The reads run on threads, so the votes arrive in scheduling order: count them.
+        self.assertEqual(sum(1 for v in out["verify_votes"] if v), 2)
+
+    def test_a_majority_of_other_things_is_a_refusal(self) -> None:
+        out = self._locate(["Sign", "Something else", "Card"])
+        self.assertIs(out["present"], False)
+
+    def test_reads_that_name_nothing_are_not_a_refusal(self) -> None:
+        # "JobBot" alone is all stop words: the model told us nothing, which is not a denial.
+        out = self._locate(["JobBot", "JobBot", "JobBot"])
+        self.assertIsNone(out["present"])
+        self.assertEqual(out["match"], "the reads did not name it")

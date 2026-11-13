@@ -231,3 +231,54 @@ grounder went to JobBot. Asked to describe "the card", it described **the JOB CA
 the grounder then *accepted* the rack at x = 652 with `present: True`. A confident wrong description
 produces a false accept, which is worse than a refusal. A human-written phrase ("white card with a
 photo of JobBot") scored 3/3, so the mechanism works; the model's choice of subject does not.
+
+## 2026-11-13 — consistent grounding: the identity check was the flapper
+
+With the gate-band fade, stage 1 and stage 2 became stable (BOTTOM-RIGHT, pixel on the card, 5/5).
+Stage 3 then refused the card, and the reason took three measurements to find.
+
+**The card is a sign.** It is a white rectangle printed with "JobBot / Museum Curator / 101 Job
+Street". Asked to describe that crop, the model reads the card's own text back at us, and every
+reading is a refusal:
+
+| crop half | width | description (5/5 identical) | `describe_matches("card", ...)` |
+| --- | --- | --- | --- |
+| 0.16 | 307 px | `Job Bot sign` | refuse |
+| 0.08 | 153 px | `JobBot Museum Curator` | accept (curator is a synonym) |
+| 0.05 | 96 px | `Job 30` | refuse |
+| 0.03 | 57 px | `A label` | refuse |
+
+The accept window is one crop size wide, and it moves when the median box moves: the same nominal
+0.16 crop accepted 3/3 on one box and refused 5/5 on a box 6 px away. That is not a tuning problem,
+it is a question that cannot be answered about a text-covered object.
+
+**A closed question answers it.** Asking what *kind* of object it is, with a plausible alternative in
+the prompt, is right on every case measured, 3/3 each:
+
+| crop | `...a {noun}, a sign, or something else?` |
+| --- | --- |
+| the card | `Card` 3/3 |
+| the console's OFF button | `Sign` 3/3 |
+| the robot's own glove | `Something else` 3/3 |
+| the console | `Sign` 3/3 |
+
+And the two-way form - "is it a {noun}, or something else?" - is not enough: the OFF button answered
+`card` 3/3, because a binary question leaves the model no plausible way to say no. Same lesson as
+`{"none": true}` in `BOX_PROMPT`: refusal is offered, not hoped for. "A sign" is a generic visual
+category, not a list of props.
+
+**The vote is now three reads.** One call was measured to flip between `Job Bot card` (accept) and
+`Job Bot sign` (refuse) on the same still, because temperature 0 is not reproducible across the
+server's four slots. Three reads on the four-slot server cost one call's wall clock.
+
+End to end on the run's own frame, five consecutive `locate("card")` on the faded still:
+
+```text
+BOTTOM-RIGHT px=(884,473) PRESENT [True, True, True] 'Card | Card | Card' 2167ms
+BOTTOM-RIGHT px=(888,466) PRESENT [True, True, True] 'Card | Card | Card' 2060ms
+BOTTOM-RIGHT px=(888,466) PRESENT [True, True, True] 'Card | Card | Card' 2108ms
+BOTTOM-RIGHT px=(888,466) PRESENT [True, True, True] 'Card | Card | Card' 2146ms
+BOTTOM-RIGHT px=(884,473) PRESENT [True, True, True] 'Card | Card | Card' 2005ms
+```
+
+and a noun that is not in the scene refuses, 2/2 (`sign`, `Something else`).

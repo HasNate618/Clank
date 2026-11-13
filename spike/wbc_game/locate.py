@@ -35,7 +35,7 @@ import time
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2]))
 
 from clank import brain, frames  # noqa: E402
-from clank.brain import QUADRANTS, BrainConfig, Frame  # noqa: E402
+from clank.brain import BrainConfig, Frame  # noqa: E402
 
 #: How much bigger than the quadrant the stage-2 look is. 1.0 means the crop is
 #: exactly the quadrant; 1.15 keeps a margin so an object sitting on the seam is
@@ -117,6 +117,30 @@ _MATCH_SYNONYMS = {
 #: contain a whole object.
 VERIFY_HALF = 0.16
 
+#: Stage 3's question. Not `DESCRIBE_PROMPT`, and not a yes/no question either.
+#:
+#: MEASURED 2026-11-13 on JobBot's card, which is a white card printed with the words "JobBot",
+#: "Museum Curator", "101 Job Street". Asked to describe the crop, the model reads the card's own
+#: text back at us - "JobBot", "Job Bot sign", "A label" - and asked what *kind* of object it is,
+#: it says "Sign", because a white rectangle with writing on it is a sign. Every one of those is a
+#: refusal of the right object.
+#:
+#: Offered a closed set it can pick from, it is right on every case measured: the card says
+#: "Card" 3/3, the console's OFF button says "Sign" 3/3, the robot's own glove and the console say
+#: "Something else" and "Sign". A bare "is it a {noun}, or something else?" is *not* enough - the
+#: OFF button answered "card" 3/3 to that - because a two-way question leaves the model no
+#: plausible way to say no. This is the same lesson as `{{"none": true}}` in `BOX_PROMPT`:
+#: refusal is offered, not hoped for. "A sign" is a generic visual category, not a list of props.
+VERIFY_PROMPT = (
+    "Look at the middle of this image. Is the object there a {noun}, a sign, or something else? "
+    "Answer with one word only."
+)
+
+#: How many times stage 3 asks, and the majority decides. A single describe call was measured to
+#: flip between "Job Bot card" (accept) and "Job Bot sign" (refuse) on the same still, because
+#: temperature 0 is not reproducible across the server's four slots.
+VERIFY_READS = 3
+
 _PIXEL = re.compile(r"(-?\d+(?:\.\d+)?)\s*(?:px)?\s*[, ]\s*(-?\d+(?:\.\d+)?)")
 
 #: A box reply, by key name so the "0"/"1" inside `x0`/`x1` cannot be read as a value.
@@ -175,14 +199,31 @@ def describe_matches(noun: str, description: str) -> tuple[bool, str]:
     return False, f"described as {described[0]!r}, which is not the {noun}"
 
 
+def _verify_votes(
+    config: BrainConfig, frame: Frame, box: tuple[float, float, float, float], noun: str
+) -> list[str]:
+    """`VERIFY_READS` descriptions of the same crop, asked at once.
+
+    The reads are independent requests to a four-slot server, so the vote costs one call's wall
+    clock rather than three: measured 0.26 s for three against 0.27 s for one.
+    """
+    with concurrent.futures.ThreadPoolExecutor(max_workers=VERIFY_READS) as pool:
+        prompt = VERIFY_PROMPT.format(noun=noun)
+        return list(pool.map(lambda _: describe_crop(config, frame, box, prompt=prompt),
+                             range(VERIFY_READS)))
+
+
 def describe_crop(
-    config: BrainConfig, frame: Frame, box: tuple[float, float, float, float]
+    config: BrainConfig,
+    frame: Frame,
+    box: tuple[float, float, float, float],
+    prompt: str = DESCRIBE_PROMPT,
 ) -> str:
     """Stage 3: what is actually in `box`? One call, no judgement asked of the model."""
     jpeg = frames.crop_jpeg(frame.jpeg, box, width=CROP_WIDTH)
     cropped = Frame(index=frame.index, t_s=frame.t_s, jpeg=jpeg, source=f"describe:{box}")
     reply = brain._chat(config, [{"role": "user", "content": [
-        brain._image_part(cropped), {"type": "text", "text": DESCRIBE_PROMPT},
+        brain._image_part(cropped), {"type": "text", "text": prompt},
     ]}], max_tokens=24)
     return reply.text.strip()
 
@@ -551,12 +592,24 @@ def locate(
     )
     verify_started = time.perf_counter()
     if verify_mode == "describe":
-        # Ask what is *in* the box and decide here. The model describes accurately and
-        # judges its own answer badly - see `DESCRIBE_PROMPT` - so the comparison is code.
-        description = describe_crop(config, frame, verify_box)
-        present, why = describe_matches(noun, description)
+        # Ask what kind of object is *in* the box, several times, and decide in code. The model
+        # describes accurately and judges its own answer badly, so the comparison stays here;
+        # and one read is a coin flip on a text-covered object, so the reads are a vote.
+        descriptions = _verify_votes(config, frame, verify_box, noun)
+        verdicts = [describe_matches(noun, text) for text in descriptions]
+        yes = sum(1 for ok, _ in verdicts if ok)
+        no = sum(1 for ok, why in verdicts if not ok and why != "nothing described")
+        if yes > len(verdicts) // 2:
+            present, why = True, verdicts[0][1] if verdicts[0][0] else "most reads matched"
+        elif no > len(verdicts) // 2:
+            present = False
+            why = next(w for ok, w in verdicts if not ok and w != "nothing described")
+        else:
+            # Nothing to go on: a description with no identity words is silence, not a denial.
+            present, why = None, "the reads did not name it"
         out["match"] = why
-        out["verify_raw"] = description
+        out["verify_raw"] = " | ".join(descriptions)
+        out["verify_votes"] = [ok for ok, _ in verdicts]
     else:
         present, raw3 = verify_present(
             config, frame, noun, (centre[0] * width, centre[1] * height), size, box=verify_box
