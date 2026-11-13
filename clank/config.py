@@ -126,6 +126,8 @@ class RunConfig:
     brain_script: str
     brain_duration_sec: float
     game_restart_timeout_sec: float
+    #: How long a run waits for a stack it booted itself to reach `running`.
+    session_start_sec: float
     stop_timeout_sec: float
     rest_ticks: int
     body_timeout_sec: float
@@ -273,6 +275,9 @@ DEFAULTS: dict[str, dict[str, Any]] = {
         "brain_duration_sec": 900.0,
         # A cold game relaunch: Steam must notice the process is gone first.
         "game_restart_timeout_sec": 180.0,
+        # A cold boot is monado, Weston, Steam and a first frame of the game. A run
+        # that starts from a stopped dashboard waits this long for `running`.
+        "session_start_sec": 180.0,
         "stop_timeout_sec": 10.0,
         # How many `rest` commands the body reset sends before the run starts. The clip
         # answers in under a second and the command's TTL is short, so it is repeated.
@@ -466,7 +471,8 @@ def _validate(cfg: Config) -> None:
             )
     if cfg.run.brain_duration_sec <= 0 or not math.isfinite(cfg.run.brain_duration_sec):
         raise ConfigError("run.brain_duration_sec must be positive")
-    for field_name in ("game_restart_timeout_sec", "stop_timeout_sec", "model_timeout_sec"):
+    for field_name in ("game_restart_timeout_sec", "session_start_sec", "stop_timeout_sec",
+                       "model_timeout_sec"):
         value = getattr(cfg.run, field_name)
         if value <= 0 or not math.isfinite(value):
             raise ConfigError(f"run.{field_name} must be positive")

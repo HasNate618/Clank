@@ -98,12 +98,18 @@ renderdoc-layer/vulkan/implicit_layer.d/  # e4 manifest
 
 ## Stack and runs, 2026-11-12
 
-**Start** boots the stack (Monado → Weston → websockify → pose relay → Steam → game)
-once. **Start run** is the thing you repeat, and it never touches the stack: a new
-directory, a new diary, the overlay cleared, the game's saved job wiped and the game
-relaunched, the body stood up, then `spike/wbc_game/auto.py` under `spike/e3/.venv`.
-**Stop run** ends the attempt and leaves the stack up; **Shut down** is the old Stop.
-A failed run keeps its directory as evidence and never stops the stack.
+**Start run** is one press and the only start the page offers. It boots the stack
+(Monado → Weston → websockify → pose relay → Steam → game) when it is down and never
+touches one that is up: the model gate, then a `stack` phase bounded by
+`run.session_start_sec` (180 s), then a new directory, a new diary, the overlay
+cleared, the game's saved job wiped and the game relaunched, the body stood up, then
+`spike/wbc_game/auto.py` under `spike/e3/.venv`. A boot it started it does not shut
+down, and a cancel during the boot tears nothing down. **Stop run** ends the attempt
+and leaves the stack up; **Shut down** (still `POST /api/session/stop`) is the old
+Stop, and `POST /api/session/start` still exists for scripting and `run.sh`.
+A failed run keeps its directory as evidence and never stops the stack; a run refused
+before a session existed has no directory, so its reason lives in `run.error` and the
+evidence is the orchestrator's own session logs.
 
 ```text
 sessions/<session-id>/runs/<HHMMSS>-<6 hex>/

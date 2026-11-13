@@ -504,6 +504,15 @@ class RunConfigTests(unittest.TestCase):
         with self.assertRaisesRegex(ConfigError, "run.brain_duration_sec"):
             load_config(path, env={})
 
+    def test_session_start_sec_must_be_positive(self) -> None:
+        path = self.write_toml("[run]\nsession_start_sec = 0\n")
+        with self.assertRaisesRegex(ConfigError, "run.session_start_sec"):
+            load_config(path, env={})
+
+    def test_session_start_sec_default_outlasts_a_cold_boot(self) -> None:
+        cfg = load_config(None, env={})
+        self.assertEqual(cfg.run.session_start_sec, 180.0)
+
     def test_run_env_override(self) -> None:
         cfg = load_config(None, env={"CLANK_RUN_REQUIRED_MODEL": "LFM3-Omni-2B"})
         self.assertEqual(cfg.run.required_model, "LFM3-Omni-2B")

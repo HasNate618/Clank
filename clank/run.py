@@ -45,6 +45,7 @@ RUN_ID_RE = re.compile(r"^\d{6}-[0-9a-f]{6}$")
 #: while the spinner turns; nothing parses these.
 PHASE_DETAILS: dict[str, str] = {
     "checking": "checking the model server…",
+    "stack": "starting the stack…",
     "preparing": "preparing the run…",
     "game": "restarting the game…",
     "body": "resetting the body…",
@@ -57,6 +58,7 @@ PHASE_DETAILS: dict[str, str] = {
 class RunState(StrEnum):
     IDLE = "idle"
     CHECKING = "checking"
+    STACK = "stack"
     PREPARING = "preparing"
     GAME = "game"
     BODY = "body"
@@ -244,29 +246,26 @@ class RunManager:
     # ---- lifecycle -----------------------------------------------------
 
     def start(self) -> None:
+        """Take the run on, from whatever the stack is doing.
+
+        Nothing here waits: the stack boot, the gate and every phase run on the
+        worker thread, so the dashboard's HTTP call returns while the spinner turns.
+        A run starts from a stopped stack now, which is why `start()` no longer
+        refuses one -- it boots it.
+        """
         problem = self.preflight()
         if problem:
             raise RunError(problem)
-        info = self._manager.snapshot()
-        if info.get("state") != "running" or not info.get("session_id"):
-            raise ConflictError("session is not running")
         with self._lock:
             if self._state not in (RunState.IDLE, RunState.FAILED):
                 raise ConflictError("a run is already active")
-            run_id = f"{datetime.now().strftime('%H%M%S')}-{os.urandom(3).hex()}"
-            run_dir = (
-                Path(self._cfg.paths.session_root)
-                / str(info["session_id"])
-                / "runs"
-                / run_id
-            )
             self._generation += 1
             generation = self._generation
             self._cancel.clear()
             self._idle.clear()
-            self._id = run_id
-            self._dir = run_dir
-            self._session_id = str(info["session_id"])
+            self._id = None
+            self._dir = None
+            self._session_id = None
             self._state = RunState.CHECKING
             self._phase = RunState.CHECKING
             self._detail = PHASE_DETAILS["checking"]
@@ -279,26 +278,10 @@ class RunManager:
             self._child = None
             self._thread = threading.Thread(
                 target=self._worker,
-                args=(generation, run_dir),
+                args=(generation,),
                 name="clank-run",
                 daemon=True,
             )
-        # The record exists before any wait: a run refused by the model gate is
-        # still evidence, and `run.json` is where its reason belongs.
-        try:
-            self._ensure_run_dir(run_dir)
-        except RunError as exc:
-            # Without this the state stays CHECKING for ever: every later start
-            # would answer "a run is already active" and the spinner would turn.
-            with self._lock:
-                self._state = RunState.FAILED
-                self._phase = RunState.FAILED
-                self._detail = ""
-                self._error = str(exc)
-                self._ended_at = _now()
-                self._ended_monotonic = time.monotonic()
-            self._idle.set()
-            raise
         self._thread.start()
 
     def stop(self) -> None:
@@ -319,9 +302,13 @@ class RunManager:
 
     # ---- the worker ----------------------------------------------------
 
-    def _worker(self, generation: int, run_dir: Path) -> None:
+    def _worker(self, generation: int) -> None:
         try:
+            # A session that already exists names the directory now, so a refusal
+            # at the gate still leaves a `run.json` of its own.
+            self._claim_dir()
             self._gate(generation)
+            run_dir = self._stack(generation)
             self._set_phase(RunState.PREPARING)
             self._open_run(run_dir)
             self._check_cancel(generation)
@@ -350,14 +337,89 @@ class RunManager:
                 self._child = None
             self._idle.set()
 
-    def _check_cancel(self, generation: int) -> None:
+    def _check_cancelled(self, generation: int) -> None:
+        """The operator's Stop, and a newer run's generation -- nothing else.
+
+        A stack that is still starting is not a reason to stop: `_stack` is the
+        phase that makes it run, so it cannot demand one that already does.
+        """
         if generation != self._generation or self._cancel.is_set():
             raise _Cancelled()
+
+    def _check_cancel(self, generation: int) -> None:
+        self._check_cancelled(generation)
         # The stack can be shut down from outside this object (curl, the
         # orchestrator's own shutdown). A run that kept walking its phases would
         # spawn a brain loop against a game that is already gone.
         if self._manager.snapshot().get("state") != "running":
             raise _Cancelled()
+
+    def _claim_dir(self) -> Path | None:
+        """Name the run's directory as soon as a session exists to name it after.
+
+        Free while the stack is down -- there is no session to put a run under yet --
+        and called again after a boot, because that is when one appears. Claiming
+        twice is the same as claiming once: the id is minted only the first time.
+        """
+        with self._lock:
+            if self._dir is not None:
+                return self._dir
+        info = self._manager.snapshot()
+        session_id = info.get("session_id")
+        if info.get("state") != "running" or not session_id:
+            return None
+        run_id = f"{datetime.now().strftime('%H%M%S')}-{os.urandom(3).hex()}"
+        run_dir = Path(self._cfg.paths.session_root) / str(session_id) / "runs" / run_id
+        with self._lock:
+            if self._dir is not None:      # another caller claimed it first
+                return self._dir
+            self._id = run_id
+            self._dir = run_dir
+            self._session_id = str(session_id)
+        self._ensure_run_dir(run_dir)
+        return run_dir
+
+    def _stack(self, generation: int) -> Path:
+        """Boot the stack when it is down, and never touch one that is up.
+
+        This is the phase that makes Start run one press. It returns the run's
+        directory, because the directory is named after the session and a booted
+        stack is the first thing to have one.
+
+        A cancelled boot shuts nothing down: the operator asked for a run, not for a
+        machine, and leaving a half-started stack for the next press is cheaper than
+        tearing down a healthy one. A boot that fails is the orchestrator's own
+        error, carried into `run.json` -- the stack is left as it is, because its
+        log is the evidence.
+        """
+        info = self._manager.snapshot()
+        if info.get("state") != "running":
+            self._set_phase(RunState.STACK)
+            # A stack that is already starting (or stopping) is not an error to
+            # hand back: `start()` refuses those states, and the wait below is the
+            # answer for both -- one becomes `running`, the other `stopped`.
+            with contextlib.suppress(ConflictError):
+                self._manager.start()
+            deadline = time.monotonic() + self._cfg.run.session_start_sec
+            while True:
+                self._check_cancelled(generation)
+                info = self._manager.snapshot()
+                state = info.get("state")
+                if state == "running" and info.get("session_id"):
+                    break
+                if state in ("failed", "stopped"):
+                    reason = info.get("last_error") or state
+                    raise RunError(f"the stack did not start: {reason}")
+                if time.monotonic() > deadline:
+                    raise RunError(
+                        "the stack did not come up within "
+                        f"{self._cfg.run.session_start_sec:g} s"
+                    )
+                self._cancel.wait(0.2)
+        run_dir = self._claim_dir()
+        if run_dir is None:
+            raise RunError("the stack is running without a session id")
+        return run_dir
 
     def _set_phase(self, state: RunState) -> None:
         with self._lock:
@@ -478,7 +540,7 @@ class RunManager:
         required = self._cfg.run.required_model
         hint = self._cfg.run.model_start_cmd or "llama-server --model <LFM3-Omni GGUF> ..."
         while True:
-            self._check_cancel(generation)
+            self._check_cancelled(generation)
             status = self._probe()
             if status.up and status.status == "ok":
                 if required.lower() in status.model.lower():

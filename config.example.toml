@@ -143,6 +143,9 @@ brain_duration_sec = 900
 
 # A cold game relaunch: Steam must first notice the game process is gone.
 game_restart_timeout_sec = 180
+# A cold boot is monado, Weston, Steam and a first frame of the game: pressing
+# Start run on a stopped dashboard waits this long for the stack to say running.
+session_start_sec = 180
 stop_timeout_sec = 10
 # `rest` commands sent while resetting the body before the run starts.
 rest_ticks = 8

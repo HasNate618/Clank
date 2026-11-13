@@ -35,9 +35,45 @@ class FakeManager:
         self.session_id = session_id
         self.fail_restart = fail_restart
         self.calls: list[str] = []
+        self.started = 0
+        self.stopped = 0
+        #: The state a boot lands on: "running", "failed", "starting" (a boot that
+        #: never finishes) or "never" (a call that does nothing at all).
+        self.start_result = "running"
+        #: False models a stack that runs but never names its session.
+        self.mints_session_id = True
+        #: Seconds a boot takes, so `stack` is a phase a test can see.
+        self.start_delay = 0.0
+        self.last_error: str | None = None
 
     def snapshot(self) -> dict:
-        return {"state": self.state_value, "session_id": self.session_id}
+        return {
+            "state": self.state_value,
+            "session_id": self.session_id,
+            "last_error": self.last_error,
+        }
+
+    def start(self) -> None:
+        """Booting the stack, as `SessionManager.start()` does it: non-blocking.
+
+        `start_result` is the state the boot lands on; "never" models a stack that
+        accepts the call and then does nothing, which is what a cancel has to
+        survive without waiting out the whole deadline.
+        """
+        self.calls.append("stack")
+        self.started += 1
+        if self.start_delay:
+            time.sleep(self.start_delay)     # a real boot takes minutes, not microseconds
+        if self.start_result == "never":
+            return
+        self.state_value = self.start_result
+        if self.start_result == "running" and self.mints_session_id:
+            self.session_id = self.session_id or "20261113T101010Z-b00t01"
+
+    def stop(self) -> None:
+        self.calls.append("shutdown")
+        self.stopped += 1
+        self.state_value = "stopped"
 
     def restart_game(self) -> None:
         self.calls.append("game")
@@ -227,6 +263,8 @@ class RunHarness(unittest.TestCase):
         self.spawn_kwargs: dict = {}
         self.runs: list[RunManager] = []
         self.composites: list[Path] = []
+        self.phases: dict[RunManager, list[str]] = {}
+        self._watchers: list[threading.Event] = []
 
     def spawn(self, **kwargs):
         self.spawned.append("brain")
@@ -238,6 +276,7 @@ class RunHarness(unittest.TestCase):
         manager=None,
         probe=None,
         model_timeout_sec=None,
+        session_start_sec=None,
         body: str | None = "default",
         spawn=None,
         recorder: object = _FRESH_RECORDER,
@@ -247,6 +286,8 @@ class RunHarness(unittest.TestCase):
         cfg = self.cfg
         if model_timeout_sec is not None:
             cfg = replace(cfg, run=replace(cfg.run, model_timeout_sec=model_timeout_sec))
+        if session_start_sec is not None:
+            cfg = replace(cfg, run=replace(cfg.run, session_start_sec=session_start_sec))
         if not recording:
             cfg = replace(cfg, recording=replace(cfg.recording, enabled=False))
         # A run must not need ffmpeg (or a depth stream) to be tested, so the
@@ -266,10 +307,45 @@ class RunHarness(unittest.TestCase):
             composite=composite or (lambda run_dir, cfg: self.composites.append(run_dir)),
         )
         self.runs.append(run)
+        self._watch(run)
         self.addCleanup(self._stop_run, run)
         return run
 
+    def _watch(self, run: RunManager) -> None:
+        """Record the phases this run passes through, read from its own snapshot.
+
+        Sampled, not instrumented: `snapshot()` is exactly what the page sees, so a
+        phase the sampler missed is a phase the operator would not have been shown.
+        """
+        seen: list[str] = []
+        self.phases[run] = seen
+        stop = threading.Event()
+        self._watchers.append(stop)
+
+        def loop() -> None:
+            while not stop.is_set():
+                phase = run.snapshot().get("phase")
+                if phase and (not seen or seen[-1] != phase):
+                    seen.append(phase)
+                stop.wait(0.002)
+
+        threading.Thread(target=loop, name="clank-watch-phases", daemon=True).start()
+
+    def phases_seen(self, run: RunManager | None = None) -> list[str]:
+        return list(self.phases.get(run or self.runs[-1], []))
+
+    def wait_phase(self, phase: str, run: RunManager | None = None, timeout: float = 5.0) -> bool:
+        target = run or self.runs[-1]
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if phase in self.phases_seen(target):
+                return True
+            time.sleep(0.005)
+        return False
+
     def _stop_run(self, run: RunManager) -> None:
+        for stop in self._watchers:
+            stop.set()
         run.stop()
         run.wait_idle(5)
 
@@ -331,17 +407,74 @@ class RunManagerTests(RunHarness):
         self.assertEqual(self.wait_state("running"), "running")
         self.assertEqual(self.spawned, ["brain"])
 
-    def test_start_needs_a_running_stack(self) -> None:
-        run = self.make(manager=FakeManager(state="stopped"))
-        with self.assertRaises(ConflictError):
-            run.start()
-        self.assertEqual(self.spawned, [])
-        self.assertFalse(self.runs_root.exists())
+    def test_a_run_starts_the_stack_when_it_is_down(self) -> None:
+        manager = FakeManager(state="stopped", session_id=None)
+        manager.start_delay = 0.05
+        run = self.make(manager=manager)
+        run.start()
+        self.assertEqual(self.wait_state("running", run=run), "running")
+        self.assertEqual(manager.started, 1)            # the stack was booted
+        self.assertIn("stack", self.phases_seen(run))   # and it said so
 
-    def test_start_needs_a_session_id(self) -> None:
-        run = self.make(manager=FakeManager(session_id=None))
-        with self.assertRaises(ConflictError):
-            run.start()
+    def test_a_run_does_not_touch_a_running_stack(self) -> None:
+        run = self.make()
+        run.start()
+        self.assertEqual(self.wait_state("running", run=run), "running")
+        self.assertEqual(self.manager.started, 0)
+        self.assertNotIn("stack", self.phases_seen(run))
+
+    def test_a_stack_that_fails_to_start_fails_the_run_with_its_reason(self) -> None:
+        manager = FakeManager(state="stopped", session_id=None)
+        manager.start_result = "failed"
+        manager.last_error = "monado refused to load the driver"
+        run = self.make(manager=manager)
+        run.start()
+        self.assertTrue(run.wait_idle(20))
+        info = run.snapshot()
+        self.assertEqual(info["state"], "failed")
+        self.assertIn("stack", info["error"].lower())
+        self.assertIn("monado refused", info["error"])
+        self.assertEqual(self.spawned, [])          # no game, no body, no brain
+
+    def test_a_run_cancelled_while_the_stack_starts_leaves_it_alone(self) -> None:
+        manager = FakeManager(state="stopped", session_id=None)
+        manager.start_result = "starting"       # a boot that never gets there
+        run = self.make(manager=manager)
+        run.start()
+        deadline = time.monotonic() + 5
+        while manager.started == 0 and time.monotonic() < deadline:
+            time.sleep(0.01)
+        self.assertEqual(manager.started, 1, "the stack was never asked to boot")
+        self.assertTrue(self.wait_phase("stack", run=run), "the phase was never shown")
+        run.stop()                                  # cancel during `stack`
+        self.assertTrue(run.wait_idle(20))
+        self.assertEqual(manager.stopped, 0)        # nothing was shut down
+        self.assertEqual(run.snapshot()["state"], "idle")
+        self.assertEqual(self.spawned, [])
+
+    def test_a_stack_whose_start_is_ignored_fails_at_once(self) -> None:
+        """A start that leaves the stack stopped never began: do not wait it out."""
+        manager = FakeManager(state="stopped", session_id=None)
+        manager.start_result = "never"
+        run = self.make(manager=manager)
+        started = time.monotonic()
+        run.start()
+        self.assertTrue(run.wait_idle(5))
+        info = run.snapshot()
+        self.assertEqual(info["state"], "failed")
+        self.assertIn("stopped", info["error"])
+        self.assertLess(time.monotonic() - started, 3.0)
+
+    def test_a_stack_that_never_names_its_session_fails_the_run(self) -> None:
+        manager = FakeManager(state="stopped", session_id=None)
+        manager.mints_session_id = False
+        run = self.make(manager=manager, session_start_sec=0.3)
+        run.start()
+        self.assertTrue(run.wait_idle(20))
+        info = run.snapshot()
+        self.assertEqual(info["state"], "failed")
+        self.assertIn("0.3", info["error"])
+        self.assertIsNone(info["id"])               # no session, so no run directory
 
     def test_start_twice_conflicts(self) -> None:
         run = self.make()
@@ -505,7 +638,7 @@ class RunManagerTests(RunHarness):
         # may be shutting Steam down inside that window.
         self.assertTrue(self.child.stopped)
 
-    def test_a_run_directory_failure_leaves_the_manager_usable(self) -> None:
+    def test_a_run_directory_failure_fails_the_run_not_the_manager(self) -> None:
         blocker = self.base / "blocked"
         blocker.write_text("not a directory")
         cfg = replace(self.cfg, paths=replace(self.cfg.paths, session_root=str(blocker)))
@@ -518,13 +651,19 @@ class RunManagerTests(RunHarness):
             spawn=self.spawn,
         )
         self.addCleanup(run.wait_idle, 2)
-        with self.assertRaises(run_mod.RunError):
-            run.start()
-        self.assertIn(run.snapshot()["state"], ("idle", "failed"))
+        # The directory is made on the worker, after the boot: nothing waits on the
+        # HTTP thread, so the failure is the run's rather than the caller's.
+        run.start()
+        self.assertTrue(run.wait_idle(5))
+        info = run.snapshot()
+        self.assertEqual(info["state"], "failed")
+        self.assertIn("blocked", info["error"])
         # Not a wedged manager: a second attempt fails the same way, it does not
         # claim "a run is already active" forever.
-        with self.assertRaises(run_mod.RunError):
-            run.start()
+        run.start()
+        self.assertTrue(run.wait_idle(5))
+        self.assertEqual(run.snapshot()["state"], "failed")
+        self.assertIn("blocked", run.snapshot()["error"])
 
     def test_body_phase_waits_for_the_control_socket(self) -> None:
         """The sidecar returns from start() before it binds; a rest sent into the
