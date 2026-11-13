@@ -76,9 +76,32 @@ class GeometryTests(unittest.TestCase):
     def test_the_frame_is_the_two_pictures_side_by_side(self):
         self.assertEqual(recording.GAME_WIDTH, 960)
         self.assertEqual(recording.GAME_HEIGHT, 540)
-        self.assertEqual(recording.ROBOT_WIDTH, 720)
+        # The tile is 9:16 beside the game's 16:9; the render behind it is
+        # portrait too, so neither is a letterbox.
+        self.assertEqual(recording.ROBOT_WIDTH, 304)
         self.assertEqual(recording.HEIGHT, 540)
-        self.assertEqual(recording.WIDTH, 1680)
+        self.assertEqual(recording.WIDTH, 1264)
+        self.assertEqual(recording.GAME_WIDTH + recording.ROBOT_WIDTH, recording.WIDTH)
+
+    def test_the_robot_part_scales_into_the_portrait_tile(self):
+        argv = composite_argv(game=Path("g.mp4"), robot=Path("r.mp4"), audio=None,
+                              out=Path("o.mp4"), fps=15, crf=28, preset="veryfast")
+        graph = argv[argv.index("-filter_complex") + 1]
+        self.assertIn(f"scale={recording.ROBOT_WIDTH}:{recording.HEIGHT}", graph)
+        self.assertIn(f"scale={recording.GAME_WIDTH}:{recording.GAME_HEIGHT}", graph)
+
+    def test_the_robot_tile_never_squashes_the_render(self):
+        """A 4:3 render in a 9:16 tile is pillarboxed, never squeezed.
+
+        `[body] width/height` is the operator's own config and `config.toml` is
+        git-ignored, so the composite cannot assume the render is already
+        portrait: this machine's file still said 560x420.
+        """
+        argv = composite_argv(game=Path("g.mp4"), robot=Path("r.mp4"), audio=None,
+                              out=Path("o.mp4"), fps=15, crf=28, preset="veryfast")
+        graph = argv[argv.index("-filter_complex") + 1]
+        self.assertIn("force_original_aspect_ratio=decrease", graph)
+        self.assertIn(f"pad={recording.ROBOT_WIDTH}:{recording.HEIGHT}", graph)
 
 
 class ParseRangeTests(unittest.TestCase):
@@ -566,6 +589,7 @@ class RecorderTests(unittest.TestCase):
         self.assertIn("image2pipe", robot)
         self.assertIn("-framerate 10", robot)
         self.assertIn(f"scale={recording.ROBOT_WIDTH}:{recording.HEIGHT}", robot)
+        self.assertIn("force_original_aspect_ratio=decrease", robot)
         audio = self.argv_of("audio.m4a")
         self.assertIn("s16le", audio)
         self.assertIn("-ar 16000", audio)
@@ -720,21 +744,6 @@ def manifest_of(test: unittest.TestCase, run_dir: Path) -> dict:
     if doc is None:
         test.fail(f"no {recording.MANIFEST_NAME} in {run_dir}")
     return doc
-
-
-class GeometryTests(unittest.TestCase):
-    def test_the_composite_is_a_portrait_tile_beside_the_game(self):
-        self.assertEqual(recording.WIDTH, 1264)
-        self.assertEqual(recording.HEIGHT, 540)
-        self.assertEqual(recording.ROBOT_WIDTH, 304)
-        self.assertEqual(recording.GAME_WIDTH, 960)
-
-    def test_the_robot_part_scales_into_the_portrait_tile(self):
-        argv = composite_argv(game=Path("g.mp4"), robot=Path("r.mp4"), audio=None,
-                              out=Path("o.mp4"), fps=15, crf=28, preset="veryfast")
-        graph = argv[argv.index("-filter_complex") + 1]
-        self.assertIn("scale=304:540", graph)
-        self.assertIn("scale=960:540", graph)
 
 
 class CompositeTests(unittest.TestCase):

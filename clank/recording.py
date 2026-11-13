@@ -38,6 +38,20 @@ from clank.ears import level
 if TYPE_CHECKING:  # imported for the annotations only: config never imports this module
     from clank.config import Config
 
+def tile_filter(width: int, height: int, source_width: int | None = None) -> str:
+    """Fit a picture into `width`x`height` without changing its shape.
+
+    The body render's size is the operator's own `[body] width/height`, and
+    `config.toml` is git-ignored and machine-specific, so the recording cannot
+    assume the render is already portrait: a 4:3 render squeezed into a 9:16 tile
+    is a 33 % horizontal squash that no manifest records and no page can show.
+    Pillarboxing is the honest outcome, and it is the same doctrine as the
+    missing-source case: pad, never crop or stretch.
+    """
+    scale = f"scale={width}:{height}:force_original_aspect_ratio=decrease"
+    return f"{scale},pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:color=black"
+
+
 GAME_WIDTH = 960
 GAME_HEIGHT = 540
 #: The robot tile is 9:16 beside the game's 16:9. It is rendered portrait by the
@@ -128,10 +142,10 @@ def composite_argv(
         inputs += ["-i", str(path)]
 
     holds = pad or {}
-    left = f"[{index['game']}:v]scale={GAME_WIDTH}:{GAME_HEIGHT}" if "game" in index \
+    left = f"[{index['game']}:v]{tile_filter(GAME_WIDTH, GAME_HEIGHT)}" if "game" in index \
         else f"color=black:s={GAME_WIDTH}x{GAME_HEIGHT}:r={fps}"
     left += _hold(holds.get("game", 0.0)) + "[g]"
-    right = f"[{index['robot']}:v]scale={ROBOT_WIDTH}:{HEIGHT}" if "robot" in index \
+    right = f"[{index['robot']}:v]{tile_filter(ROBOT_WIDTH, HEIGHT)}" if "robot" in index \
         else f"color=black:s={ROBOT_WIDTH}x{HEIGHT}:r={fps}"
     right += _hold(holds.get("robot", 0.0)) + "[r]"
     # An endless black pad cannot decide where the stack ends; without a target
@@ -446,7 +460,7 @@ class Recorder:
             rec.ffmpeg, "-nostdin", "-hide_banner", "-loglevel", "error", "-y",
             "-f", "image2pipe", "-vcodec", "mjpeg", "-framerate", str(rec.robot_fps),
             "-i", "-",
-            "-vf", f"scale={ROBOT_WIDTH}:{HEIGHT}",
+            "-vf", tile_filter(ROBOT_WIDTH, HEIGHT),
             "-c:v", "libx264", "-preset", rec.preset, "-crf", str(rec.crf),
             "-pix_fmt", "yuv420p", str(out),
         ]

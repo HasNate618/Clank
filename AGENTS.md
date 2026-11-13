@@ -201,7 +201,12 @@ reason, and none of it fails, delays or blocks the run.
   into its **304x540** tile, black padding for a missing side. The tile is portrait because the
   policy's 4:3 framing was a small figure in a wide shot, and cropping 4:3 to 9:16 cuts the arms
   off; the render changed, not the crop. `[body] width/height` are that render, and the Robot
-  panel's tiles take their shape from the frame itself. **Unverified live:** whether the follow
+  panel's tiles take their shape from the frame itself. The tile is fitted
+  (`force_original_aspect_ratio=decrease` + pad), never stretched: `[body] width/height` is the
+  operator's own config and `config.toml` is git-ignored, so a 4:3 render (this machine's file
+  still said 560x420) would otherwise be squashed by a third, and no manifest records it. Set
+  `[body]` to 405x720 to get the full-height tile; leave it 4:3 and the tile is honestly
+  letterboxed. **Unverified live:** whether the follow
   camera frames the body well in 9:16 -- if a raised arm leaves the frame, the fallback is the
   portrait render padded, never a 4:3 crop. 15 fps, `crf 28`, `preset veryfast`, `+faststart`.
   Measured 24.1 MB/min at `ultrafast`, so a 20-minute run is a few hundred megabytes;
