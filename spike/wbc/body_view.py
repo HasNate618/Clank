@@ -421,7 +421,14 @@ def verb_command(
         # put it back in the T-pose the last command left it in - measured 2026-11-08, arms
         # straight out and knees bent, and the operator noticed before any log did.
         "rest": rest,
-        "hold": hold,
+        # With the achieved state, exactly as `_command_from_intent` does for the intent path.
+        # MEASURED 2026-11-13: a bare `hold` verb carries no pose, so `CommandBus.take()` baked
+        # its *stale* latch into it - the snapshot from the last non-hold command, which after a
+        # clip is the previous reach's target. The arm held for as long as the hold was re-sent
+        # and then walked back to that old target (0.26 m -> 0.43 m pelvis x), which is why a
+        # pull looked like it had not happened. The bus is not wrong: it retires the snapshot
+        # only on a real command, and a deposited clip is not one.
+        "hold": lambda: hold(state=executor.last_state),
         "look_left": head_left,
         "look_right": head_right,
         "aim": aim,

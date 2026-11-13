@@ -408,8 +408,13 @@ def main() -> int:
         "reach left the arm, which is how one run began 0.10 m from its goal and stalled",
     )
     args = ap.parse_args()
-    if args.world is None and args.target is None and (args.px is None or args.py is None):
-        ap.error("give a pixel, --target X Y Z or --world X Y Z")
+    if (args.world is None and args.target is None and args.move is None
+            and (args.px is None or args.py is None)):
+        # Four sources, and `--move` is the fourth: a travel starts from the hand the body
+        # reports, so it needs no pixel, no point and no object. Measured 2026-11-13: the guard
+        # did not know about it, so the one flag that makes a pull a pull was rejected on the
+        # command line while `--move` was parsed and `moved_point` was already wired below.
+        ap.error("give a pixel, --target X Y Z, --world X Y Z or --move FWD UP LAT")
 
     if not args.dry_run and not args.no_rest:
         send(verb="rest")

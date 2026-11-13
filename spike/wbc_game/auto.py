@@ -417,15 +417,26 @@ def _move_argv(offset: tuple[float, float, float], side: str,
                camera: Pose | None) -> list[str]:
     """A travel: the hand moves from where it is by `offset`, metres in the pelvis frame.
 
-    The same two executables as a reach, because it is the same motion pointed differently, and
-    `--move` is the one flag that distinguishes them. `--grab` is passed: a pull that let go
-    halfway would drag nothing, and the clasp is what keeps the grip through the clip.
+    **The cruise carries it, and only the cruise.** Measured 2026-11-13 on a live body, back to
+    back, same hand and same 0.20 m request:
+
+    | path | travel | 10 s after the process exits |
+    | --- | --- | --- |
+    | generated clip (`reach_ardy --move`) | 0.20 m, 67 mm residual | **back where it started** |
+    | cruise (`reach_vr --move`) | 0.174 m, 7.4 mm residual | **still there** |
+
+    The clip is tracked while it plays - the arm really does go back - and then the body returns
+    to the *previous* reach's target: `CommandBus` retires its freeze-hold snapshot only on a real
+    command, a deposited clip is not one, so the hold that follows a clip bakes a stale pose and
+    the arm walks home. Re-sending the hold, pinning the achieved state into the verb, and giving
+    the hold its own keepalive were each tried and each lost the arm within a second. A cruise
+    re-commands an absolute target every keepalive, which is why it survives its own exit, and a
+    travel needs nothing a generator adds: no object to plan around, no root step.
+
+    `--grab` is passed: a pull that let go halfway would drag nothing.
     """
     forward, up, lateral = (float(value) for value in offset)
     metres = [f"{forward:.3f}", f"{up:.3f}", f"{lateral:.3f}"]
-    if side == "right" and ARDY_PY.exists():
-        return [str(ARDY_PY), str(HERE / "reach_ardy.py"), "--move", *metres,
-                "--side", side, "--grab"] + _marked_camera(camera)
     return [VENV, str(HERE / "reach_vr.py"), "--move", *metres,
             "--side", side, "--no-rest", "--no-clamp", "--grab"] + _marked_camera(camera)
 
@@ -721,10 +732,13 @@ def one_turn(say: str = "", pattern: str = ears.DEFAULT_PATTERN,
         # answered "pull the lever to job" with `{"direction": "back", "metres": 0.5}` 3/3, so
         # the vocabulary is there - what was missing was a way for `clank.intent/1` to say it.
         started = time.monotonic()
-        code = subprocess.call(_move_argv(intent.offset, intent.side or "right",
-                                          intent.head and Pose(
-                                              p=tuple(intent.head[:3]),
-                                              q_xyzw=tuple(intent.head[3:]))))
+        # Unpacked rather than sliced: `intent.head` is a 7-float tuple and `Pose` takes exactly
+        # three and four, which a slice cannot promise a type checker.
+        camera = None
+        if intent.head is not None and len(intent.head) == 7:
+            hx, hy, hz, qx, qy, qz, qw = intent.head
+            camera = Pose(p=(hx, hy, hz), q_xyzw=(qx, qy, qz, qw))
+        code = subprocess.call(_move_argv(intent.offset, intent.side or "right", camera))
         seconds = round(time.monotonic() - started, 1)
         where = tuple(round(float(value), 2) for value in intent.offset)
         brainlog.log("result", f"move{where} {'reached' if code == 0 else 'failed'}",

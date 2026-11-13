@@ -158,3 +158,82 @@ PY
 
 Poll that during a clip and during a cruise and the difference is visible in seconds. **Do not
 trust `reach_ardy`'s "achieved glove residual" until it agrees with the relay on a still body.**
+
+## The answer, 2026-11-13: a travel is a cruise, and the frame question was a red herring
+
+Standalone body (`spike/wbc/body_view.py --no-render`, no game, no Monado), polled at 2 Hz with
+the achieved glove read through `ardy_gen.glove_position` on `pose36.json`'s last row.
+
+**1. `glove_position` and the relay's hand are the same point in the same frame.** The
+contradiction above - 0.5 m apart in x - was measured while the relay's reading was **stale**,
+which its own docstring says it will be ("a dead body must not release a grab"). On a freshly
+started body, and on every tick of a cruise:
+
+```text
+fk glove pelvis  [0.465, -0.068, 0.025]
+relay hand       [0.464, -0.066, 0.025]     1 mm, and they moved together
+```
+
+So there is no frame bug, `reach_vr.to_rel` is right, and `move_target` was right to start from
+the ring. The ordering check that ruled out the qpos mapping was also right; nothing was wrong
+except reading a command as a position.
+
+**2. The generated clip is tracked, and then the arm walks home.** `--move -0.20` from pelvis
+x 0.430:
+
+```text
+t=13.5  0.229   the clip is playing and the arm is where the clip says
+t=15.0  0.270
+t=16.5  0.464   clip done + hold sent; the arm goes back to the PREVIOUS reach's target
+t=18.1  0.432
+```
+
+The clip is not the problem: `mb_clip.npz` asks for glove pelvis x 0.230 at frame 0 and 0.196 at
+frame 103, and the body goes to 0.23. What fails is everything after `done`.
+
+Three repairs were tried and all three lost the arm within a second:
+
+- a single `hold` verb straight after `done`;
+- the `hold` verb re-sent every 0.5 s for 3 s (the arm stays while it is re-sent, then leaves);
+- `body_view`'s `hold` verb baking `executor.last_state` (a real defect: a bare `hold` carried no
+  pose, so `CommandBus.take()` baked its **stale** latch - the snapshot from the last non-hold
+  command - and the arm walked to that old target). Fixed, and it did not fix the pull.
+
+The mechanism, read out of `clank/bus.py`: `push()` retires the freeze-hold snapshot only on a
+real command, and **a deposited clip is not one**. So after a clip the snapshot is whatever the
+last socket command left, and the freeze-hold that follows bakes it. The arm returns to the
+previous reach's target, not to the clip's end.
+
+**3. The cruise holds, so the travel goes through the cruise.** Same body, same hand, same 0.20 m:
+
+| path | travel | 10 s after the process exited |
+| --- | --- | --- |
+| generated clip (`reach_ardy --move`) | 0.20 m, 67 mm residual | **back where it started** |
+| cruise (`reach_vr --move`) | 0.174 m, 7.4 mm residual | **still there** |
+
+`reach_vr` re-commands an absolute target every keepalive, which is why it survives its own exit.
+A travel needs nothing a generator adds - no object to plan around, no root step - so
+`auto._move_argv` now routes every travel to the cruise for **both** hands, and `--grab` keeps the
+grip.
+
+Two more defects found on the way, both fixed:
+
+- `reach_vr.py`'s source guard did not know about `--move`, so the one flag that makes a pull a
+  pull was rejected on the command line (`give a pixel, --target X Y Z or --world X Y Z`) while
+  `moved_point` was already wired below it.
+- `reach_ardy.py` pins the achieved pose for 3 s after a clip (`pin_where_it_is`). It does not
+  make a generated clip hold, but it does keep a **grab** where the clip left it long enough to
+  read, and a grab that walks home would drag the object with it.
+
+**End to end, the exact argv `auto.py` builds:**
+
+```text
+cruise to (0.45, -0.15, 0.0)      achieved 0.422
+reach_vr.py --move -0.200 0 0 --side right --no-rest --no-clamp --grab
+                                  goal 0.250, achieved 0.268, error 37.6 mm
+9 s after the process exited      achieved 0.282-0.297   (still pulled, hand closed)
+```
+
+**Still open:** the `CommandBus` freeze-hold snapshot is not retired when a clip is deposited.
+That is the one thing that would let a generated clip hold its own result, and it matters for
+every generated grab, not just a pull.

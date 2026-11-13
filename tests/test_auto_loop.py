@@ -219,8 +219,19 @@ class ATravelIsItsOwnVerb(unittest.TestCase):
         self.assertIn("intent.offset is not None", body)
         self.assertLess(body.index("intent.offset is not None"), body.index("if seen is None"))
 
-    def test_both_hands_have_a_travel_path(self) -> None:
+    def test_the_cruise_carries_the_travel_for_both_hands(self) -> None:
+        """The cruise, and not the generator, and this one is a measurement rather than a taste.
+
+        MEASURED 2026-11-13, live body, same hand and same 0.20 m request: a generated clip
+        travelled 0.20 m and was back at its start 10 s after the process exited, because
+        `CommandBus` retires its freeze-hold snapshot only on a real command and a deposited clip
+        is not one - so the hold after a clip bakes the *previous* reach's pose and the arm walks
+        home. The cruise, which re-commands an absolute target every keepalive, was 7.4 mm off
+        and still there 10 s later. Asserting `reach_ardy.py` here again would re-break a pull
+        while looking like a regression test.
+        """
         body = self.source[self.source.index("def _move_argv("):
                             self.source.index("def _number(")]
-        self.assertIn("reach_ardy.py", body)
         self.assertIn("reach_vr.py", body)
+        self.assertIn('"--move"', body)
+        self.assertNotIn("reach_ardy.py", body.replace("(`reach_ardy --move`)", ""))

@@ -278,6 +278,33 @@ def deposit(session_dir: Path, frames: list[tuple[float, ...]]) -> int:
     return seq
 
 
+#: How long a finished clip is held before this process lets go of the body, and how often the
+#: hold is re-sent inside that. Measured 2026-11-13: one `hold` sent the instant a clip reported
+#: `done` was answered `ok` and then lost the arm about 0.5 s later - the clip's own end
+#: (`_finish_clip` re-latching the freeze-hold) lands on the next tick and the latched command
+#: from the *previous* reach wins. `reach_vr`'s cruise survives because its `hold()` re-sends its
+#: target every `KEEPALIVE_S` for the whole hold, so this does the same rather than trusting a
+#: single command to outlive the tick that ends the clip.
+PIN_S = 3.0
+PIN_EVERY_S = 0.5
+
+
+def pin_where_it_is(seconds: float = PIN_S) -> dict:
+    """Hold the achieved pose for `seconds`, re-sending, and report the last answer.
+
+    The pose is re-read from the body each time, so the pin follows a body that is still
+    settling instead of freezing one instant of a motion. A verb is built from
+    `executor.last_state` at send time for the same reason.
+    """
+    answer: dict = {}
+    end = time.monotonic() + seconds
+    while True:
+        answer = reach_vr.send(verb="hold")
+        if not answer.get("ok") or time.monotonic() >= end:
+            return answer
+        time.sleep(PIN_EVERY_S)
+
+
 def closure_for(side: str) -> tuple[float, float]:
     """The grip tuple with only `side`'s hand closed.
 
@@ -583,6 +610,16 @@ def main() -> int:
         if final_ring is None:
             print("no pose ring after the clip; the body stopped")
             return 2
+        # Pin the pose the clip achieved, or the bus's latched command takes the arm back.
+        # Measured 2026-11-13 on a standalone body: a `--move -0.20` took the glove from pelvis
+        # x 0.430 to 0.275 (the clip was tracked), and 2 s later it was back at 0.426 - the
+        # latched `AUTH_R_HAND` from the earlier cruise still claiming the hand, which is rule 1
+        # beating the freeze-hold's rule 3. `_finish_clip` re-latches the fallback but cannot
+        # touch the bus, and `reach_vr`'s cruise pins itself with its own `hold` while this path
+        # did not - that asymmetry is the whole defect. A verb is built from
+        # `executor.last_state` at send time, so this holds where the clip left the body.
+        pinned = pin_where_it_is()
+        print(f"pin  {pinned}")
         residual = hand_residual(final_ring["poses"][-1], target)
         best = min(best, residual)
         print(
