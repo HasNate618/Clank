@@ -4,7 +4,7 @@
 
 # Clank
 
-A Unitree G1 simulated in MuJoCo, playing *Job Simulator* through Monado with no headset, no controllers, and no game files touched. It sees the game through a Vulkan layer, decides with a local vision model, and moves with a generated motion prior.
+A vision model decides, and a simulated humanoid body does it, in a commercial VR game that was never meant to be driven by either. It sees the game's own rendered frame and depth buffer, chooses one action per turn, and a generated motion prior carries the body through it. No headset, no controllers, no game files touched.
 
 ![Run 190131-679de2 on the recordings page: the game's view on the left, the simulated body on the right, and the model's diary below. JobBot says "Hey, Gilman, take my card", and the diary shows the plan, the search and the generated reach.](docs/media/grab-190131.webp)
 
@@ -12,17 +12,23 @@ A Unitree G1 simulated in MuJoCo, playing *Job Simulator* through Monado with no
 
 ## Why
 
-A VR game already knows how to consume a head and two hands. Point a humanoid's pose at that interface and you get a task environment with real physics, real objects, and an opponent that does not know the player is simulated. That is why the game is here: it is the fixture, and it cannot be scripted.
+The question is how much of a task a small model can carry when it has no privileged view of the world. It gets one picture, one sentence from the instructor, and what happened last time. Then it has to name the next action itself, turn after turn, until the job ends or it gets stuck. There is no task list to follow and no goal written by me: a fixed seed names the world, and every steering decision after that is the model's.
 
-Nothing about the interface is documented, and the game publishes no object positions, no state, no events. Everything the player knows comes from pixels, and from a depth buffer that is not exposed either. Most of this project is therefore measurement: a Vulkan layer inside the game's own render pass, a socket Monado will accept, a motion prior that turns one constraint into 52 frames, and a log of what was decided next to what actually happened.
+A VR game makes that a fair test rather than a toy. It cannot be scripted, it has real physics, and it has an instructor with an actual script. It also answers back. Either the card ends up in the hand or it does not, and the difference is visible in one frame.
 
-The hard part is that the loop has no feedback except geometry. Held against one target for ten seconds, the head wobbled **11.7° of yaw**, so a pixel marked once goes stale inside a single reach. Measured, the card moved 1009 → 1122 → 865 → 1007 px during one four-command reach ([`research/reach-placement.md`](research/reach-placement.md)). The fix was to stop tracking the pixel: unproject the target through the measured head into metres, then project it back every tick.
+The hard part is geometry, because the picture is all the model has. The head will not hold a commanded pose: held against one target for ten seconds it wobbled **11.7° of yaw**, so a pixel marked once goes stale inside a single reach. Measured, the card moved 1009 → 1122 → 865 → 1007 px during one four-command reach ([`research/reach-placement.md`](research/reach-placement.md)). The fix was to stop tracking the pixel and re-derive it: unproject the target through the measured head into metres, then project it back every tick.
 
-## Stack and my role
+## Three models, and nothing else
 
-Python 3.12 (standard library only) for the application in `clank/`; MuJoCo 3.17 and ONNX Runtime in the spikes, where one 20 ms control tick costs 17.66 ms of encoder, decoder and physics ([`research/wbc-policy-proposal.md`](research/wbc-policy-proposal.md)); one RTX 4060 with 8 GB; NixOS, Steam and Proton; Monado with its `remote` driver; a Vulkan layer in C and GLSL.
+| Model | Its job | Where it comes from |
+|---|---|---|
+| **LFM3-Omni-2B** (Q8_0) | plans every turn, transcribes JobBot, grounds and verifies a crop | Liquid AI, served by llama.cpp on `:11434` |
+| **GEAR-SONIC** | tracks a reference motion at 50 Hz, 500 Hz PD | NVIDIA NVlabs, ONNX Runtime |
+| **ARDY-G1-RP** | turns one constraint into 52 frames at 25 Hz | NVIDIA, PyTorch, CUDA |
 
-Solo project. I integrated rather than trained: **GEAR-SONIC** (whole-body control) and **ARDY-G1** (motion generation) are NVIDIA policies, run unmodified, and the model that plans is a 2B vision-language model served by llama.cpp. I designed the loop and the perception chain: depth buffer, unprojected to metres, projected back to a pixel. `pi` was the coding agent and DeepSeek V4.1 Flash the model that typed most of the code. Every claim below is backed by a test or a measurement in `research/`.
+The loop uses three models and no others. I did not train, fine-tune or quantise any of them: the work here is the loop, the geometry, and the plumbing that makes three published models cooperate on one 8 GB card. Python 3.12 (standard library only) for the application in `clank/`; MuJoCo 3.17 in the spikes, where one 20 ms control tick costs 17.66 ms of encoder, decoder and physics ([`research/wbc-policy-proposal.md`](research/wbc-policy-proposal.md)); NixOS, Steam and Proton; Monado with its `remote` driver; a Vulkan layer in C and GLSL.
+
+Solo project. `pi` was the coding agent and DeepSeek V4.1 Flash the model that typed most of the code. The perception chain — the depth buffer, unprojected to metres, projected back to a pixel — and the shape of the loop are mine, and every claim below is backed by a test or a measurement in `research/`.
 
 ## Architecture
 
@@ -30,7 +36,7 @@ Solo project. I integrated rather than trained: **GEAR-SONIC** (whole-body contr
 flowchart LR
     G["Job Simulator<br/>Proton · OpenXR"]
     L["Vulkan layer<br/>480×270 depth, 960×540 colour"]
-    V["2B vision-language model<br/>one act per turn"]
+    V["LFM3-Omni-2B<br/>one action per turn"]
     P["target in metres<br/>unprojected through the head"]
     A["ARDY-G1<br/>52 frames from one constraint"]
     S["SONIC · MuJoCo<br/>50 Hz policy, 500 Hz PD"]
@@ -51,9 +57,54 @@ Read it as one turn of a loop rather than a pipeline. The game is both the senso
 
 ![One frame of Job Simulator, 2026-11-12: the colour the layer reads on the left, the depth it reads on the right, where near surfaces are dark and everything past 10 m is white.](docs/media/seeing-frame.webp)
 
-**Deciding.** The model gets the still and the one sentence JobBot said, and returns one act. It never writes joints, poses or pixels; the vocabulary is fixed and the adapter compiles it.
+**Moving.** An action becomes a constraint, right hand at the object with feet planted, and ARDY-G1 writes 52 frames at 25 Hz. SONIC tracks them at 50 Hz with a 500 Hz PD loop and ten frames of look-ahead. The clasp starts closing at 80 mm and the hand is pinned there afterwards. A root waypoint is designed for the out-of-reach case and has never been exercised.
 
-**Moving.** An act becomes a constraint, right hand at the object with feet planted, and ARDY-G1 writes 52 frames at 25 Hz. SONIC tracks them at 50 Hz with a 500 Hz PD loop and ten frames of look-ahead. The clasp starts closing at 80 mm and the hand is pinned there afterwards. A root waypoint is designed for the out-of-reach case and has never been exercised.
+## The brain
+
+One still, one sentence, one action. That is the entire decision surface, and this is what a turn actually looks like:
+
+```text
+seed:   The game is Job Simulator. The things you can pick up are a card, a job
+        cartridge and a knob. The console is not a thing to pick up.
+        The voice is a job instructor.
+heard:  Hey, Gilman, take my card.
+self:   left=open right=open yaw=0.02 glow=unknown ghost=unknown
+last:   done
+image:  960×540 colour, from the layer
+```
+
+The constitution it answers to is short enough to quote. It states one action, the honesty rules that were measured to be necessary, and the schema as a requirement rather than an example:
+
+```text
+You are a robot with two hands. You see one image from your eyes and the speech
+since your last action.
+
+You may do exactly one action: hold, look, find, reach, grab, release ...
+After find you are told present or not_visible. After a hand action you are told
+done, saturated, or timeout, and you see a new image.
+
+Do what the voice asked. Do not invent extra chores. Find a thing before you
+reach for it. If find said it is not there, look. If you are unsure, hold.
+
+Grab when glow is yes or unknown; do not grab when glow is no. A yellow ghost
+means the held thing will go into the slot if you release.
+
+Reply with one JSON object and nothing else. All three keys are always present:
+{"skill": ..., "side": "none"|"left"|"right", "target": <noun or null>}
+```
+
+It is not given object positions, a task list, a current goal, or the plan it made last turn beyond the outcome of its last action. It answers with one of six verbs because those are all the adapter can compile: the intent is validated, and an illegal one is rejected rather than clamped. It never writes a joint, a pose or a pixel.
+
+Three calls, not one. **PLAN** picks the verb, side and noun from the still. **GROUND** asks where that noun is, as one quadrant question about a crop the caller supplies. **VERIFY** asks what the cropped patch actually is before the hand closes. The split is measured: this model collapses any image-global grid toward the centre (3/12 on thirds, 0/12 on a nine-cell pick, 0/12 on a 4×4), while the same question about a hand-supplied crop scored 44/44 on the tray.
+
+Four things measuring it changed:
+
+- **The seed was the largest single cause of a wrong verb.** A seed carrying the walkthrough choreography answered `release … cartridge` on three different stills when JobBot had just said "take my card". The seed now names the world and no errand, and the same call became `grab card`.
+- **It copies its own constitution.** Put `release` first in the list and it answers `release`, pipe character included. The schema is therefore written as a requirement, and the parser treats a reply with the verb in the key position as the same decision rather than throwing it away over punctuation.
+- **Refusing does not teach it.** Told `reach right card -> not_located`, it re-issued `reach` on 3 of 3 stills, and adding the rule in words changed nothing. So for any action that needs a pixel, the search is done in code instead of trusted to the model's next turn.
+- **It reads the noun out of the sentence.** On all six motor replies in the same sweep it named the object JobBot had actually said: `card`.
+
+The nouns the model may use are the ones the locator can confirm, and a test fails if the locator's vocabulary and the seed's list drift apart. Every turn is written to the diary as one record: what was heard, what was seen, what was said, what it was told back. The panel in the image at the top is that file, not a reconstruction.
 
 ## Decisions and tradeoffs
 
@@ -71,7 +122,7 @@ Read it as one turn of a loop rather than a pipeline. The game is both the senso
 |---|---|---|---|
 | See | layer **13.9 ms** median, p95 24.8; transport 1.4 ms; 29.8 fps | 480×270 depth, 960×540 colour | `research/evidence/depth-stream/latency.txt` |
 | Hear | **238 ms** prefill + 310 ms decode | one utterance, 2B model, llama.cpp | `research/hearing.md` |
-| Decide | **210 ms** prompt + 203 ms decode | one still plus the sentence | `research/brain-tools.md` |
+| Plan | **210 ms** prompt + 203 ms decode | one still plus the sentence | `research/brain-tools.md` |
 | Locate | card **21.0 px** (21 mm at 0.332 m), lever 5.9 px | one live frame, five box reads | `research/locate.md` |
 | Generate | **16.1 mm** commanded, **12.2 mm** achieved on the glove, 0.313 s, 0.94 GB | game and depth layer live, 52 frames | `research/evidence/ardy-in-the-loop/README.md` |
 | Drive the game | `look_left` **−28.6°**, `look_right` **+54.3°**, `hold` returns to ±0.8° | mode `body`, 50 Hz relay | `research/r6-co-residency.md` |
@@ -117,7 +168,7 @@ Without a GPU or a copy of the game, the tests and `research/evidence/` are the 
 
 | Path | What |
 |---|---|
-| `clank/` | The application. Config, session orchestrator, run state machine, dashboard, pose relay, recording, depth reader, the model loop. Standard library only. |
+| `clank/` | The application. Config, session orchestrator, run state machine, dashboard, pose relay, recording, depth reader, and `brain.py`, the prompt assembly and the three model calls. Standard library only. |
 | `spike/e5/` | The Vulkan depth layer: C, GLSL, the launcher, the calibration. |
 | `spike/wbc_game/` | The loop (`auto.py`), the locator, the reach adapters, the pixel picker. |
 | `spike/ardy/`, `spike/e3/` | The motion generator and the MuJoCo body. Each has its own virtualenv. |
@@ -128,4 +179,4 @@ Without a GPU or a copy of the game, the tests and `research/evidence/` are the 
 
 ## License and credits
 
-MIT for this repository, see [`LICENSE`](LICENSE). *Job Simulator* is proprietary and not distributed here. GEAR-SONIC and ARDY-G1 are NVIDIA's, under the NVIDIA Open Model License; they are wrapped, not modified. Monado is patched for a full visibility mask and a 60 Hz null compositor (`spike/e5/monado-no-visibility-mask.patch`).
+MIT for this repository, see [`LICENSE`](LICENSE). *Job Simulator* is proprietary and not distributed here. GEAR-SONIC and ARDY-G1 are NVIDIA's, under the NVIDIA Open Model License; LFM3-Omni-2B is Liquid AI's. All three are wrapped, not modified. Monado is patched for a full visibility mask and a 60 Hz null compositor (`spike/e5/monado-no-visibility-mask.patch`).

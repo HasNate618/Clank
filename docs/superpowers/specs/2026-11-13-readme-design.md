@@ -91,20 +91,23 @@ and the AI loop becomes one card among twelve.
 | Section | Budget | Contents |
 |---|---|---|
 | Title card + name | 6 | existing `docs/media/title-card.svg` |
-| Summary | 3 | what it is, no slogan: a G1 in MuJoCo, a local VLM and a generated motion prior driving Job Simulator through Monado; no headset, no controllers, game unmodified |
+| Summary | 4 | the loop, stated as autonomy: a vision model decides, a humanoid body does it, in a game that was never meant to be driven by either |
 | Hero still | 4 | the run above, captioned with run id, date, and what the diary is showing |
-| Why | 8 | the loop is the point; the game is an adversarial fixture you cannot script; the hard part named |
-| Stack and my role | 7 | versions; solo; "integrated, not trained"; the agent clause; one number |
+| Why | 12 | the question (how much of a task a small model can carry with no privileged view); why a VR game is a fair fixture; the hard part, which is geometry |
+| Three models | 8 | LFM3-Omni-2B, GEAR-SONIC, ARDY-G1 — job and origin per row, plus "none trained here" |
+| Role | 4 | solo; `pi` + DeepSeek V4.1 Flash in one clause; the perception chain and the loop are the author's |
 | Architecture | 18 | mermaid round trip, one paragraph per side, slot for F2 |
-| Decisions and tradeoffs | 22 | four: inject at the layer, generate rather than hand-write the reference, one body relayed rather than two clients, a 2B local VLM rather than a bigger remote one. Each with its cost |
+| The brain | 40 | the actual seed, live block and constitution; six verbs; what it is not given; the three calls and why; four measured findings; the diary |
+| Decisions and tradeoffs | 22 | four: inject at the layer, generate rather than hand-write the reference, one body relayed rather than two clients, a crop per turn rather than a bigger locator |
 | Results | 14 | 8 rows, source column links |
-| Limitations | 12 | nobody has played it; clip-anchored; 0.89× clock; torso does not turn; the clasp margin; the unverified controller frame || Quick start | 14 | Prerequisites (NixOS, Steam, your copy of the game, Monado with `remote`, an 8 GB card), five commands, what you should see |
+| Limitations | 12 | nobody has played it; clip-anchored; 44.2 Hz against 50; torso does not turn; the clasp margin; the model and its tools; the unverified controller frame |
+| Quick start | 14 | Prerequisites (NixOS, Steam, your copy of the game, Monado with `remote`, an 8 GB card), four commands, what you should see |
 | Tests | 5 | command, count, what is not covered |
 | Where things live | 10 | repo map, 8 rows |
-| Setup and controls | 3 | pointer to `docs/setup.md` |
-| License and credits | 5 | MIT; NVIDIA model licences; the game |
+| Setup and controls | 2 | pointer to `docs/setup.md` |
+| License and credits | 5 | MIT; NVIDIA and Liquid AI model licences; the game |
 
-Target: **~150 lines, under 20 KB**, first four sections inside one screen at 1280×800.
+Target: **~180 lines, under 16 KB**, first four sections inside one screen at 1280×800.
 
 ## What moves out
 
