@@ -210,30 +210,50 @@ def object_world(
 
 
 def move_target(
-    st: dict, side: str, forward_m: float, up_m: float, lateral_m: float
+    st: dict, side: str, forward_m: float, up_m: float, lateral_m: float,
+    ring: dict | None = None,
 ) -> tuple[float, float, float] | None:
-    """Where a directional move ends, in MuJoCo world metres, from where the hand is **now**.
+    """Where a directional move ends, in MuJoCo world metres, from where the hand **is**.
 
-    This is a pull: the hand is already closed on a handle and it travels, so the target is not
-    an object to find but the hand's own reported point displaced. Read fresh on every call and
-    never cached - a second pull must start from where the first one ended, and a hand the body
-    cannot report is a refusal rather than a guess, because a move computed from a stale point
-    travels a distance in a direction nobody asked for.
+    A pull is the hand travelling, not an object to find, so the target is the hand's own point
+    displaced. Which hand point is the whole question, and the answer is the **achieved** one:
 
-    The reported point is the **VR hand** - the wrist link plus its 0.18 m lever - which is what
-    the game draws and what a generated clip's hand constraint is pinned to. Displacing the link
-    instead would leave the drawn hand a lever-length off the handle at the end of the pull.
+    * `body_state.json`'s hand is what the *relay* last had commanded, and the relay holds it
+      through a quiet body on purpose ("a dead body must not release a grab"). After a clip - or
+      after a body restart - it is a stale command, not a position. Measured 2026-11-13: with the
+      body standing at rest, the relay reported the hand 0.5 m forward of where the arm actually
+      was, so a pull computed from it aimed at the point the hand was already at and travelled
+      nothing.
+    * `pose36.json`'s last row is the achieved qpos (`sonic_executor._publish_pose` writes
+      `g1_pack.pose36_from_qpos(data.qpos)`), and `ardy_gen.glove_position` is the same FK the
+      generator constrains. Its glove is the point the game draws and the point a pull has to
+      move.
+
+    So the ring wins whenever there is one, and the relay hand is only a fallback for a caller
+    with no ring. Read fresh on every call and never cached: a second pull must start from where
+    the first one ended.
     """
-    hand = st.get(f"{side}_hand")
-    if not isinstance(hand, dict):
-        return None
-    point = hand.get("p")
-    if not isinstance(point, (list, tuple)) or len(point) != 3:
-        return None
-    try:
-        here = tuple(float(value) for value in point)
-    except (TypeError, ValueError):
-        return None
+    glove_world: tuple[float, float, float] | None = None
+    if ring is not None and ring.get("poses"):
+        try:
+            glove = ardy_gen.glove_position(ring["poses"][-1], hand=side)
+            # ARDY world (x left, y up, z forward) -> MuJoCo world (x forward, y left, z up).
+            glove_world = (float(glove[2]), float(glove[0]), float(glove[1]))
+        except (IndexError, KeyError, TypeError, ValueError):
+            glove_world = None
+    if glove_world is not None:
+        here = reach_vr.to_rel(glove_world, st)
+    else:
+        hand = st.get(f"{side}_hand")
+        if not isinstance(hand, dict):
+            return None
+        point = hand.get("p")
+        if not isinstance(point, (list, tuple)) or len(point) != 3:
+            return None
+        try:
+            here = tuple(float(value) for value in point)
+        except (TypeError, ValueError):
+            return None
     if not all(math.isfinite(value) for value in here):
         return None
     return reach_vr.to_world(moved_point(here, forward_m, up_m, lateral_m), st)
@@ -480,12 +500,12 @@ def main() -> int:
 
     st = reach_vr.state()
     if args.move is not None:
-        target_world = move_target(st, args.side, *args.move)
+        target_world = move_target(st, args.side, *args.move, ring=ring)
         if target_world is None:
             print(f"the body reports no {args.side} hand; a move needs somewhere to start")
             return 2
-        start = tuple(round(float(v), 3) for v in st[f"{args.side}_hand"]["p"])
-        print(f"move from hand {start} by {tuple(args.move)} -> "
+        start = tuple(round(v, 3) for v in reach_vr.to_rel(target_world, st))
+        print(f"move from achieved hand {start} by {tuple(args.move)} -> "
               f"world {tuple(round(v, 3) for v in target_world)}")
     else:
         target_world = object_world(args, session_dir, st)

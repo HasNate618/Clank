@@ -64,3 +64,48 @@ derived from the same row - before any generated motion can be trusted on the ga
 Task 6 (the live gate) **fails**. The machinery is committed and unit-tested (1473 tests), but a
 pull as built would be invisible. Do not tune `MOVE_M` until the pose source is understood: the
 commanded distance is not the variable that is wrong.
+
+## Follow-up: the start point was wrong, and the arm does not follow the clip
+
+Session `20261113T223258Z-00f8ba`, same body. Two more measurements, both with the achieved
+pose read through `ardy_gen.glove_position` on `pose36.json`'s last row (the achieved qpos, per
+`sonic_executor._publish_pose`) and expressed in the pelvis frame with `reach_vr.to_rel`.
+
+**1. `body_state.json`'s hand is a command, not a position, and a pull must not start from it.**
+With the body standing at rest after a `/api/body/stop` + `/start`, the relay reported the hand at
+pelvis x `0.176` while the achieved glove was 0.5 m away in world x - the relay holds the last
+*commanded* pose through a quiet body on purpose. `move_target` now reads the ring's achieved glove
+first and falls back to the relay hand only when there is no ring. Committed with this note.
+
+**2. The cruise moves the arm; a generated clip does not.** Measured back to back on the same
+body:
+
+```text
+mode 1 (cruise, --target 0.46 -0.12 0.02)   achieved glove pelvis x  0.174 -> 0.472
+mode 1, then 6 s of nothing                 0.486 -> 0.468 and flat for 6 s   (the hold holds)
+mode 0 (generated clip, --move -0.20)       commanded 0.45 -> 0.237; achieved 0.463  (no travel)
+```
+
+The clip is not the problem: `mb_clip.npz` carries 0.74 rad of shoulder motion on `jp` rows 22, 24
+and 28, smooth (max row-to-row change 0.045), 104 rows, and the body acks it `done` at frame
+103/104. The mapping is `g1_pack.jp_from_pose36` (policy/CSV order, not index math). A clip with a
+root goal does move the root - 28 mm - so mode 0 reaches the body and applies *some* of the clip.
+
+What does not happen is the arm following the clip's arm reference. That is a pre-existing defect
+of the generated-reach path, not of `--move`: it is the same path `grab_pixel` takes.
+
+**Consequence for the record.** `reach_ardy`'s "achieved glove residual" is measured on this ring,
+and on this body it reported 33-76 mm for a pull where the hand moved 13 mm. The 2026-11-12 grab's
+"12.2 mm achieved" (`research/evidence/ardy-in-the-loop/`) was read the same way, and that run's
+own evidence for success was the game's view (`after-card-taken.png`) - which is the only oracle
+here that cannot be satisfied by the command.
+
+## What to look at next, in order
+
+1. Why mode 0's arm reference is not tracked while mode 1's VR target is. `build_encoder_obs` is
+   called with `vr_pos=None, vr_orn=None` in mode 0 (`sonic_executor.step`), and the mode flag is
+   `obs[0:4]`. The deployed ONNX may be dominated by the (zeroed) VR slots in mode 0; the 2026-11-12
+   grab would not have shown it if its clip's arm motion was small.
+2. `WRIST_BOX` x floor 0.079 is where the *resting* glove sits, so any backward travel from rest is
+   clamped to zero. A pull needs the box's retraction limit measured separately from its forward
+   reach.
