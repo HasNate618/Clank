@@ -179,3 +179,21 @@ gated before the model, the same still makes no call at all.
 Replayed at temperature 0 against the saved stills: greeting -> no call, `hold`; "Hey, Gilman, take my
 card." -> goal `take the card`, object `JobBot card`, skill `grab`; "press the menu button" -> goal
 `open the menu`, skill `menu`. Deleting the prop list did not cost the model its nouns.
+
+## 2026-11-13 — the session, measured against the live endpoint
+
+Two planner calls, the same saved still, one `SessionMemory`, `LFM3-Omni-2B-Q8_0` on `:11434`,
+temperature 0:
+
+| call | heard | answer | history sent |
+| --- | --- | --- | --- |
+| 1 | "Hey, Gilman, take my card." | `grab` / `card` | 0 earlier messages |
+| 2 | "press the menu button" | `menu` / `menu button` | 2 earlier messages, ~49 tokens |
+
+What the second call sent, verbatim: the first turn's situation, the first raw reply, then the new
+situation — no instruction boilerplate, because the history stores the situation and the template
+stays on the newest message only. After two turns the history is **~96 estimated tokens**, so the
+~8k budget is roughly 160 turns of real use rather than the 65 the pair count would have allowed.
+
+Both answers are the right act for the sentence, which is the point: the model was told "press the
+menu button" *after* a card grab was in its history, and it did not repeat the grab.
