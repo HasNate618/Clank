@@ -97,7 +97,7 @@ and the AI loop becomes one card among twelve.
 | Three models | 8 | LFM3-Omni-2B, GEAR-SONIC, ARDY-G1 — job and origin per row, plus "none trained here" |
 | Role | 4 | solo; `pi` + DeepSeek V4.1 Flash in one clause; the perception chain and the loop are the author's |
 | Architecture | 18 | mermaid round trip, one paragraph per side, slot for F2 |
-| The brain | 40 | the actual seed, live block and constitution; six verbs; what it is not given; the three calls and why; four measured findings; the diary |
+| The brain | 40 | the live prompt and the JSON it answers (a goal in words, no verb enum); why the verb is read out of the goal in code; the three hops after the decision; identity decided in code; two measured surprises; the diary |
 | Decisions and tradeoffs | 22 | four: inject at the layer, generate rather than hand-write the reference, one body relayed rather than two clients, a crop per turn rather than a bigger locator |
 | Results | 14 | 8 rows, source column links |
 | Limitations | 12 | nobody has played it; clip-anchored; 44.2 Hz against 50; torso does not turn; the clasp margin; the model and its tools; the unverified controller frame |

@@ -4,15 +4,15 @@
 
 # Clank
 
-A vision model decides, and a simulated humanoid body does it, in a commercial VR game that was never meant to be driven by either. It sees the game's own rendered frame and depth buffer, chooses one action per turn, and a generated motion prior carries the body through it. No headset, no controllers, no game files touched.
+A vision model decides, and a simulated humanoid body carries it out, in a commercial VR game that was never meant to be driven by either. It sees the game's own rendered frame and depth buffer, chooses one action per turn, and a generated motion prior moves the body through it. No headset, no controllers, no game files touched.
 
 ![Run 190131-679de2 on the recordings page: the game's view on the left, the simulated body on the right, and the model's diary below. JobBot says "Hey, Gilman, take my card", and the diary shows the plan, the search and the generated reach.](docs/media/grab-190131.webp)
 
-*Run `190131-679de2`, 12 November 2026. The game's own view, the body that is driving it, and the diary underneath. JobBot says "Hey, Gilman, take my card"; the entries that follow are `plan: grab(card)`, the search for the card, `locate(card)` and `generated reach`. Nothing in that column was typed.*
+*Run `190131-679de2`, 13 November 2026, from the run's own diary. The loop transcribes JobBot as saying "Hey, Gilman, take my card"; the records that follow are `plan: grab(card)` — the goal in the model's words, "take the card from JobBot" — `the card is not found yet - finding it`, `locate(card)`, `generated reach`, and `grab(card) reached`. The diary then ends on `no word from JobBot after the grab`, which is its own bug: the recording's audio has him asking for a job cartridge at 42–46 s, and the speech gate missed the line. 132 seconds of run is 13 lines, because the loop logs events rather than polling.*
 
 ## Why
 
-The question is how much of a task a small model can carry when it has no privileged view of the world. It gets one picture, one sentence from the instructor, and what happened last time. Then it has to name the next action itself, turn after turn, until the job ends or it gets stuck. There is no task list to follow and no goal written by me: a fixed seed names the world, and every steering decision after that is the model's.
+The question is how much of a task a small model can carry when it has no privileged view of the world. It gets one picture, one sentence from the instructor, and what happened last time. Then it has to say what it is trying to do, turn after turn, until the job ends or it gets stuck. There is no task list and no goal written by me: the prompt names the four things in the room, says no further instruction was given, and the model writes the goal itself.
 
 A VR game makes that a fair test rather than a toy. It cannot be scripted, it has real physics, and it has an instructor with an actual script. It also answers back. Either the card ends up in the hand or it does not, and the difference is visible in one frame.
 
@@ -26,9 +26,9 @@ The hard part is geometry, because the picture is all the model has. The head wi
 | **GEAR-SONIC** | tracks a reference motion at 50 Hz, 500 Hz PD | NVIDIA NVlabs, ONNX Runtime |
 | **ARDY-G1-RP** | turns one constraint into 52 frames at 25 Hz | NVIDIA, PyTorch, CUDA |
 
-The loop uses three models and no others. I did not train, fine-tune or quantise any of them: the work here is the loop, the geometry, and the plumbing that makes three published models cooperate on one 8 GB card. Python 3.12 (standard library only) for the application in `clank/`; MuJoCo 3.17 in the spikes, where one 20 ms control tick costs 17.66 ms of encoder, decoder and physics ([`research/wbc-policy-proposal.md`](research/wbc-policy-proposal.md)); NixOS, Steam and Proton; Monado with its `remote` driver; a Vulkan layer in C and GLSL.
+The loop uses three models and no others. I did not train, fine-tune or quantise any of them: the work here is the loop, the geometry, and the plumbing that makes three published models cooperate on one 8 GB card. Python 3 (standard library only) for the application in `clank/`; MuJoCo 3.17 in the spikes, where one 20 ms control tick costs 6.8 ms of encoder, decoder and physics when the ONNX runtime takes 19 cores, or 17.66 ms pinned to one thread ([`research/wbc-policy-proposal.md`](research/wbc-policy-proposal.md)); NixOS, Steam and Proton; Monado with its `remote` driver; a Vulkan layer in C and GLSL.
 
-Solo project. `pi` was the coding agent and DeepSeek V4.1 Flash the model that typed most of the code. The perception chain — the depth buffer, unprojected to metres, projected back to a pixel — and the shape of the loop are mine, and every claim below is backed by a test or a measurement in `research/`.
+Solo project. `pi` was the coding agent and DeepSeek V4.1 Flash the model that typed most of the code. The perception chain — the depth buffer, unprojected to metres, projected back to a pixel — and the shape of the loop are mine. The `Source` column below is there instead of a promise, because the numbers are the argument.
 
 ## Architecture
 
@@ -44,7 +44,7 @@ flowchart LR
     M["Monado remote driver<br/>:4242"]
 
     G -->|"injected after the eye pass"| L
-    L -->|"13 ms"| V
+    L -->|"13.9 ms"| V
     V -->|"locate"| P
     P -->|"hand here, feet planted"| A
     A --> S --> R --> M
@@ -61,50 +61,45 @@ Read it as one turn of a loop rather than a pipeline. The game is both the senso
 
 ## The brain
 
-One still, one sentence, one action. That is the entire decision surface, and this is what a turn actually looks like:
+One still, one sentence, and three lines about its own body. That is the whole decision surface, and this is the prompt as the loop sends it today — the picture attached, the rest as text (`NEXT_STEP_PROMPT`, [`clank/brain.py`](clank/brain.py)):
 
 ```text
-seed:   The game is Job Simulator. The things you can pick up are a card, a job
-        cartridge and a knob. The console is not a thing to pick up.
-        The voice is a job instructor.
-heard:  Hey, Gilman, take my card.
-self:   left=open right=open yaw=0.02 glow=unknown ghost=unknown
-last:   done
-image:  960×540 colour, from the layer
+You are a robot playing a VR game. JobBot said: "Hey, Gilman, take my card."
+
+heard: Hey, Gilman, take my card.
+self:  left=open right=open yaw=0.00 glow=unknown ghost=unknown
+last:  done
+
+No further instruction was given. Decide what you are trying to do next, and
+where, from what you can see. The things you can pick up are a card, a job
+cartridge and a lever; the console is where they go. Reply with JSON only, no
+explanation: {"goal": "the outcome you want", "object": "the thing you act on or
+are holding", "destination": "the name of the visible thing it goes into, or
+none", "side": "left|right"}
 ```
 
-The constitution it answers to is short enough to quote. It states one action, the honesty rules that were measured to be necessary, and the schema as a requirement rather than an example:
+What comes back is a sentence in its own words, plus the fields around it:
 
-```text
-You are a robot with two hands. You see one image from your eyes and the speech
-since your last action.
-
-You may do exactly one action: hold, look, find, reach, grab, release ...
-After find you are told present or not_visible. After a hand action you are told
-done, saturated, or timeout, and you see a new image.
-
-Do what the voice asked. Do not invent extra chores. Find a thing before you
-reach for it. If find said it is not there, look. If you are unsure, hold.
-
-Grab when glow is yes or unknown; do not grab when glow is no. A yellow ghost
-means the held thing will go into the slot if you release.
-
-Reply with one JSON object and nothing else. All three keys are always present:
-{"skill": ..., "side": "none"|"left"|"right", "target": <noun or null>}
+```json
+{"goal": "take the card from JobBot", "object": "card", "destination": "none", "side": "right"}
 ```
 
-It is not given object positions, a task list, a current goal, or the plan it made last turn beyond the outcome of its last action. It answers with one of six verbs because those are all the adapter can compile: the intent is validated, and an illegal one is rejected rather than clamped. It never writes a joint, a pose or a pixel.
+**The model does not choose a verb, and that is the finding.** The earlier design gave it an action list; asked to pick from one, it answered `hold` or `release` on 4 of 4 stills and never once `grab`. Asked instead what it is trying to do, it said "take the JobBot card" on 4 of 4. So the shape of the question is the measurement: the model states the goal, and the verb is read out of the model's own sentence in code. `brain.py` still carries the constitution and the six-verb schema that design used, and the replay view that re-renders a finished diary uses them; the loop sends neither. The verb list is exactly what stopped it choosing.
 
-Three calls, not one. **PLAN** picks the verb, side and noun from the still. **GROUND** asks where that noun is, as one quadrant question about a crop the caller supplies. **VERIFY** asks what the cropped patch actually is before the hand closes. The split is measured: this model collapses any image-global grid toward the centre (3/12 on thirds, 0/12 on a nine-cell pick, 0/12 on a 4×4), while the same question about a hand-supplied crop scored 44/44 on the tray.
+Then three hops, and only the first is the model's business:
 
-Four things measuring it changed:
+1. **Locate** (`spike/wbc_game/locate.py`). One quadrant question about the whole frame, then a pixel question about that quadrant grown 15% so a thing on the seam is not sliced, then five box reads, then a description. The five reads and the check cost **2.32–2.94 s** and put the card **21.0 px** from hand-marked truth on a live frame. The quadrant comes first because this model collapses any image-global grid toward the centre: **3/12** on thirds, **0/12** on a nine-cell pick, **0/12** on a 4×4.
+2. **Search in code, not by asking.** Told `reach right card -> not_located`, the model re-issued `reach` on **3 of 3** stills, and writing the rule into the prompt changed nothing. So when an act needs a pixel the loop does not have, the loop runs the search itself rather than trusting the model to remember.
+3. **Generate and execute.** A constraint, not a trajectory: right hand at the located point with the feet planted, 52 frames at 25 Hz, tracked by SONIC at 50 Hz.
 
-- **The seed was the largest single cause of a wrong verb.** A seed carrying the walkthrough choreography answered `release … cartridge` on three different stills when JobBot had just said "take my card". The seed now names the world and no errand, and the same call became `grab card`.
-- **It copies its own constitution.** Put `release` first in the list and it answers `release`, pipe character included. The schema is therefore written as a requirement, and the parser treats a reply with the verb in the key position as the same decision rather than throwing it away over punctuation.
-- **Refusing does not teach it.** Told `reach right card -> not_located`, it re-issued `reach` on 3 of 3 stills, and adding the rule in words changed nothing. So for any action that needs a pixel, the search is done in code instead of trusted to the model's next turn.
-- **It reads the noun out of the sentence.** On all six motor replies in the same sweep it named the object JobBot had actually said: `card`.
+**Identity is decided in code.** Colour is not identity: a box described as a "green robot computer" matched "job cartridge" on the shared colour word and pointed at a monitor. The model will refuse when it is offered the chance — given `{"none": true}` as an option it refused **5/5** reads for an absent noun — but it will not refuse a noun it believes in, so the match is a vocabulary comparison in `describe_matches()`, and an unknown noun refuses even when the box was right.
 
-The nouns the model may use are the ones the locator can confirm, and a test fails if the locator's vocabulary and the seed's list drift apart. Every turn is written to the diary as one record: what was heard, what was seen, what was said, what it was told back. The panel in the image at the top is that file, not a reconstruction.
+Two more things that measuring it changed:
+
+- **It invents work.** The first turn of the run above heard an introduction — "welcome to the job simulator, my name is JobBot" — and planned `place(job cartridge into console)`, a chore nobody had given it. The schema caught it (`place needs a side`) and it held. That is the honest account: the loop refused the plan, the model did not withdraw it.
+- **It copies its prompt.** Put `release` first in an action list and it answers `release`, pipe character included. This is why the live prompt has no action list for it to copy.
+
+Every turn is one record in a diary: what was heard, what was said, what was done, what it was told back. The panel in the image at the top is that file. The nouns the prompt offers are the ones the locator can confirm, and a test fails if those two lists drift apart.
 
 ## Decisions and tradeoffs
 
@@ -125,18 +120,19 @@ The nouns the model may use are the ones the locator can confirm, and a test fai
 | Plan | **210 ms** prompt + 203 ms decode | one still plus the sentence | `research/brain-tools.md` |
 | Locate | card **21.0 px** (21 mm at 0.332 m), lever 5.9 px | one live frame, five box reads | `research/locate.md` |
 | Generate | **16.1 mm** commanded, **12.2 mm** achieved on the glove, 0.313 s, 0.94 GB | game and depth layer live, 52 frames | `research/evidence/ardy-in-the-loop/README.md` |
-| Drive the game | `look_left` **−28.6°**, `look_right` **+54.3°**, `hold` returns to ±0.8° | mode `body`, 50 Hz relay | `research/r6-co-residency.md` |
-| Walk | **39.79 m** in 60 s, no fall | SONIC default, headless CPU | `research/sonic-gate-results.md` |
+| Drive the game | the achieved torso and wrists drive the HMD and the controllers: `look_left` **−28.6°**, `look_right` **+54.3°** from the body's **−86.8°** baseline | mode `body`, 50 Hz relay | [`docs/archive/specs/2026-10-30-targeting-adapter.md`](docs/archive/specs/2026-10-30-targeting-adapter.md) |
+| Walk | **39.79 m** path in 60 s at 0.663 m/s, no fall, yaw drift −2.1° | SONIC default, headless CPU | `research/sonic-gate-results.md` |
 | Co-residency | **44.2 Hz** beside the game against 44.5 Hz alone, +177 MiB | one 8 GB card, two views | `research/r6-co-residency.md` |
 
 ## Limitations
 
-- **Nobody has played it.** The body took a card and held it; no level has been cleared, and the run above ended with "no word from JobBot after the grab".
+- **Nobody has played it.** The body took a card and held it; no level has been cleared. The run above ends on `no word from JobBot after the grab`, and the recording contradicts it: the ear missed the line, not the game.
 - **The body does not walk in-game.** It is clip-anchored: one generated window reaches, it does not step, so anything out of arm's reach is not attempted.
 - **It runs at 44.2 Hz against a 50 Hz design point** with the game up. The tick advances exactly 20 ms of simulated time, so the shortfall is real: the game sees 0.89× real time.
 - **The torso does not turn to look.** It started 63.9° off the card and the reach did not turn it, so the body reaches sideways at a target it is facing away from.
 - **The clasp threshold is a guess.** 80 mm has fired twice, at 60 and 78 mm, and has never been swept either way.
 - **The model is not reliable about its own tools.** One run planned `reach(the display interface)` again and again, located nothing, and never acted on the card; absence is therefore decided in code rather than by the model.
+- **Three of the five fields in the `self:` line are constants.** The loop passes the hands and the last outcome; `yaw`, `glow` and `ghost` sit at their defaults, because nothing computes them yet.
 - **Controller orientation is unverified.** Positions are exact, but the wrist frame is not an OpenXR grip, so the in-game aim may be rotated by a fixed offset.
 
 ## Quick start
