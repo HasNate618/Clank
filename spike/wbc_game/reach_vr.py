@@ -61,7 +61,7 @@ from clank.body import Pose  # noqa: E402
 from clank.depth_stream import Stream  # noqa: E402
 from clank.player_scale import read as read_player_scale  # noqa: E402
 from clank.projection import Fov, project_point  # noqa: E402
-from clank.workspace import clamp_wrist  # noqa: E402
+from clank.workspace import clamp_wrist, moved_point  # noqa: E402
 
 SOCK = Path.home() / ".local/state/Clank/sessions/body/control.sock"
 STATE = Path.home() / ".local/state/Clank/sessions/body/body_state.json"
@@ -381,6 +381,11 @@ def main() -> int:
         help="reference speed in m/s; the plant tracks ~0.13-0.30 depending on the direction, "
         "and past its bandwidth the gap shows up as overshoot",
     )
+    ap.add_argument(
+        "--move", type=float, nargs=3, default=None, metavar=("FWD", "UP", "LAT"),
+        help="travel from the hand's own reported point by this many metres in the pelvis "
+             "frame (forward, up, lateral) instead of reaching an object",
+    )
     ap.add_argument("--dry-run", action="store_true", help="measure only, send nothing")
     ap.add_argument(
         "--grab",
@@ -422,10 +427,12 @@ def main() -> int:
         # the caller grounded the card at 0.59 m and this process, sampling the same pixel
         # after the pin had lapsed, computed 1.44 m and refused it.
         camera = Pose(p=tuple(args.camera[:3]), q_xyzw=tuple(args.camera[3:]))
-    if args.world is not None:
-        goal_world = tuple(args.world)
-        goal = to_rel(goal_world, st)
-        source = "--world"
+    if args.move is not None:
+        # A pull: the hand travels from where it is, not towards something to find. `moved_point`
+        # owns both limits, and the reported point is the VR hand the game draws.
+        goal = moved_point(tuple(st[f"{args.side}_hand"]["p"]), *args.move)
+        goal_world = to_world(goal, st)
+        source = "--move"
     elif args.target is not None:
         goal = tuple(args.target)
         goal_world = to_world(goal, st)

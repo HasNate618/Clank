@@ -77,6 +77,7 @@ import reach_vr  # noqa: E402  # pyright: ignore[reportMissingImports]
 from clank.body import Pose  # noqa: E402
 from clank.depth_stream import Stream  # noqa: E402
 from clank.player_scale import read as read_player_scale  # noqa: E402
+from clank.workspace import moved_point  # noqa: E402
 
 #: Where the body process keeps its mailbox by default; `--session-dir` overrides it.
 SESSION_DIR = reach_vr.SOCK.parent
@@ -206,6 +207,36 @@ def object_world(
         f"{max(math.dist(p, rel) for p in samples) * 1000:.0f} mm"
     )
     return reach_vr.to_world(rel, st)
+
+
+def move_target(
+    st: dict, side: str, forward_m: float, up_m: float, lateral_m: float
+) -> tuple[float, float, float] | None:
+    """Where a directional move ends, in MuJoCo world metres, from where the hand is **now**.
+
+    This is a pull: the hand is already closed on a handle and it travels, so the target is not
+    an object to find but the hand's own reported point displaced. Read fresh on every call and
+    never cached - a second pull must start from where the first one ended, and a hand the body
+    cannot report is a refusal rather than a guess, because a move computed from a stale point
+    travels a distance in a direction nobody asked for.
+
+    The reported point is the **VR hand** - the wrist link plus its 0.18 m lever - which is what
+    the game draws and what a generated clip's hand constraint is pinned to. Displacing the link
+    instead would leave the drawn hand a lever-length off the handle at the end of the pull.
+    """
+    hand = st.get(f"{side}_hand")
+    if not isinstance(hand, dict):
+        return None
+    point = hand.get("p")
+    if not isinstance(point, (list, tuple)) or len(point) != 3:
+        return None
+    try:
+        here = tuple(float(value) for value in point)
+    except (TypeError, ValueError):
+        return None
+    if not all(math.isfinite(value) for value in here):
+        return None
+    return reach_vr.to_world(moved_point(here, forward_m, up_m, lateral_m), st)
 
 
 def deposit(session_dir: Path, frames: list[tuple[float, ...]]) -> int:
@@ -378,6 +409,12 @@ def main() -> int:
              "reach, because a world point does not go stale when the body leans",
     )
     parser.add_argument(
+        "--move", type=float, nargs=3, default=None, metavar=("FWD", "UP", "LAT"),
+        help="travel from the hand's own reported point by this many metres in the pelvis "
+             "frame instead of reaching an object; this is what a pull or a push is, and the "
+             "magnitude is capped by clank.workspace like every other wrist point",
+    )
+    parser.add_argument(
         "--grab", action="store_true",
         help="close the hand on approach, mid-clip, not after it",
     )
@@ -401,8 +438,12 @@ def main() -> int:
         help="the body's mailbox directory (default: the live session body directory)",
     )
     args = parser.parse_args()
-    if args.world is None and (args.px is None or args.py is None):
-        parser.error("give a pixel pair or --world X Y Z")
+    sources = sum(1 for source in (args.world is not None, args.move is not None,
+                                   args.px is not None or args.py is not None) if source)
+    if sources == 0:
+        parser.error("give a pixel pair, --world X Y Z or --move FWD UP LAT")
+    if sources > 1:
+        parser.error("a pixel, --world and --move are three different targets; give one")
 
     session_dir = Path(args.session_dir)
     # `reach_vr.send`/`state` are the measured readers of this socket and file; point them
@@ -438,10 +479,19 @@ def main() -> int:
             return 3
 
     st = reach_vr.state()
-    target_world = object_world(args, session_dir, st)
-    if target_world is None:
-        print(f"no surface at ({args.px:.0f}, {args.py:.0f})")
-        return 2
+    if args.move is not None:
+        target_world = move_target(st, args.side, *args.move)
+        if target_world is None:
+            print(f"the body reports no {args.side} hand; a move needs somewhere to start")
+            return 2
+        start = tuple(round(float(v), 3) for v in st[f"{args.side}_hand"]["p"])
+        print(f"move from hand {start} by {tuple(args.move)} -> "
+              f"world {tuple(round(v, 3) for v in target_world)}")
+    else:
+        target_world = object_world(args, session_dir, st)
+        if target_world is None:
+            print(f"no surface at ({args.px:.0f}, {args.py:.0f})")
+            return 2
     target = ardy_point(target_world)
     p_root = reach_vr.to_rel(target_world, st)
     # There is no mink planted solve under the ARDY adapter: the generator is the reach. So
