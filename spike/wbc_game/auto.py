@@ -207,17 +207,25 @@ def mark(png: bytes, pixel: tuple[float, float], out: pathlib.Path) -> None:
     image.save(out)
 
 
-def confirm(pattern: str, max_s: float = 20.0) -> str:
+def confirm(pattern: str, max_s: float = 8.0) -> str:
     """The game is the oracle, and it is free: when the player takes the card, JobBot stops
     asking for it and tells you to take a cartridge. Exit codes cannot say that - the reach
     closed 82 mm short today and reported SATURATED either way - but the script can.
+
+    A fixed window through `ears.record`, not `ears.listen`: the gate's job is "wait for the
+    next line", and this question is "what did the game just say". The game talks over the
+    grab, so a listen that opens on JobBot already talking measures its floor on the speech
+    and gates itself deaf. MEASURED 2026-11-13, run 190131-679de2: floor 2445, gate 9781, peak
+    4415, and the diary wrote "no word from JobBot" over an audible
+    "You grab one of the job cartridges off the table and let's get started."
     """
     try:
-        hearing = ears.listen(pattern=pattern, max_s=max_s)
+        hearing = ears.record(max_s, pattern=pattern)
     except ears.EarsError as exc:
-        brainlog.log("error", f"could not listen for the answer: {exc}")
+        brainlog.log("error", f"could not record the answer: {exc}")
         return ""
-    if not hearing.ok:
+    if not hearing.wav:
+        brainlog.log("result", "no audio at all when JobBot was meant to answer", ok=False)
         return ""
     heard = brain.transcribe(BrainConfig(), hearing.wav)
     if heard.error:
@@ -225,7 +233,7 @@ def confirm(pattern: str, max_s: float = 20.0) -> str:
         return ""
     if heard.empty:
         return ""
-    brainlog.log("heard", heard.text, ms=heard.decode_ms, speech_s=hearing.speech_s,
+    brainlog.log("heard", heard.text, ms=heard.decode_ms, seconds=hearing.seconds,
                  cut=heard.ellipsis)
     return heard.text
 

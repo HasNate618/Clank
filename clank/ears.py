@@ -19,9 +19,22 @@ back to the operator's real sink so the game stays audible, and `parecord` on
 `clank-game.monitor`. The desktop mix never enters the capture, and a notification or the
 operator talking cannot be mistaken for JobBot.
 
-Recording is gated on speech: 50 ms RMS blocks, floor from the first half second, and the
-utterance ends after `hang_s` of quiet. Digital silence between lines is the normal state of
-this game, so the gate keys on the floor being *known*, not on it being non-zero.
+Recording is gated on speech: 50 ms RMS blocks, the floor is the 20th percentile of every
+block before the gate opened, and the utterance ends after `hang_s` (2.0 s) of quiet.
+Digital silence between lines is the normal state of this game, so the gate keys on the floor
+being *known*, not on it being non-zero.
+
+The floor covers the whole pre-start period and is never recomputed from a rolling window: a
+capture that opens on the game already talking otherwise takes the speech for the floor and
+gates itself deaf to that same speech. MEASURED on the confirm window of run
+190131-679de2 - the first half second's median was 2445, so the gate sat at 9781 while every
+block of an audible line peaked at 4415.
+
+**The percentile has a limit worth knowing:** it only rescues a loud opening when at least a
+fifth of the pre-start blocks are quiet, because the 20th percentile of mostly-loud blocks is
+loud. Real speech has word gaps, so it usually does; a capture that is loud from its first block
+to its last still never opens, and `test_continuous_loud_audio_is_not_an_utterance` pins that.
+That question - "what did the game just say" - is what `record()` is for, and it has no gate.
 """
 
 from __future__ import annotations
@@ -77,6 +90,11 @@ class Hearing:
 
     `speech_s` is the time the gate called speech. A fixed-length `record()` has no gate,
     so it equals `seconds` there.
+
+    `ended_by` names the rule that stopped `listen`: `hang` (the quiet after the utterance),
+    `deadline` (`max_s` ran out), `eof` (the capture ended), or `never-started` (the gate
+    never opened, so there was no utterance to end). `record()` is a fixed window - it stops
+    when the window is full - and leaves `ended_by` empty.
     """
 
     wav: bytes = b""
@@ -89,6 +107,7 @@ class Hearing:
     device: str = ""
     floor: float = 0.0
     gate: float = 0.0
+    ended_by: str = ""
     error: str = ""
     extra: dict[str, Any] = field(default_factory=dict)
 
@@ -108,6 +127,7 @@ class Hearing:
             "device": self.device,
             "floor": round(self.floor, 1),
             "gate": round(self.gate, 1),
+            "ended_by": self.ended_by,
             "bytes": len(self.wav),
             "error": self.error,
         }
@@ -545,7 +565,7 @@ def listen(
     max_s: float = 25.0,
     pre_roll_s: float = 0.45,
     floor_s: float = 0.5,
-    hang_s: float = 0.8,
+    hang_s: float = 2.0,
     tail_s: float = 0.2,
     gate_ratio: float = 4.0,
     gate_min: float = GATE_MIN_RMS,
@@ -553,6 +573,13 @@ def listen(
     reader: Any = None,
 ) -> Hearing:
     """Record one utterance from the game, gated on speech.
+
+    `hang_s` is the quiet that ends an utterance. MEASURED 2026-11-13 on the audio of run
+    190131-679de2: the pause *inside* JobBot's opening is 0.60 s ("...fine job museum." to
+    "Here's my card."), while the gap between two separate turns is 6.3-6.9 s (the opening to
+    his nag, the card line to the cartridge line). 2.0 s sits between the two with a 3x margin
+    on the turn gap. Note that 0.60 s is *below* the old 0.8 s, so a split at 0.8 s means the
+    capture dropped out rather than that the pause was long - `Hearing.ended_by` now says which.
 
     `reader` replaces the capture entirely and is how the tests drive the gate without an
     audio device.
@@ -567,6 +594,7 @@ def listen(
     speech_blocks = 0
     quiet_blocks = 0
     started = False
+    ended_by = "deadline"
     error = ""
     info: dict[str, Any] = {}
     manager = None
@@ -588,6 +616,7 @@ def listen(
                 seen_audio = True
             if not chunk:
                 if proc is not None and proc.poll() is not None:
+                    ended_by = "eof"
                     if not keep:
                         error = "capture ended"
                     break
@@ -597,6 +626,7 @@ def listen(
                     # coming. Without this the gate spins to `max_s` on a dead reader. A
                     # stream that ends after speech began is not an error, it is the end
                     # of the utterance.
+                    ended_by = "eof"
                     if not keep:
                         error = "capture went quiet"
                     break
@@ -604,13 +634,16 @@ def listen(
             _, rms = level(chunk)
             if not started:
                 pre.append(chunk)
+                # Every block before the gate opens, kept and never cleared. The floor is the
+                # 20th percentile of all of them, so a loud opening - the game already
+                # talking, or a bang - cannot set the floor for the rest of the window and
+                # gate the utterance out. A median of the first half second did exactly that.
                 floor_samples.append(rms)
                 if len(floor_samples) * BLOCK_S >= floor_s:
                     ordered = sorted(floor_samples)
-                    floor = ordered[len(ordered) // 2]
+                    floor = ordered[max(0, len(ordered) // 5)]
                     gate = max(gate_ratio * floor, gate_min)
                     floor_known = True
-                    del floor_samples[:]
                 # `floor_known`, not `floor > 0`: the game is digitally silent between
                 # lines, so a floor of exactly zero is the normal case and gating on it
                 # would make it deaf.
@@ -627,6 +660,7 @@ def listen(
             else:
                 quiet_blocks += 1
                 if quiet_blocks * BLOCK_S >= hang_s:
+                    ended_by = "hang"
                     break
     finally:
         if manager is not None:
@@ -639,9 +673,14 @@ def listen(
         if error:
             reason = f"{reason} ({error})"
         return Hearing(node_name="", device=str(info.get("device", "")),
-                       floor=floor, gate=gate, error=reason)
+                       floor=floor, gate=gate, ended_by="never-started", error=reason)
 
-    drop_s = max(0.0, hang_s - tail_s)
+    # Trim the trailing quiet, but only when there really is trailing quiet. A `hang` ending
+    # means `hang_s` of silence was observed, so `hang_s - tail_s` of it can go. A `deadline` or
+    # `eof` ending has no quiet to trim - the line was cut mid-speech - and removing
+    # `hang_s - tail_s` there deletes 1.8 s of what the game actually said. At hang_s = 0.8 the
+    # error was 0.6 s and invisible; at 2.0 it is most of a sentence.
+    drop_s = max(0.0, hang_s - tail_s) if ended_by == "hang" else 0.0
     drop = int(drop_s / BLOCK_S) * block
     pcm = b"".join(keep)
     if drop and len(pcm) > drop + block * 4:
@@ -657,6 +696,7 @@ def listen(
         device=str(info.get("device", "")),
         floor=floor,
         gate=gate,
+        ended_by=ended_by,
         error=error,
     )
 

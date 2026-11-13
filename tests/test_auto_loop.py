@@ -108,3 +108,12 @@ class TheActUsesTheGeneratedPath(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+    def test_confirm_records_a_window_instead_of_listening(self) -> None:
+        # The gate's job is "wait for the next line"; confirm's question is "what did the game
+        # just say", and the game talks over the grab. MEASURED 2026-11-13: a listen that opened
+        # on JobBot measured its floor on the speech and reported silence over an audible line.
+        confirm = self.source[self.source.index("def confirm("):self.source.index("def grab_pixel(")]
+        self.assertIn("ears.record(", confirm)
+        self.assertNotIn("ears.listen(", confirm)
+        self.assertIn("max_s: float = 8.0", confirm)

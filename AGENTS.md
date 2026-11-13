@@ -458,8 +458,18 @@ python3 -m clank.brainlog --tail 20
   silent at the `PULL LEVER TO JOB` menu: JobBot's first lines come after the job starts, so a
   restart alone does not produce speech.
 - **Digital silence is the normal state between lines.** The gate is RMS on 50 ms blocks,
-  floor = median of the first 0.5 s, gate = `max(4 x floor, 250)`, and it keys on `floor_known`
-  - gating on `floor > 0` made the ear deaf to exactly this game.
+  floor = **20th percentile of every block before the gate opened**, gate = `max(4 x floor, 250)`,
+  and it keys on `floor_known` - gating on `floor > 0` made the ear deaf to exactly this game.
+  The percentile replaces a rolling median of the first 0.5 s, which took the game's own speech
+  for the floor whenever a capture opened mid-line (measured: floor 2445, gate 9781, peak 4415).
+  It has a limit: it needs a quiet fifth of the pre-start blocks, so a capture that is loud from
+  first block to last never opens.
+- **`hang_s` is 2.0 s, measured between the two gaps.** Inside JobBot's opening the pause is
+  0.60 s ("...fine job museum." to "Here's my card."); between two separate turns it is 6.3-6.9 s.
+  `Hearing.ended_by` says which rule stopped the capture (`hang`/`deadline`/`eof`/`never-started`),
+  so a split that should not have happened can be told from a long pause.
+- **The tail trim is `hang_s - tail_s` of quiet, and only on a `hang` ending.** Applying it to a
+  `deadline` or `eof` cut deletes speech that was never quiet.
 - **Transcribe first, decide second.** One call asking for both words and a decision produced a
   goal that ignored what was said. `transcribe()` returns the line and the caller feeds it to
   `next_step()` as the situation, so the calibrated prompts keep working unchanged. Measured on

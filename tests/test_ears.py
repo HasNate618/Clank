@@ -233,27 +233,113 @@ class WavTest(unittest.TestCase):
 
 class ListenTest(unittest.TestCase):
     def test_finds_one_utterance_and_stops_after_the_hang(self):
-        stream = FakeStream(
+        blocks = (
             [silence(ears.BLOCK_S)] * 12
             + [pcm(8000, ears.BLOCK_S)] * 10
-            + [silence(ears.BLOCK_S)] * 40
+            + [silence(ears.BLOCK_S)] * 60
         )
+        stream = FakeStream(blocks)
         hearing = ears.listen(reader=stream, max_s=10.0)
         self.assertTrue(hearing.ok, hearing.error)
         self.assertGreater(hearing.speech_s, 0.4)
         self.assertLess(hearing.speech_s, 0.7)
         # the hang ended it: the remaining quiet blocks were never read
-        self.assertLess(len(stream.read_sizes), 62)
+        self.assertLess(len(stream.read_sizes), len(blocks))
+        self.assertEqual(hearing.ended_by, "hang")
         self.assertTrue(hearing.wav.startswith(b"RIFF"))
+
+    def test_a_1s_pause_is_the_same_utterance(self):
+        # JobBot: "...museum." + ~1.2 s + "Here's my card." One line, not two: the
+        # pause is shorter than the hang, and capturing it as two utterances loses the
+        # offer that names the task. MEASURED 2026-11-13, run 190131-679de2.
+        gap = int(1.2 / ears.BLOCK_S)
+        stream = FakeStream(
+            [silence(ears.BLOCK_S)] * 12
+            + [pcm(8000, ears.BLOCK_S)] * 8
+            + [silence(ears.BLOCK_S)] * gap
+            + [pcm(8000, ears.BLOCK_S)] * 8
+            + [silence(ears.BLOCK_S)] * 80
+        )
+        hearing = ears.listen(reader=stream, max_s=10.0)
+        self.assertTrue(hearing.ok, hearing.error)
+        self.assertGreater(hearing.speech_s, 0.6)
+        self.assertEqual(hearing.ended_by, "hang")
+
+    def test_a_2_5s_pause_is_two_utterances(self):
+        gap = int(2.5 / ears.BLOCK_S)
+        stream = FakeStream(
+            [silence(ears.BLOCK_S)] * 12
+            + [pcm(8000, ears.BLOCK_S)] * 8
+            + [silence(ears.BLOCK_S)] * gap
+            + [pcm(8000, ears.BLOCK_S)] * 8
+        )
+        hearing = ears.listen(reader=stream, max_s=10.0)
+        self.assertTrue(hearing.ok, hearing.error)
+        self.assertLess(hearing.speech_s, 0.6)
+
+    def test_a_loud_opening_is_heard_once_a_quiet_fifth_arrives(self):
+        # The floor is the 20th percentile of every pre-start block, so a loud opening needs a
+        # quiet fifth before the gate can open. This pins the limit honestly: the utterance is
+        # the SECOND burst, not the first - the loud opening is lost, and that is the price of
+        # a percentile floor rather than a rolling median (which would never open at all).
+        stream = FakeStream(
+            [pcm(8000, ears.BLOCK_S)] * 20
+            + [silence(ears.BLOCK_S)] * 10
+            + [pcm(8000, ears.BLOCK_S)] * 12
+            + [silence(ears.BLOCK_S)] * 80
+        )
+        hearing = ears.listen(reader=stream, max_s=10.0)
+        self.assertTrue(hearing.ok, hearing.error)
+        self.assertLess(hearing.speech_s, 1.0, "the loud opening is not part of the utterance")
+
+    def test_a_capture_that_is_loud_throughout_never_opens(self):
+        # No quiet fifth, no floor, no gate: the documented limit, not a bug to fix here.
+        stream = FakeStream([pcm(8000, ears.BLOCK_S)] * 200)
+        hearing = ears.listen(reader=stream, max_s=2.0)
+        self.assertFalse(hearing.ok)
+        self.assertEqual(hearing.ended_by, "never-started")
+
+    def test_a_deadline_ending_keeps_the_whole_line(self):
+        # The trim is `hang_s - tail_s` of quiet, and a line cut by max_s has no quiet to trim.
+        # At hang_s = 2.0 the old unconditional trim deleted 1.8 s of live speech, which is the
+        # next instruction once confirm() feeds the transcript forward.
+        stream = FakeStream(
+            [silence(ears.BLOCK_S)] * 12          # a quiet floor, so the gate can open at all
+            + [pcm(8000, ears.BLOCK_S)] * 400     # one long line, never a 2 s pause
+        )
+        hearing = ears.listen(reader=stream, max_s=3.0)
+        self.assertTrue(hearing.ok, hearing.error)
+        self.assertEqual(hearing.ended_by, "deadline")
+        self.assertGreater(hearing.seconds, 2.5, "the trim ate the end of the line")
+
+    def test_a_loud_opening_does_not_set_the_floor(self):
+        # The confirm window of run 190131-679de2 in miniature: the loudest part of the line
+        # is at its start, so a median of the first half second is the wrong floor for the
+        # rest of it (measured there: 2445 -> gate 9781 against a 4415 peak). On this stream
+        # the rolling median re-medians on the 2000 blocks, sits at a gate of 8000 and never
+        # opens; the cumulative 20th percentile keeps the line's own quiet, and hears it.
+        stream = FakeStream(
+            [pcm(6000, ears.BLOCK_S)] * 10       # the loud opening
+            + [silence(ears.BLOCK_S)] * 4        # the pause between words
+            + [pcm(2000, ears.BLOCK_S)] * 40     # the rest of the line, quieter
+            + [silence(ears.BLOCK_S)] * 80
+        )
+        hearing = ears.listen(reader=stream, max_s=10.0)
+        self.assertTrue(hearing.ok, hearing.error)
+        self.assertLess(hearing.gate, 6000, "the loud opening set the gate")
+        self.assertEqual(hearing.ended_by, "hang")
 
     def test_keeps_the_pre_roll_so_the_first_syllable_survives(self):
         stream = FakeStream(
             [silence(ears.BLOCK_S)] * 12
             + [pcm(8000, ears.BLOCK_S)] * 6
-            + [silence(ears.BLOCK_S)] * 30
+            # longer than the hang, so the hang ends it: at 30 blocks (1.5 s) the stream ran to
+            # EOF instead and the test measured the EOF path, not the pre-roll
+            + [silence(ears.BLOCK_S)] * int(3.0 / ears.BLOCK_S)
         )
         hearing = ears.listen(reader=stream, max_s=10.0)
         self.assertTrue(hearing.ok, hearing.error)
+        self.assertEqual(hearing.ended_by, "hang")
         self.assertGreater(hearing.seconds, 0.3)
         self.assertLess(hearing.seconds, 6 * ears.BLOCK_S + ears.BLOCK_S + 1.0)
 
@@ -317,6 +403,7 @@ class ListenTest(unittest.TestCase):
         hearing = ears.listen(reader=stream, max_s=1.0)
         self.assertFalse(hearing.ok)
         self.assertGreater(hearing.gate, 9000)
+        self.assertEqual(hearing.ended_by, "never-started")
 
     def test_a_dead_reader_does_not_spin_to_the_deadline(self):
         stream = FakeStream([silence(ears.BLOCK_S)] * 12)
