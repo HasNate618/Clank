@@ -58,18 +58,12 @@ The trap took a while to find: the target is written twice per frame, once by a 
 The colour still, and one prompt. This is the prompt as the loop sends it today, from `NEXT_STEP_PROMPT` in [`clank/brain.py`](clank/brain.py):
 
 ```text
-You are a robot playing a VR game. JobBot said: "Hey, Gilman, take my card."
-
-heard: Hey, Gilman, take my card.
-self:  left=open right=open yaw=0.00 glow=unknown ghost=unknown
+You are a robot playing a VR game. This is what was heard: "Hey, Gilman, take my card."
+self:  left=open right=open yaw=0.00
 last:  done
-
-No further instruction was given. Decide what you are trying to do next, and
-where, from what you can see. The things you can pick up are a card, a job
-cartridge and a lever; the console is where they go. Reply with JSON only, no
-explanation: {"goal": "the outcome you want", "object": "the thing you act on or
-are holding", "destination": "the name of the visible thing it goes into, or
-none", "side": "left|right"}
+Obey the newest thing that was heard. Earlier speech is context, not an order.
+Decide what you are trying to do next, and where, from what you can see.
+Reply with JSON only: {"goal": "...", "object": "...", "destination": "...", "side": "left|right"}
 ```
 
 What comes back is a sentence of its own plus the fields around it:
@@ -80,9 +74,19 @@ What comes back is a sentence of its own plus the fields around it:
 
 I gave it a list of six actions first, and it did not work. Asked to pick one, it answered `hold` or `release` on four stills out of four and never picked up anything. Asked what it was trying to do, it wrote "take the JobBot card" on four out of four. The verb is now read out of the model's own sentence in code, which is the one part of this I would defend hardest: the model states the goal, and `skill_from_goal` decides what that means for the body.
 
-Nothing else is in the prompt. It does not get a task list, a transcript of the conversation, or any position of any object; it gets the last outcome and the newest thing JobBot said. When it needs a position, it has to look.
+Nothing else is in the prompt: no task list, no cue, no position of any object. It used to name the
+props — "a card, a job cartridge and a lever; the console is where they go" — and that sentence turned
+JobBot's greeting into a plan to place the console on a still where nothing had been asked for. The
+props are gone, and an utterance that names no task now never reaches the model at all.
 
-Looking is seven more calls to the same model ([`spike/wbc_game/locate.py`](spike/wbc_game/locate.py)): one quadrant question about the whole frame, one pixel question about that quadrant grown 15% so a thing on the seam is not sliced, five box reads, then a description. That takes 2.3 to 2.9 seconds and puts the card 21 pixels from where I marked it by hand.
+It does get the run. Every call carries every line heard, every prompt, every raw reply and every
+result, in order, so a sentence spoken three turns ago is still there when it matters; only the newest
+still is an image, because a pixel from last turn is a guess. The history is capped at about 8k tokens
+of text and a heard line is never trimmed out of it. Beside the diary each run writes `llm.jsonl`: one
+row per call with the exact prompt, the raw reply and the token counts, so a bad decision can be
+replayed instead of guessed at.
+
+Looking is seven more calls to the same model ([`spike/wbc_game/locate.py`](spike/wbc_game/locate.py)): one quadrant question about the whole frame, one pixel question about that quadrant grown 15% so a thing on the seam is not sliced, five box reads, then a description. That takes 1.4 to 1.6 seconds — the five reads go out on the server's four slots, which cut the stage from 2.3–2.9 s — and puts the card 21 pixels from where I marked it by hand.
 
 ### Turning a sentence into a hand
 
@@ -159,7 +163,7 @@ Setup, ports, VNC and the control table are in [`docs/setup.md`](docs/setup.md).
 XDG_RUNTIME_DIR=/tmp/clank-xdg python3 -m unittest discover -s tests -t .
 ```
 
-1378 tests in about 120 seconds, standard library only: no network, no GPU, no game. They cover the command bus and its validator, the wire format, the run state machine, the recording manifest, the depth reader, the dashboard routes and the transcription boundary. They do not cover what needs hardware. The layer's latency, the policy's tracking and anything touching the game are measured by hand and recorded in `research/`.
+1429 tests in about 130 seconds, standard library only: no network, no GPU, no game. They cover the command bus and its validator, the wire format, the run state machine, the recording manifest, the depth reader, the dashboard routes and the transcription boundary. They do not cover what needs hardware. The layer's latency, the policy's tracking and anything touching the game are measured by hand and recorded in `research/`.
 
 ## Where things live
 
