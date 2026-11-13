@@ -442,6 +442,15 @@ def main() -> int:
         goal = tuple(args.target)
         goal_world = to_world(goal, st)
         source = "--target"
+    elif args.world is not None:
+        # A world point is the honest way to repeat a reach: the object has not moved and the
+        # body leaning has, so a pelvis-frame point or a pixel goes stale and a world point does
+        # not. MEASURED 2026-11-13: `--world` was parsed, documented in the help, allowed by the
+        # source guard - and never handled. It fell through to the pixel branch and died on
+        # `args.px / cw` with px None, so the one flag for a repeatable reach had never worked.
+        goal_world = tuple(args.world)
+        goal = to_rel(goal_world, st)
+        source = "--world"
     else:
         # Sample several frames and take the median point. A single read occasionally comes
         # back torn: today the same card pixel read 0.29 m and 1.20 m a minute apart, and the
