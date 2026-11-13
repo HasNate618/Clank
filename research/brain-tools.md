@@ -150,3 +150,32 @@ planner chain now that session memory feeds each call the previous reply.
 The whole pipeline on the parallel path, measured the same day, three runs: **1579-1593 ms** total
 (quadrant ~200 ms, reads 1186-1198 ms, describe check 192-205 ms), so the reads-plus-check figure
 the README quotes is **1.38-1.40 s** rather than the 2.32-2.94 s it used to be.
+
+## 2026-11-13 — run `190131-679de2`: what the diary could not explain
+
+Nine model calls: two planners and seven for one `locate("card")`. The card was grabbed and JobBot
+spoke. Three things went wrong in ways the diary of the time could not show, and each is now a row
+that makes it a one-line diagnosis.
+
+**The instruction was spoken while the loop was not listening.** Transcribed from the recording's own
+audio: video 12.4-18.4 s is **"Here's my card."** `hang_s = 0.8` ended the introduction at "…fine job
+museum.", and `ready()` then spent 5.8 s standing the body up. Measured gaps in that audio: **0.60 s
+inside the opening** and **6.3-6.9 s between turns** — so a 0.8 s pause was never going to split it,
+and the line was lost to a capture dropout rather than to the pause rule. The fix is not a longer
+pause: JobBot's reply after the grab is now captured by the confirmation and handed to the next turn
+as the instruction.
+
+**The confirmation was gated off its own question.** `ears.listen` measures its floor as the median of
+the first 0.5 s; on that capture the floor was **2445**, so the gate came out at **9781** against a
+**peak of 4415** and the line read as silence. Transcribed directly, the same clip gives the words in
+**183 ms**. `confirm()` now records a fixed window and transcribes it, with no gate.
+
+**A greeting became a chore.** The prompt listed the props and said the console is where they go, so
+"welcome to the job simulator, my name is JobBot" produced
+`place(job cartridge into console)`. `assemble` refused it (`place needs a side`) and the loop held,
+but the plan was the prompt's invention. With the prop list gone and an utterance that names no task
+gated before the model, the same still makes no call at all.
+
+Replayed at temperature 0 against the saved stills: greeting -> no call, `hold`; "Hey, Gilman, take my
+card." -> goal `take the card`, object `JobBot card`, skill `grab`; "press the menu button" -> goal
+`open the menu`, skill `menu`. Deleting the prop list did not cost the model its nouns.

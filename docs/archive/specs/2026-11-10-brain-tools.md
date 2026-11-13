@@ -1,5 +1,12 @@
 # Brain tools — Design (autonomous chooser)
 
+> **Archived 2026-11-13.** Superseded for the live chooser by
+> [`2026-11-13-session-brain.md`](../../superpowers/specs/2026-11-13-session-brain.md): the prompt no
+> longer lists props or cues, the run is one conversation rather than one message per turn, and every
+> model call is recorded in `llm.jsonl`. This document is kept for the measurements it contains — the
+> four-still enum comparison, the locate pipeline, and why the sense tool is not trusted to be chosen.
+> The parent [`2026-10-31-brain.md`](../../superpowers/specs/2026-10-31-brain.md) is still current.
+
 - Date: 2026-11-10
 - Status: draft for review; no loop rewrite until this document is accepted
 - Parent: `docs/superpowers/specs/2026-10-31-brain.md` (instruction following). This spec does not replace it. It restores the claim that spec already made, and names the one tool the live loop currently hides.

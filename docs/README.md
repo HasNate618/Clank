@@ -13,7 +13,7 @@ These describe code that runs today. A claim here that disagrees with the code i
 | --- | --- |
 | `2026-10-23-clank-design.md` | The command contract (`BodyCommand` / `BodyState`), the authority mask, the executor, the game-side findings. §6 is still the authority `clank/body.py` cites; §18's controller survey is history. |
 | `superpowers/specs/2026-10-31-brain.md` | The brain: one loop, one act, the tools it may call. |
-| `superpowers/specs/2026-11-10-brain-tools.md` | How an act is chosen from a still, and why the sense tool is not trusted to be chosen. |
+| `superpowers/specs/2026-11-13-session-brain.md` | The live chooser: what it hears, what it remembers for the whole run, and what it writes down. |
 | `superpowers/specs/2026-11-11-ardy-reach-design.md` | Constraint into a motion prior into SONIC, and what it does not do (the look, the out-of-reach case). |
 | `superpowers/specs/2026-11-12-runs-design.md` | Stack versus run: what costs a boot and what is repeatable. |
 | `superpowers/specs/2026-11-12-recordings-design.md` | The video pipeline and its evidence-not-dependency contract. |
@@ -29,11 +29,12 @@ it. Nothing in it is a claim about current behaviour, and its numbers are dated 
 
 | Path | What it was |
 | --- | --- |
+| `archive/specs/2026-11-10-brain-tools.md` | How an act was chosen from a still, and why the sense tool was not trusted to be chosen. Superseded by the session spec. |
 | `archive/2026-10-11-feasibility-study.md` | The feasibility study, written when no code existed here. Prior art, not a plan. |
 | `archive/2026-10-23-clank-state-of-findings.md` | The Superhot-era ground-truth file. |
 | `archive/2026-10-23-vr-bot-design-builder-check.md` | The open-questions audit taken before implementation. |
 | `archive/plans/` | 13 implementation plans, all carried out. Kept for the task breakdown and the gates. |
-| `archive/specs/` | 3 designs that were superseded or never accepted. |
+| `archive/specs/` | 4 designs that were superseded or never accepted. |
 | `archive/proposals/` | Proposed diffs, never applied. |
 
 ## Not design documents

@@ -475,13 +475,30 @@ python3 -m clank.brainlog --tail 20
   `next_step()` as the situation, so the calibrated prompts keep working unchanged. Measured on
   JobBot's real audio: `Hello human, welcome to the job simulator. My name is JobBot...`,
   238 ms prefill + 310 ms decode. Silence parses to an empty transcript, not an error.
-- **The diary logs events, not polling.** A quiet window is counted and reported once per run,
-  never written: `listen.py` records a line only when words were heard, transcription failed, or
-  the game was not up. An episode of "nothing happened" rows is a bug in the logger, not news.
-- **The diary is the demo.** Every `heard`/`think`/`act`/`result` line goes to
-  `~/.local/state/Clank/brain/messages.jsonl` (JSON per line, `CLANK_BRAIN_LOG` overrides) and to
-  stderr as `[brain] 11:27:33 think: I will grab the job cartridge`. Nothing reads it back to make
-  a decision - the dashboard is being rebuilt, so it is a diary, not state.
+- **The diary logs events, not polling.** A window with no speech is counted and reported once per
+  run, never written. A window with speech over the gate that transcribed to *nothing* does write a
+  row, with `floor`, `gate`, `peak`, `speech_s` and `ended_by`: that is the shape of a silent miss,
+  and those numbers are what turn it into a one-line diagnosis. An episode of "nothing happened"
+  rows is a bug in the logger, not news.
+- **The diary is the demo; the memory is `SessionMemory`.** Every `heard`/`think`/`act`/`result`
+  line goes to the run's `brain.jsonl` (JSON per line, `CLANK_BRAIN_LOG` overrides) and to stderr as
+  `[brain] 11:27:33 think: I will grab the job cartridge`. The diary is still write-only - nothing
+  reads it back to decide - but the run is now one conversation: `SessionMemory` carries every
+  utterance, planner prompt, raw reply and result into every planner call, capped at ~8k tokens of
+  text, and only the newest still is an image. Beside the diary, `llm.jsonl` has one row per model
+  call with the exact prompt, the raw reply and the token counts (`CLANK_LLM_LOG` overrides, empty
+  disables; set it for the brain process only, because `clank/config.py` rejects unknown `CLANK_*`).
+- **`confirm()` records a window; it does not listen.** The gate's question is "did the game start
+  talking", confirm's is "what did it just say", and the game talks over the grab. A `listen` there
+  measured its floor on JobBot's own speech (floor 2445, gate 9781, peak 4415) and reported silence
+  over an audible line; the same clip transcribes in 183 ms when recorded and sent ungated.
+- **JobBot's reply after the act is the next instruction.** `one_turn` returns it as `Turn.pending`
+  and the next turn plans from it instead of listening again - a line spoken inside a 0.6 s gap
+  cannot be recovered by any pause rule.
+- **The body is reset once per run, not once per turn.** `main()` calls `ready()` before the first
+  turn; after that only `_body_needs_reset(last_code)` - a failed motor, or a missing control socket
+  - pays the 5.8 s. A reset after a successful grab re-opens the hand holding the card, and a reset
+  before every turn moves the root yaw ~13 deg so the goal moves with it.
 
 ## Locating without a human, 2026-11-04
 
