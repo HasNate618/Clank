@@ -91,13 +91,13 @@ and the AI loop becomes one card among twelve.
 | Section | Budget | Contents |
 |---|---|---|
 | Title card + name | 6 | existing `docs/media/title-card.svg` |
-| Summary | 4 | the loop, stated as autonomy: a vision model decides, a humanoid body does it, in a game that was never meant to be driven by either |
-| Hero still | 4 | the run above, captioned with run id, date, and what the diary is showing |
-| Why | 12 | the question (how much of a task a small model can carry with no privileged view); why a VR game is a fair fixture; the hard part, which is geometry |
-| Three models | 8 | LFM3-Omni-2B, GEAR-SONIC, ARDY-G1 — job and origin per row, plus "none trained here" |
+| Summary | 6 | the model first: one 2B VLM hears, decides, finds and commands; the round trip in one line; the question it answers |
+| Hero still | 4 | the run above, captioned with what the picture cannot say (run id, nine model calls, the diary's last line and that it is wrong) |
+| The brain: one 2B model, every call in the loop | 60 | subsections **sees / hears / decides / finds / commands**; the live prompt and the JSON it answers; why the verb is read out of the goal in code; the head cannot hold a pose, so the pixel is re-derived; identity decided in code; three measured surprises; the diary |
+| Three models, and nothing else | 8 | the 2B model is the brain, SONIC and ARDY-G1 are the hands; "none trained here" |
 | Role | 4 | solo; `pi` + DeepSeek V4.1 Flash in one clause; the perception chain and the loop are the author's |
-| Architecture | 18 | mermaid round trip, one paragraph per side, slot for F2 |
-| The brain | 40 | the live prompt and the JSON it answers (a goal in words, no verb enum); why the verb is read out of the goal in code; the three hops after the decision; identity decided in code; two measured surprises; the diary |
+| Architecture | 12 | mermaid round trip, one paragraph on the single simulation, slot for F2 |
+| The brain | 40 | (moved above; this row is retained only in the archive) |
 | Decisions and tradeoffs | 22 | four: inject at the layer, generate rather than hand-write the reference, one body relayed rather than two clients, a crop per turn rather than a bigger locator |
 | Results | 14 | 8 rows, source column links |
 | Limitations | 12 | nobody has played it; clip-anchored; 44.2 Hz against 50; torso does not turn; the clasp margin; the model and its tools; the unverified controller frame |
