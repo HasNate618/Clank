@@ -895,8 +895,15 @@ _MOVE_PLACES = (
 
 #: Verbs that are a direction on their own. `lift` is deliberately absent: it is a *grab* in
 #: `_TASK_VERBS`, and "lift the card" must stay a grab rather than become a hand moved upward.
+#: A verb with no direction word, as a unit direction. The verb alone does not say which way a
+#: thing moves - a drawer comes back, a lever goes down - so these are the readings this game
+#: needs, and an explicit direction word (`_MOVE_PLACES`) always wins over them.
+#:
+#: `pull` is **down** because the operator said so: Job Simulator's "PULL LEVER TO JOB" handle
+#: swings down toward the player, and a straight-back pull on it slides the grip off the end of
+#: its travel `[OPERATOR 2026-11-13]`. `drag` stays backward: dragging is horizontal by the word.
 _MOVE_VERBS = (
-    ("pull", (-1.0, 0.0, 0.0)),
+    ("pull", (0.0, -1.0, 0.0)),
     ("drag", (-1.0, 0.0, 0.0)),
     ("push", (1.0, 0.0, 0.0)),
     ("slide", (1.0, 0.0, 0.0)),

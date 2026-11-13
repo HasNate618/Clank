@@ -1627,9 +1627,16 @@ class MoveFromGoalTest(unittest.TestCase):
     missing.
     """
 
-    def test_pulling_comes_backwards(self) -> None:
-        self.assertEqual(brain.move_from_goal("pull the lever toward me"),
-                         (-brain.MOVE_M, 0.0, 0.0))
+    def test_pulling_comes_down(self) -> None:
+        """`pull` with no direction word is down, which is what this game's lever needs.
+
+        MEASURED/OPERATOR 2026-11-13: the handle on "PULL LEVER TO JOB" swings down, and the
+        model's own line - "pull the lever to job" - carries no direction word, so the verb has
+        to supply one. `drag` keeps the backward reading; dragging is horizontal.
+        """
+        self.assertEqual(brain.move_from_goal("pull the lever to job"),
+                         (0.0, -brain.MOVE_M, 0.0))
+        self.assertEqual(brain.move_from_goal("drag the crate"), (-brain.MOVE_M, 0.0, 0.0))
 
     def test_pushing_goes_forwards(self) -> None:
         self.assertEqual(brain.move_from_goal("push the cartridge in"),
@@ -1652,9 +1659,11 @@ class MoveFromGoalTest(unittest.TestCase):
         self.assertEqual(brain.move_from_goal("pull the lever down"),
                          (0.0, -brain.MOVE_M, 0.0))
 
-    def test_the_lever_line_is_a_backward_move(self) -> None:
-        self.assertEqual(brain.move_from_goal("pull the lever to job"),
+    def test_an_explicit_direction_still_beats_the_verb(self) -> None:
+        self.assertEqual(brain.move_from_goal("pull the lever toward me"),
                          (-brain.MOVE_M, 0.0, 0.0))
+        self.assertEqual(brain.move_from_goal("pull the lever up"),
+                         (0.0, brain.MOVE_M, 0.0))
 
 
 class DirectionalTaskTest(unittest.TestCase):
@@ -1689,8 +1698,11 @@ class ATravelIsThePullsSkillTest(ChatPatchMixin, unittest.TestCase):
                            brain.WorkingMemory(), **kw)
 
     def test_a_direction_with_a_full_hand_is_an_offset(self) -> None:
+        # Down, because this is the lever: the goal itself says "down", and a bare `pull` reads
+        # the same way (see `_MOVE_VERBS`). A backward offset here is what slid the grip off the
+        # end of the handle's travel.
         thought = self.run_think("pull the lever to job", right="holding")
-        self.assertEqual(thought.decision.intent.offset, (-brain.MOVE_M, 0.0, 0.0))
+        self.assertEqual(thought.decision.intent.offset, (0.0, -brain.MOVE_M, 0.0))
 
     def test_the_same_words_with_an_empty_hand_are_not_a_travel(self) -> None:
         thought = self.run_think("pull the lever to job", right="empty")
