@@ -93,3 +93,30 @@ A locatable prop instead of an unlocatable phrase. It is not the *right* prop �
 holding his card out, and the cartridge rack is ~1.0 m away, which is the out-of-reach case that
 has never converted — but the locate stage can now answer about it, which is what the loop was
 missing.
+
+## The four seconds were the generator loading itself, not the body
+
+In the run above, `act: generated reach` was logged at 19:02:54 and `result` at 19:03:03 — 8.7 s for
+an act whose generation is 0.22 s. Timestamped phase by phase (2026-11-13, warm cache):
+
+| phase | cost |
+| --- | --- |
+| new interpreter | 0.02 s |
+| `import torch` | 1.13 s |
+| ARDY checkpoint -> VRAM | 3.0 s more (4.12 s cumulative) |
+| depth samples, denoise | 0.3 s, 0.22 s |
+| body: pickup, look-ahead, measure | **0.06-0.2 s** (2.14 s of wall time for a 2.08 s clip) |
+
+So the reach asked the body to wait while a 740 MB checkpoint was loaded for the fourth time that
+minute. `spike/wbc/ardy_daemon.py` now holds one process behind `ardy.sock`, and the same reach
+measured through it:
+
+```text
+  0.03s  object world ... (preflight skipped: the daemon already proved CUDA)
+  1.04s  gen 1: 52 frames in 0.077 s, glove residual 20.6 mm
+  3.17s  gen 1: achieved glove residual 38.6 mm
+```
+
+against **0.77 / 3.32 / 5.45 s** in-process for the identical command with no daemon, which is
+also the fallback: it prints why it is generating alone and does the work. The hand starts moving
+at 1.0 s instead of 4.1 s.

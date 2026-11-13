@@ -341,6 +341,16 @@ median) and finally live (`research/evidence/ardy-live-grab/`: 15.9 mm generator
   sim's shoulder against a 0.41–0.51 m useful arm. Live runs use **1.2** (player 1.58 m, card inside the
   arm). A wrist pivot fits the arm (0.339 m) but stops scaling the camera, and the player looks short; two
   pivots break the hand-to-head relation. See `research/g1-scale.md`.
+- **A reach costs 4 s to load the generator unless one is resident.** Measured 2026-11-13: a fresh
+  `reach_ardy.py` spends 0.90 s importing torch and reading the body, 1.99 s putting the 740 MB checkpoint
+  into VRAM, and ~1.0 s on the first CUDA call, before 0.22 s of denoising — 4.3 s before the hand moves, on
+  every act, because each act is a new process. The body's own share is 0.06–0.2 s (2.14 s of wall time for a
+  2.08 s clip), so a slow reach is never the body. `spike/wbc/ardy_daemon.py` keeps one process warm behind
+  `ardy.sock` beside the body's mailbox: `auto.py` starts it with the loop, `reach_ardy.py` asks it first and
+  generates in-process when it is not answering (the GPU being off is this machine's normal state, not an
+  error). Measured through it: the hand starts at **1.0 s** instead of 4.1 s, 3.2 s total against 5.4 s. It
+  idles out after 15 minutes, which is what releases the 0.94 GB. Restarting the *body* does not invalidate it:
+  requests carry the pose ring, so the daemon holds no session state.
 - **Still open:** the look (torso starts 60–64° off the object and the reach does not turn it — §8.5 of the
   design), the out-of-reach case (never converted), and `CLASP_START_M = 0.08`, which is **uncalibrated** and
   was the margin on the successful run (the clasp fired at 78 mm).

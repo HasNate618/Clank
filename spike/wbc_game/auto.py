@@ -48,7 +48,9 @@ import urllib.request
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "wbc"))
 
+import ardy_client  # noqa: E402  # pyright: ignore[reportMissingImports]
 import do_task  # noqa: E402
 import locate  # noqa: E402
 import reach_vr  # noqa: E402
@@ -253,6 +255,28 @@ def grab_pixel(x: float, y: float, side: str, camera: Pose | None = None,
         brainlog.log("act", "no generated reach here; the cruise carries it", code=code)
     brainlog.log("act", f"cruise reach ({side})")
     return subprocess.call(_cruise_argv(x, y, side, camera, grab))
+
+
+def warm_generator() -> None:
+    """Start the resident generator now, so the first reach is not the one that pays for it.
+
+    Best effort, like everything else about the generator: if it cannot come up, each reach
+    loads it in its own process and says so, which is what happened before this existed. A run
+    must never be delayed by a nicety, nor failed by one.
+    """
+    sock = reach_vr.SOCK.parent / ardy_client.SOCKET_NAME
+    spawn = [
+        str(ARDY_PY), str(HERE.parent / "wbc" / "ardy_daemon.py"), "--socket", str(sock),
+    ]
+    try:
+        up = ardy_client.ensure(sock, spawn, wait_s=30.0)
+    except OSError as exc:
+        brainlog.log("act", f"generator not resident: {exc}")
+        return
+    if up:
+        brainlog.log("act", "generator resident")
+    else:
+        brainlog.log("act", "generator not resident; each reach will load it")
 
 
 def _ardy_env() -> dict[str, str]:
@@ -547,6 +571,8 @@ def main(argv: list[str] | None = None) -> int:
                     help="hear and decide, but do not move the body")
     args = ap.parse_args(argv)
     STATE.mkdir(parents=True, exist_ok=True)
+    if not args.plan_only:
+        warm_generator()
 
     started = time.monotonic()
     deadline = started + args.duration

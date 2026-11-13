@@ -67,6 +67,7 @@ _WBC = Path(__file__).resolve().parents[1] / "wbc"
 if str(_WBC) not in sys.path:
     sys.path.insert(0, str(_WBC))
 
+import ardy_client  # noqa: E402  # pyright: ignore[reportMissingImports]
 import ardy_gen  # noqa: E402  # pyright: ignore[reportMissingImports]
 import clip_from_gen  # noqa: E402  # pyright: ignore[reportMissingImports]
 import end_pose  # noqa: E402  # pyright: ignore[reportMissingImports]
@@ -311,6 +312,34 @@ def wait_for_play(
         time.sleep(POLL_S)
 
 
+def generate_once(
+    ring: dict,
+    target: tuple[float, float, float],
+    root_forward_m: float | None,
+    daemon: Path | None,
+) -> tuple[list[tuple[float, ...]], dict, tuple[float, float, float]]:
+    """The clip, from the resident generator when one is answering and this process otherwise.
+
+    The daemon is worth about 4 s per reach (0.90 s for torch, 1.99 s for the checkpoint, ~1.0 s
+    of first-call warm-up), but it is never required. `Unavailable` - no daemon, the GPU off, a
+    checkpoint that will not load - is the signal to do the work here, which is exactly the path
+    that existed before it, and the reason a reach on a machine with the GPU off still works.
+    """
+    if daemon is not None:
+        try:
+            frames, metrics = ardy_client.generate(
+                daemon, ring["poses"], target, root_forward_m, STEPS
+            )
+            return (
+                [tuple(row) for row in frames],
+                metrics,
+                hand_delta_for(ring["poses"][-1], target),
+            )
+        except ardy_client.Unavailable as exc:
+            print(f"daemon {exc}; generating in this process")
+    return generate_clip(ring, target, root_forward_m)
+
+
 def generate_clip(
     ring: dict, target: tuple[float, float, float], root_forward_m: float | None
 ) -> tuple[list[tuple[float, ...]], dict, tuple[float, float, float]]:
@@ -349,6 +378,11 @@ def main() -> int:
              "camera that saw it, and the head does not hold still between marking and reaching",
     )
     parser.add_argument(
+        "--daemon", choices=("auto", "off"), default="auto",
+        help="use the resident generator beside the body's mailbox (default) or generate in "
+             "this process; a daemon that is not answering falls back either way",
+    )
+    parser.add_argument(
         "--tol", type=float, default=end_pose.TRACK_SUCCESS_M,
         help="success tolerance on the achieved hand residual, in metres",
     )
@@ -380,10 +414,18 @@ def main() -> int:
             file=sys.stderr,
         )
         return 3
-    why = preflight()
-    if why is not None:
-        print(f"cannot generate: {why}")
-        return 3
+    daemon_sock = None if args.daemon == "off" else session_dir / ardy_client.SOCKET_NAME
+    if daemon_sock is not None and ardy_client.alive(daemon_sock):
+        # The resident generator has already proved that CUDA and the checkpoint are there.
+        # Importing torch here to prove it again cost ~0.6 s of every reach measured on
+        # 2026-11-13; if the daemon dies between this check and the request, `generate_once`
+        # falls back to the in-process path and that path imports torch itself.
+        pass
+    else:
+        why = preflight()
+        if why is not None:
+            print(f"cannot generate: {why}")
+            return 3
 
     st = reach_vr.state()
     target_world = object_world(args, session_dir, st)
@@ -437,7 +479,7 @@ def main() -> int:
         generated += 1
         root_note = "" if root_forward is None else f", root {root_forward:+.2f} m forward"
         try:
-            frames, metrics, _ = generate_clip(ring, target, root_forward)
+            frames, metrics, _ = generate_once(ring, target, root_forward, daemon_sock)
         except (ImportError, FileNotFoundError) as exc:
             print(f"cannot generate: {exc}")
             return 3
