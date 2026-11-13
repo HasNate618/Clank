@@ -118,6 +118,34 @@ MAX_OFFSET_M = 0.40
 MAX_LATERAL_OFFSET_M = 0.18
 
 
+def moved_point(
+    point: tuple[float, ...],
+    forward_m: float,
+    up_m: float,
+    lateral_m: float,
+) -> tuple[float, float, float]:
+    """`point` displaced by a direction and distance the caller already owns.
+
+    This is what a *pull* is: the hand stays closed on the handle and moves. Since the hand is
+    somewhere the code did not choose - it is wherever the last reach left it - the offset is
+    applied to the measured point rather than replacing it, and both limits that protect a
+    commanded point still apply:
+
+    * `clamp_offset` for the magnitude the arm has been measured to survive (0.40 m, and 0.18 m
+      lateral because that is the axis that leans the body);
+    * `clamp_wrist` for the box, which is the one that bites here: a pull starts from a hand
+      already reaching forward and travels *back*, so the backward 0.25 m of a lever pull can
+      leave the box on the near side where no other motion does.
+
+    The argument order is the `Intent.offset` order, `(forward, up, lateral)`, while the point
+    is `(x, y, z)` with +Y the robot's left - so lateral lands on y. A test pins that mapping,
+    because swapping the two compiles, runs, and moves the hand sideways for a pull.
+    """
+    forward, lateral, up = clamp_offset(forward_m, lateral_m, up_m)
+    x, y, z = _validated(point)
+    return clamp_wrist((x + forward, y + lateral, z + up))
+
+
 def approach_point(
     point: tuple[float, ...], height: float = APPROACH_M
 ) -> tuple[float, float, float]:

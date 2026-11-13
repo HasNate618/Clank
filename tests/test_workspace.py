@@ -20,6 +20,7 @@ from clank.workspace import (
     clamp_offset,
     clamp_wrist,
     in_workspace,
+    moved_point,
 )
 
 #: Settled right wrist at the standing clip, root-relative metres.
@@ -168,3 +169,33 @@ class ApproachTest(unittest.TestCase):
     def test_approach_rejects_a_short_point(self) -> None:
         with self.assertRaises(ValueError):
             approach_point((0.1, 0.2))
+
+
+class MovedPointTest(unittest.TestCase):
+    """A directional move: the same box and the same cap as every other wrist point.
+
+    `Intent.offset` is `(forward, up, lateral)`; `WRIST_BOX` is `(x, y, z)` with +Y the robot's
+    left, so the lateral argument lands on y. These four tests are the only guard that the two
+    orders cannot be swapped by a later edit.
+    """
+
+    def assertPoint(self, got: tuple[float, ...], want: tuple[float, ...]) -> None:
+        """IEEE subtraction is exact only at the values it likes: 0.4 - 0.25 is not 0.15."""
+        for mine, theirs in zip(got, want):
+            self.assertAlmostEqual(mine, theirs, places=9)
+
+    def test_a_backward_move_subtracts_from_forward(self) -> None:
+        self.assertPoint(moved_point((0.40, 0.0, 0.20), -0.25, 0.0, 0.0), (0.15, 0.0, 0.20))
+
+    def test_lateral_is_the_robots_left(self) -> None:
+        self.assertPoint(moved_point((0.40, 0.0, 0.20), 0.0, 0.0, 0.10), (0.40, 0.10, 0.20))
+
+    def test_the_offset_is_capped_before_it_is_applied(self) -> None:
+        # A 0.60 m pull is more than the arm is measured to travel (0.41-0.51 m).
+        self.assertPoint(moved_point((0.55, 0.0, 0.20), -0.60, 0.0, 0.0),
+                         clamp_wrist((0.55 - MAX_OFFSET_M, 0.0, 0.20)))
+
+    def test_the_result_is_inside_the_box(self) -> None:
+        moved = moved_point((0.10, 0.0, 0.20), -0.25, 0.0, 0.0)
+        self.assertTrue(in_workspace(moved))
+        self.assertEqual(moved[0], box_bounds()[0][0])
