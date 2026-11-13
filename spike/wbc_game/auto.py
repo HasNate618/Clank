@@ -53,6 +53,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "wbc"))
 
 import ardy_client  # noqa: E402  # pyright: ignore[reportMissingImports]
 import do_task  # noqa: E402
+import fade  # noqa: E402
 import locate  # noqa: E402
 import place  # noqa: E402
 import reach_vr  # noqa: E402
@@ -118,6 +119,17 @@ SENSE_BUDGET = 2
 #: there. Nothing is grabbable behind you either.
 MIN_OBJ_M = 0.10
 MAX_OBJ_M = 1.0
+
+#: What the grounder's still is faded to: the same band the depth gate accepts, so the model
+#: cannot be shown a world the body then judges by different numbers.
+#:
+#: MEASURED 2026-11-13 on the run that could not find JobBot's card. Raw still: quadrant
+#: BOTTOM-LEFT, refused, 3/3. The fade module's own default (1.06-1.45x the nearest clutter =
+#: 0.35-0.48 m here) blackened everything past 0.48 m, which is where the card was: BOTTOM-LEFT,
+#: refused, 3/3. This band (0.28-1.00 m) blackens the robot's own glove and the room but keeps
+#: the card: BOTTOM-RIGHT, 3/3. Same model, same frame, same noun - the band was the whole
+#: difference.
+GROUNDING_BAND_M = (reach_vr.MIN_SURFACE_M, MAX_OBJ_M)
 
 
 @dataclass
@@ -222,6 +234,38 @@ def frame_and_jpeg(width: int = 960) -> tuple[bytes, tuple[int, int], bytes, dic
     png = io.BytesIO()
     image.save(png, format="PNG")
     return buf.getvalue(), (width, height), png.getvalue(), f, head_pose(reach_vr.state())
+
+
+def faded_for_grounding(png: bytes, depth_frame: dict) -> bytes:
+    """The still the grounder sees: everything outside `GROUNDING_BAND_M` replaced by a backdrop.
+
+    The planner keeps the raw still - it has to see the whole room to name a destination - and
+    the grounder gets this, because finding one thing in a white-on-white museum is a search
+    through clutter, and the clutter is what pulled the model onto JobBot's body instead of the
+    card in his hand.
+
+    Returns the input unchanged when there is no depth: a frame that cannot be faded is still
+    groundable, just worse, and refusing to look is worse than that.
+    """
+    import numpy as np
+    from PIL import Image
+
+    near_m, far_m = GROUNDING_BAND_M
+    depth = depth_frame.get("depth")
+    if not depth:
+        return png
+    try:
+        rgb = np.asarray(Image.open(io.BytesIO(png)).convert("RGB"))
+        depth_m = np.asarray(depth, dtype=np.float32).reshape(
+            int(depth_frame.get("height") or 270), int(depth_frame.get("width") or 480))
+        # `fade` takes near/far as multiples of a target; with target 1.0 they are metres.
+        out = fade.fade(rgb, depth_m, 1.0, near=near_m, far=far_m)
+    except (ValueError, TypeError) as exc:
+        brainlog.log("think", f"no fade for grounding: {exc}")
+        return png
+    buf = io.BytesIO()
+    Image.fromarray(out).save(buf, format="JPEG", quality=90)
+    return buf.getvalue()
 
 
 def mark(png: bytes, pixel: tuple[float, float], out: pathlib.Path) -> None:
@@ -387,7 +431,11 @@ def sense(target: str, memory: brain.WorkingMemory, stamp: str):
     a reach to the pixel would put the hand inside the console.
     """
     jpeg, size, png, depth_frame, camera = frame_and_jpeg()
-    found = locate.locate(BrainConfig(), Frame(0, 0.0, jpeg, "live"), target, size)
+    # The grounder looks at the faded still; the planner looked at the raw one, and the evidence
+    # png stays raw so the marked image is what the game actually drew.
+    found = locate.locate(BrainConfig(),
+                          Frame(0, 0.0, faded_for_grounding(png, depth_frame), "live"),
+                          target, size)
     pixel = found.get("pixel_px")
     metres = 0.0
     point = None

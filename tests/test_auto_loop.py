@@ -144,6 +144,26 @@ class TheActUsesTheGeneratedPath(unittest.TestCase):
         self.assertIn('log("result", f"refused ', self.source)
         self.assertNotIn('hold ({thought.decision.reason})', self.source)
 
+    def test_the_grounder_sees_the_faded_still_and_the_planner_does_not(self) -> None:
+        # MEASURED 2026-11-13: raw -> BOTTOM-LEFT, refused, 3/3; faded at the module's own
+        # default band -> BOTTOM-LEFT, refused, 3/3; faded at the gate's band -> BOTTOM-RIGHT,
+        # 3/3. The band was the whole difference, and the planner needs the room.
+        self.assertIn("faded_for_grounding(", self.source)
+        sense = self.source[self.source.index("def sense("):self.source.index("def hands_holding(")]
+        self.assertIn("faded_for_grounding(png, depth_frame)", sense)
+        self.assertIn("locate.locate(", sense)
+        # the planner's still is the raw one
+        turn = self.source[self.source.index("def one_turn("):self.source.index("def main(")]
+        self.assertIn('Frame(0, 0.0, jpeg, "live")', turn)
+
+    def test_the_fade_band_is_the_gate_band(self) -> None:
+        # One pair of numbers for "what the model is shown" and "what the body accepts".
+        # Otherwise the grounder looks at a world the gate judges by different rules.
+        self.assertIn("GROUNDING_BAND_M = (reach_vr.MIN_SURFACE_M, MAX_OBJ_M)", self.source)
+        body = self.source[self.source.index("def faded_for_grounding("):self.source.index("def mark(")]
+        self.assertIn("GROUNDING_BAND_M", body)
+        self.assertIn("fade.fade(", body)
+
     def test_place_is_wired(self) -> None:
         # `place` was in the skill vocabulary and refused by assemble, so a model that asked for
         # it got a hold and the diary said "not wired yet" - a working vocabulary entry with no

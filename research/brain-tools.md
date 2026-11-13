@@ -197,3 +197,37 @@ stays on the newest message only. After two turns the history is **~96 estimated
 
 Both answers are the right act for the sentence, which is the point: the model was told "press the
 menu button" *after* a card grab was in its history, and it did not repeat the grab.
+
+## 2026-11-13 — what the grounder is shown, and what the brain's own description is worth
+
+Run `113127-dfcacc` could not find JobBot's card: quadrant `BOTTOM-LEFT` (the robot's own glove),
+stage 3 refusing `OFF button`, `Control panel`, `Sign`. Three experiments on that frame, three reads
+each, temperature 0.
+
+**1. The fade band is the whole difference, and the module's default band is wrong for this view.**
+
+| still given to the grounder | quadrant | pixel | stage 3 | result |
+| --- | --- | --- | --- | --- |
+| raw | BOTTOM-LEFT x3 | 346 | `Sign`, `Floppy disk` | refused |
+| faded, module default (1.06-1.45 x nearest clutter = 0.35-0.48 m) | BOTTOM-LEFT x3 | 339 | `Switch` | refused |
+| faded, the depth gate's own band (0.28-1.00 m) | **BOTTOM-RIGHT x3** | 888 | `Job Bot sign` | refused |
+
+The default band blackens everything past **0.48 m**; the card sits at **0.50 m** from the camera and
+JobBot's body nearer still, so the fade deleted the object and kept its distractor. Measured depth:
+card region nearest 0.25 m / median 0.30 m, glove region 0.31-0.37 m, p5 reference 0.33 m. A fade
+whose near edge is the nearest clutter is a fade that removes whatever is *behind* that clutter, and
+in this game the thing you want is often behind it.
+
+So the grounder now gets the gate's band, and the band is one constant pair rather than four numbers
+in two modules (`GROUNDING_BAND_M` in `auto.py`).
+
+**2. That fixes stage 1 only.** Stage 2 then puts the box on **JobBot's body** ~100 px from the card,
+and stage 3 refuses at every crop size: 225 px wide -> `Job Bot sign`, 167 -> `JobBot`, 134 -> `JobBot`,
+96 -> `Job sign`, 57 -> `Label`. A tighter crop is not the fix; the box is in the wrong place.
+
+**3. The brain's own description is not a reliable search phrase.** Asked to describe the thing it
+must pick up, it described **JobBot** ("a green rectangular screen with black circular eyes"), and the
+grounder went to JobBot. Asked to describe "the card", it described **the JOB CARTRIDGES sign** - and
+the grounder then *accepted* the rack at x = 652 with `present: True`. A confident wrong description
+produces a false accept, which is worse than a refusal. A human-written phrase ("white card with a
+photo of JobBot") scored 3/3, so the mechanism works; the model's choice of subject does not.
