@@ -395,7 +395,25 @@ plan was:
   arrives with an empty hand first, so the offset is only set when the acting hand is `holding`;
   the first turn reaches the lever and the second travels. A test pins both halves.
 
-Task 6 is the live gate and has not been run: it needs the stack up and a body holding the lever.
+Task 6 ran, failed, and then passed - on a standalone body rather than on the lever, which is a
+better gate for it because a pull is a motion and not a game event. `a04fc02` and
+`research/evidence/live-pull/README.md` carry the measurements.
+
+What it cost, and what changed because of it:
+
+- **The travel goes through the cruise, not the generator.** A generated clip is tracked and then
+  the arm walks back to the previous reach's target: `clank/bus.py` retires its freeze-hold
+  snapshot only on a real command, and a deposited clip is not one. The cruise re-commands an
+  absolute target every keepalive and holds after it exits. `auto._move_argv` now routes both
+  hands there, and Task 4's `--move` on `reach_ardy` is kept only because a *grab* still uses the
+  generated path.
+- **`Intent.offset` and the occupancy gate are unchanged** - the defect was never in the intent.
+- **The 0.5 m frame contradiction recorded mid-plan is refuted.** FK glove and relay hand agree to
+  1 mm on a fresh body; the contradiction compared an achieved pose with a stale command.
+
+Still open, and now the top of the list for any generated motion: `CommandBus` does not retire its
+freeze-hold snapshot when a clip is deposited, so a generated clip cannot hold its own result.
+That affects every generated grab, not just a pull.
 
 ## Not in this plan
 
