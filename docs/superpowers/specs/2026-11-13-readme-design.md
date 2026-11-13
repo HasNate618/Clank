@@ -1,5 +1,12 @@
 # README rewrite — design
 
+> **Revision, 2026-11-13 (last pass).** The structure table below describes the second draft, which
+> led with the model as a section inventory. The shipped file is a third draft written in the first
+> person around the design instead: summary, status, why, the loop in the order it runs (design,
+> not five parallel headers), results with an earlier-attempt column, what didn't work, what is not
+> done. It is 180 lines. The section budget in this document is superseded; the intent and the
+> audience still hold.
+
 **Date:** 2026-11-13. **Status:** draft for approval.
 **Replaces:** the 2026-11-04-era `README.md` (347 lines), which describes Superhot, 323 tests and an
 architecture with no eyes.
