@@ -260,7 +260,7 @@ class MenuSkill(unittest.TestCase):
         case.setUp()
         try:
             thought = brain.think(
-                brain.BrainConfig(), brain.DEFAULT_SEED, fake_frame(),
+                brain.BrainConfig(), fake_frame(),
                 "press the menu button", [], brain.WorkingMemory())
         finally:
             case.tearDown()
@@ -342,7 +342,7 @@ class AssembleLocate(unittest.TestCase):
 
     def test_live_block_does_not_carry_coordinates(self) -> None:
         text = brain.live_block(
-            "take my card", "empty", "empty", 0.0, "unknown",
+            "empty", "empty", 0.0,
             "locate none target=card → present")
         self.assertNotIn("0.8", text)
         self.assertNotIn("px", text.lower())
@@ -364,8 +364,28 @@ class ThinkTests(ChatPatchMixin, unittest.TestCase):
     def run_think(self, reply: str, heard: str, memory=None, **kw):
         self.reply = reply
         return brain.think(
-            brain.BrainConfig(), "", fake_frame(), heard, [],
+            brain.BrainConfig(), fake_frame(), heard, [],
             memory if memory is not None else brain.WorkingMemory(), **kw)
+
+    def test_a_greeting_does_not_call_the_model(self) -> None:
+        # MEASURED 2026-11-13: handed the greeting and a still, the planner answered
+        # `place(console)` because the prompt demanded a goal. A greeting names no task, so the
+        # gate stops before the call and the body holds.
+        thought = self.run_think(self.take_card,
+                                 "Fellow human, welcome to the job simulator.")
+        self.assertEqual(self.chat_calls, [])
+        self.assertIn("nothing asked yet", thought.plan.note)
+        self.assertEqual(thought.plan.skill, "hold")
+        self.assertEqual(thought.plan.error, "")
+        self.assertEqual(thought.decision.intent.skill, "hold")
+        self.assertTrue(thought.decision.accepted)
+
+    def test_heres_my_card_does_call_the_model(self) -> None:
+        # An offer is not a greeting: JobBot holds the card out and says what it is, and
+        # `task_intent` reads that as a grab, so the model is asked.
+        self.run_think(self.take_card, "Here's my card.")
+        self.assertEqual(len(self.chat_calls), 1)
+        self.assertIn("This is what was heard", self.user_text())
 
     def test_take_my_card_chooses_grab_of_the_card(self) -> None:
         thought = self.run_think(self.take_card, "Hey, Hillman, take my card.")
@@ -437,10 +457,26 @@ class PromptText(unittest.TestCase):
         for banned in ("fire", "strike", "dodge", "twitch", "insert", "pull"):
             self.assertNotIn(banned, brain.CONSTITUTION.lower())
 
-    def test_live_block_carries_glow_and_ghost(self) -> None:
-        text = brain.live_block("take my card", "empty", "holding", 0.0, "yes", "reach right → done", ghost="no")
-        self.assertIn("glow=yes", text)
-        self.assertIn("ghost=no", text)
+    def test_the_planner_prompt_names_no_props(self) -> None:
+        # Spec 3.2: a prop menu in the prompt is what made a greeting become `place(console)`.
+        # The model names the noun and `locate` is the only place that says whether it can be
+        # confirmed, so naming a prop here is the prompt inventing the choreography.
+        prompt = brain.NEXT_STEP_PROMPT.lower()
+        for banned in ("card", "cartridge", "lever", "knob", "console",
+                       "glow", "ghost", "jobbot said"):
+            self.assertNotIn(banned, prompt)
+        self.assertIn("obey the newest thing that was heard", prompt)
+        self.assertIn('"goal"', prompt)
+        self.assertIn('"destination"', prompt)
+
+    def test_live_block_has_no_cues(self) -> None:
+        # Glow and ghost have no producer in the live loop, so a prompt that mentions them is
+        # describing a cue the model never gets. The utterance is emitted once, by the caller.
+        text = brain.live_block("empty", "holding", 0.0, "reach right → done")
+        self.assertNotIn("glow", text)
+        self.assertNotIn("ghost", text)
+        self.assertNotIn("heard:", text)
+        self.assertNotIn("take my card", text)
         self.assertIn("right=holding", text)
         self.assertNotIn("current goal", text.lower())
 
@@ -687,13 +723,15 @@ class RunTurnCrop(ScriptedChat, unittest.TestCase):
         self.assertIn("Which position in this register", self.user_text(1))
 
     def test_self_state_reports_the_cues_it_was_given(self) -> None:
-        # Pin: glow is reported, never recomputed inside the turn.
+        # Pin: glow is reported, never recomputed inside the turn. It stays in the turn's trace
+        # and out of the planner text: no live detector produces it, so the prompt naming it
+        # would describe a cue the model never gets (spec §3.2).
         record = self.run_turn(['{"skill":"hold","side":"none"}'],
                                glow="yes", ghost="yes")
         self.assertEqual(record.self_state["glow"], "yes")
         self.assertEqual(record.self_state["ghost"], "yes")
-        self.assertIn("glow=yes", record.live)
-        self.assertIn("ghost=yes", record.live)
+        self.assertNotIn("glow", record.live)
+        self.assertNotIn("ghost", record.live)
 
     def test_verify_mismatch_blocks_the_grab(self) -> None:
         record = self.run_turn([self.grab, "TOP-RIGHT", "GOURMET CHEF"],
@@ -1175,11 +1213,25 @@ class TaskIntent(unittest.TestCase):
         self.assertEqual(brain.task_intent("pick up the card from the table"),
                          ("grab", "card"))
 
-    def test_a_participle_is_not_an_object(self):
-        self.assertEqual(brain.task_intent("let's get started."), ("grab", ""))
+    def test_a_participle_is_not_an_object_and_leaves_no_task(self):
+        # The participle skip used to leave `("grab", "")`, which passed think()'s "is there a
+        # task" gate and asked the model for a goal on "let's get started" alone. A verb whose
+        # only object is a participle names nothing, so it is no task. A pronoun object is
+        # different - "take it" is an instruction the sentence already completes.
+        self.assertEqual(brain.task_intent("let's get started."), ("", ""))
+        self.assertEqual(brain.task_intent("take it"), ("grab", ""))
 
     def test_no_verb_is_no_intent(self):
         self.assertEqual(brain.task_intent("Your hands are empty."), ("", ""))
+
+    def test_press_names_the_menu_and_a_greeting_still_names_nothing(self):
+        # `press` is the one verb JobBot uses for the controller button, and the gate in
+        # `think()` refuses an utterance with no verb at all - so this entry is what keeps his
+        # menu request from being mistaken for a greeting. The two directions are pinned here:
+        # the menu line reads as a task, the greeting does not.
+        self.assertEqual(brain.task_intent("press the menu button"), ("menu", "menu button"))
+        self.assertEqual(brain.task_intent("Hello human! Welcome to the Job Simulator."),
+                         ("", ""))
 
     def test_nothing_is_not_an_object(self):
         self.assertEqual(brain.task_intent(""), ("", ""))
@@ -1388,3 +1440,46 @@ class LlmTrace(unittest.TestCase):
         row = json.loads(self.log.read_text(encoding="utf-8").splitlines()[0])
         self.assertEqual(row["prompt_text"], "the newest prompt")
         self.assertEqual(row["image_sha256"], hashlib.sha256(frame.jpeg).hexdigest())
+
+class GateAndWording(unittest.TestCase):
+    """The gate must not be talked around, and the retired wording must not come back."""
+
+    def test_a_verb_with_no_object_is_not_a_task(self) -> None:
+        # "let's get started" survives a 2 s hang as its own utterance; task_intent found the
+        # verb `get` and an empty noun, which passed a naive ("", "") gate.
+        self.assertEqual(brain.task_intent("let's get started."), ("", ""))
+        self.assertEqual(brain.task_intent("Alright, let's get started."), ("", ""))
+        # A pronoun object is still a task: the sentence carries it.
+        self.assertEqual(brain.task_intent("take it"), ("grab", ""))
+
+    def test_nothing_heard_is_not_a_greeting(self) -> None:
+        with mock.patch.object(brain, "_chat", side_effect=AssertionError("model called")):
+            quiet = brain.think(brain.BrainConfig(), fake_frame(), "", [],
+                                brain.WorkingMemory())
+            greeted = brain.think(brain.BrainConfig(), fake_frame(), "Hello human!", [],
+                                  brain.WorkingMemory())
+        self.assertEqual(quiet.plan.note, "nothing heard yet")
+        self.assertEqual(greeted.plan.note, "nothing asked yet")
+
+    def test_a_side_word_is_not_a_destination(self) -> None:
+        # MEASURED 2026-11-13: the model answers destination "right" on a grab. A `place` that
+        # took it would aim at a hand.
+        class SideReply(ChatPatchMixin, unittest.TestCase):
+            reply = ('{"goal": "put the card in the slot", "object": "card", '
+                     '"destination": "right", "side": "right"}')
+
+        case = SideReply("run")
+        case.setUp()
+        try:
+            step = brain.next_step(brain.BrainConfig(), fake_frame(), "situation")
+        finally:
+            case.tearDown()
+        self.assertEqual(step.destination, "")
+        self.assertIn("no destination", step.error)
+
+    def test_the_retired_wording_is_gone(self) -> None:
+        self.assertNotIn("jobbot said", brain.NEXT_STEP_PROMPT.lower())
+        self.assertNotIn("glow", brain.CONSTITUTION.lower())
+        self.assertNotIn("ghost", brain.CONSTITUTION.lower())
+        self.assertNotIn("cartridge", brain.NEXT_STEP_PROMPT.lower())
+        self.assertNotIn("console", brain.NEXT_STEP_PROMPT.lower())

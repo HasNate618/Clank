@@ -51,7 +51,6 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--expect", default="", help="required skill, e.g. locate")
     ap.add_argument("--contains", default="", help="required substring in target, lowercased")
     ap.add_argument("--last", default="(none)", help="the last line the model is told")
-    ap.add_argument("--glow", default="unknown")
     ap.add_argument("--seed", default=brain.DEFAULT_SEED)
     ap.add_argument("--json", action="store_true", help="print only the JSON")
     ap.add_argument("--constitution", default="",
@@ -65,7 +64,7 @@ def main(argv: list[str] | None = None) -> int:
 
     path = Path(args.image).expanduser()
     frame = Frame(index=0, t_s=0.0, jpeg=jpeg_bytes(path), source=str(path))
-    live = brain.live_block(args.heard, "empty", "empty", 0.0, args.glow, args.last)
+    live = brain.live_block("empty", "empty", 0.0, args.last)
     if not args.json:
         print(f"image: {path}\nheard: {args.heard or '(none)'}\nlast:  {args.last}", flush=True)
 

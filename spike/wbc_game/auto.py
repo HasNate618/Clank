@@ -457,7 +457,7 @@ def one_turn(say: str = "", pattern: str = ears.DEFAULT_PATTERN,
         sight.write_bytes(png)
         left, right = hands_holding()
         thought = brain.think(
-            BrainConfig(max_tokens=160), brain.DEFAULT_SEED, Frame(0, 0.0, jpeg, "live"),
+            BrainConfig(max_tokens=160), Frame(0, 0.0, jpeg, "live"),
             spoken, [], memory, left=left, right=right, last=last,
         )
         if thought.plan.error:

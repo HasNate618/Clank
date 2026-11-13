@@ -180,9 +180,7 @@ grab and release.
 
 Do what the voice asked. Do not invent extra chores. Find a thing before you reach for it. If find said it is not there, look. If you are unsure, hold.
 
-Grab when glow is yes or unknown; do not grab when glow is no. A yellow ghost \
-means the held thing will go into the slot if you release. A full hand cannot \
-grab; use the other hand or release.\
+A full hand cannot grab; use the other hand or release.\
 """
 
 #: Identity and nothing else. MEASURED 2026-11-10: the seed that carried the walkthrough
@@ -191,22 +189,11 @@ grab; use the other hand or release.\
 #: every constitution wording tried, and dropping the choreography turned the same call into
 #: `grab card` / `find card`. The seed is the largest single cause of a wrong verb measured here,
 #: so it now names the world and no errand. See `research/brain-tools.md`.
-#: The things the locator can confirm, and therefore the only things worth asking the body to
-#: reach for. `spike/wbc_game/locate.py` owns how each is recognised (its `_MATCH_SYNONYMS`);
-#: `tests/test_prop_vocabulary.py` fails if the two lists drift apart.
-#:
-#: Measured 2026-11-12: with the seed naming "a console, a card and a cartridge" but not saying
-#: which was grabbable, the plan answered `reach(the Job Simulator display/interface (central
-#: teal 'JOB SIMULATOR' sign and console))`. The locator refused that noun three times (it is
-#: not in the vocabulary) while the card sat at 0.28 m, and the loop ended on `hold`. The
-#: console is a destination, not a thing to pick up, and the prompt now says so.
-PROP_NOUNS = ("card", "cartridge", "lever")
-
-DEFAULT_SEED = (
-    "The game is Job Simulator. The things you can pick up are a card, a job cartridge and a "
-    "knob. The console is not a thing to pick up.\n"
-    "The voice is a job instructor."
-)
+#: Since 2026-11-13 it names no prop either: `think()` does not send a seed at all, and the planner
+#: prompt names no object it could be picked up from (spec §3.2). The constant stays because the
+#: replay and evaluation tools (`spike/brainview`, `spike/wbc_game/eval_plan.py`) still default to
+#: it. `PROP_NOUNS` went with the menu: `locate._MATCH_SYNONYMS` is the only prop list left.
+DEFAULT_SEED = "The game is Job Simulator. The voice is a job instructor."
 
 #: The four answers GROUND accepts. A tray quadrant is the smallest set that
 #: measured above chance on this model; see `ground()`.
@@ -617,18 +604,19 @@ def extract_json_object(text: str) -> dict[str, Any] | None:
 
 
 def live_block(
-    heard: str,
     left: str,
     right: str,
     yaw_rad: float,
-    glow: str,
     last: str,
-    ghost: str = "unknown",
 ) -> str:
-    """The only per-turn context. No task list, no current-goal line."""
+    """The hands and the last outcome. No task list, no goal, no cues.
+
+    `heard` is not a parameter: the situation line says what was heard, and repeating it here was
+    the duplicate this block used to emit. Glow and ghost went with the live loop's cue detectors,
+    which never had a producer.
+    """
     return (
-        f"heard: {heard.strip() if heard.strip() else '(none)'}\n"
-        f"self:  left={left} right={right} yaw={yaw_rad:.2f} glow={glow} ghost={ghost}\n"
+        f"self:  left={left} right={right} yaw={yaw_rad:.2f}\n"
         f"last:  {last}"
     )
 
@@ -779,14 +767,16 @@ _SKILL_WORDS = (
 )
 
 NEXT_STEP_PROMPT = (
-    "You are a robot playing a VR game. {situation} "
-    "No further instruction was given. Decide what you are trying to do next, and "
-    'where, from what you can see. The things you can pick up are a card, a job cartridge '
-    'and a lever; the console is where they go. Reply with JSON only, no explanation: '
-    '{{"goal": "the outcome you want", "object": "the thing you act on or are holding", '
-    '"destination": "the name of the visible thing it goes into, or none", '
+    "You are a robot playing a VR game. {situation}\n"
+    "Obey the newest thing that was heard. Earlier speech is context, not an order.\n"
+    "Decide what you are trying to do next, and where, from what you can see.\n"
+    'Reply with JSON only: {{"goal": "...", "object": "...", "destination": "...", '
     '"side": "left|right"}}'
 )
+#: No prop list, no cue, no skill enum in the line above, and that is the measurement: a prompt
+#: that named the props and the console turned JobBot's greeting into `place(console)` on a still
+#: where nothing had been asked for (spec §3.2). The model names the noun in its own words and
+#: `locate.py` - not this prompt - decides whether a noun can be confirmed.
 
 
 #: Words that name the act, and the filler that sits between the verb and the noun. The
@@ -796,6 +786,10 @@ _TASK_VERBS = (
     ("pick up", "grab"), ("hand me", "grab"), ("take", "grab"), ("grab", "grab"),
     ("get", "grab"), ("lift", "grab"),
     ("insert", "place"), ("put", "place"), ("place", "place"), ("slot", "place"),
+    # Last, so no earlier match changes meaning. `press` is the one verb JobBot uses for the
+    # controller button ("press the menu button" before the job starts), and without it the
+    # greeting gate in `think()` would swallow a line that does name a task.
+    ("press", "menu"),
 )
 _TASK_FILLER = {
     "a", "an", "the", "my", "your", "that", "this", "one", "some", "of", "off", "from",
@@ -837,16 +831,24 @@ def task_intent(text: str) -> tuple[str, str]:
             if tokens[i:i + len(parts)] != parts:
                 continue
             noun: list[str] = []
+            skipped_participle = False
             for word in tokens[i + len(parts):]:
                 if word in _TASK_STOP:
                     break
-                if word in _TASK_FILLER or _TASK_PARTICIPLE.match(word):
+                if word in _TASK_FILLER:
+                    continue
+                if _TASK_PARTICIPLE.match(word):
+                    skipped_participle = True
                     continue
                 noun.append(word)
                 if len(noun) >= 3:
                     break
             if not noun:
-                return skill, ""
+                # "let's get started" is a verb whose object is a participle: nothing is named,
+                # so there is no task and the caller's gate must see ("", ""). "take it" is
+                # different - the object is a pronoun the sentence already carries - and stays a
+                # grab with no noun.
+                return ("", "") if skipped_participle else (skill, "")
             return skill, " ".join(noun[:-1] + [_singular(noun[-1])])
     offer = _TASK_OFFER.search(text.lower())
     if offer:
@@ -933,6 +935,11 @@ def next_step(
     goal = str(parsed.get("goal") or "").strip()
     obj = str(parsed.get("object") or "").strip()
     dest = str(parsed.get("destination") or "").strip()
+    if dest.lower() in ("left", "right"):
+        # MEASURED 2026-11-13: the model fills `destination` with a hand on a grab
+        # (`"destination": "right"`). Harmless there, but a `place` would aim at a hand, so a side
+        # word is no destination at all and falls into the existing "place with no destination".
+        dest = ""
     side = str(parsed.get("side") or "").strip().lower()
     if side not in ("left", "right"):
         # Measured once: the reply said "center". A hand must be chosen, and the
@@ -1486,7 +1493,6 @@ class Thought:
 
 def think(
     config: BrainConfig,
-    seed: str,
     frame: Frame,
     heard: str,
     history: list[str],
@@ -1497,8 +1503,6 @@ def think(
     left: str = "empty",
     right: str = "empty",
     yaw_rad: float = 0.0,
-    glow: str = "unknown",
-    ghost: str = "unknown",
     last: str = "(none)",
     default_side: str = "right",
     look_step: int = 1,
@@ -1512,20 +1516,34 @@ def think(
     No GROUND either. The live path's grounding is `locate.py` in the spike, chosen by the model as
     its own tool - which is the whole point of the sense/motor split: if this function grounded the
     target for it, the model's `locate` would be decoration.
+
+    No seed as well. The seed was the largest measured cause of a wrong verb (see `DEFAULT_SEED`),
+    and nothing here reads it.
     """
-    live = live_block(heard, left, right, yaw_rad, glow, last, ghost=ghost)
+    # Whether a task exists is not the same question as what the task is. MEASURED 2026-11-13:
+    # the greeting plus a still produced `place(console)` because the prompt demanded a goal, so an
+    # utterance that names no verb and holds nothing out stops here - before the model is paid for.
+    # Nothing heard at all is a different fact and gets its own note: a deaf run (a muted sink
+    # input, a game sitting at its menu) must not look like a greeting in the diary.
+    if not heard.strip() or task_intent(heard) == ("", ""):
+        idle = Plan(skill="hold", side="none",
+                    note="nothing asked yet" if heard.strip() else "nothing heard yet")
+        decision = assemble(idle, None, seq, t_mono_ns, left=left, right=right,
+                            memory=memory, look_step=look_step)
+        return Thought(plan=idle, decision=decision)
+
+    live = live_block(left, right, yaw_rad, last)
     # The question shape is the measurement. MEASURED 2026-11-10, four live stills, the same
     # instruction: asked to pick from the action list this model answered `hold` or `release` on
     # 4 of 4 and never `grab`, while asked what it is trying to do it answered "take the JobBot
     # card" on 4 of 4. So the model states the goal in its own words and `skill_from_goal` reads
     # the body's vocabulary out of *the model's* sentence - not out of JobBot's, which is what
     # made the old loop a parser.
-    said = (f'JobBot said: "{heard.strip()}"' if heard.strip()
-            else "You have not been told anything yet.")
-    # The live block travels with the situation: which hands are holding, the glow, and what the
-    # last action was told are exactly the context a choice needs, and NEXT_STEP_PROMPT has a slot
-    # for it. Without this the model reasons about the scene with no memory of the last outcome.
-    situation = f"{said}\n\n{live}"
+    said = f'This is what was heard: "{heard.strip()}"'
+    # The live block travels with the situation: which hands are holding, and what the last action
+    # was told, are exactly the context a choice needs, and NEXT_STEP_PROMPT has a slot for it.
+    # Without this the model reasons about the scene with no memory of the last outcome.
+    situation = f"{said}\n{live}"
     step = next_step(config, frame, situation, default_side=default_side)
     if step.error:
         plan_result = Plan(raw=step.raw, error=step.error, prompt_ms=step.prompt_ms,
@@ -1549,7 +1567,7 @@ def think(
             decode_ms=step.decode_ms,
         )
     decision = assemble(plan_result, None, seq, t_mono_ns, left=left, right=right,
-                        glow=glow, ghost=ghost, memory=memory, look_step=look_step)
+                        memory=memory, look_step=look_step)
     sense = None
     if plan_result.ok and plan_result.skill in SENSE_SKILLS:
         sense = plan_result.skill
@@ -1669,7 +1687,7 @@ def run_turn(
         outcome = (reach_outcome(glow, state_flags) if skill == "reach"
                    else outcome_from_flags(state_flags))
         last = last_line(skill, side, target, outcome)
-    live = live_block(heard, left, right, yaw_rad, glow, last, ghost=ghost)
+    live = live_block(left, right, yaw_rad, last)
     plan_result = plan(config, seed, frame, live, transcript=history, wav=wav,
                        default_side="right" if right == "empty" else "left")
 

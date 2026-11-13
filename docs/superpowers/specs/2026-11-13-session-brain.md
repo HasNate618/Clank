@@ -55,12 +55,17 @@ JobBot's opening, `[OPERATOR 2026-11-13]`:
 The planner sees, as the latest user text:
 
 ```text
-You are a robot playing a VR game. This is what was heard: "<utterance or (none)>"
+You are a robot playing a VR game. This is what was heard: "<utterance>"
+self:  left=<empty|holding> right=<empty|holding> yaw=<rad>
+last:  <the last locate/reach outcome, or (none)>
 Obey the newest thing that was heard. Earlier speech is context, not an order.
-self: left=<empty|holding> right=<empty|holding>
 Decide what you are trying to do next, and where, from what you can see.
 Reply with JSON only: {"goal": "...", "object": "...", "destination": "...", "side": "left|right"}
 ```
+
+An empty utterance never reaches the model at all (see the gate below), so there is no `(none)`
+variant of the first line. `last:` stays until `SessionMemory` carries the results itself; it is
+then the duplicate that `heard:` was.
 
 Banned in the planner prompt, seed, and constitution (the live path):
 
@@ -74,7 +79,7 @@ Banned in the planner prompt, seed, and constitution (the live path):
 
 `DEFAULT_SEED` / `PROP_NOUNS` are not sent on the live path. `think()` does not take a seed.
 
-If `task_intent(heard)` finds no verb and no offer (`"here's my card"`), **do not call the model**. Return a hold with note `nothing asked yet`. This is a gate on whether a task exists, not a parse of what the task is. Measured: the greeting plus a still produced `place(console)` because the prompt demanded a goal `[MEASURED]`.
+If `task_intent(heard)` finds no verb and no offer, **do not call the model**. Return a hold with note `nothing asked yet`. A verb whose only object is a participle (`"let's get started"`) names nothing and counts as no task; a pronoun object (`"take it"`) does not. An utterance that was never heard at all gets the note `nothing heard yet`, so a deaf run cannot be mistaken for a greeting in the diary. This is a gate on whether a task exists, not a parse of what the task is. Measured: the greeting plus a still produced `place(console)` because the prompt demanded a goal `[MEASURED]`.
 
 ### 3.3 Session memory
 

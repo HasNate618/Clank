@@ -120,12 +120,12 @@ Message: `fix(ears): keep a 1s pause in one utterance and confirm without the sp
 
 **Files:**
 - Modify: `clank/brain.py` (`_chat`)
-- Modify: `clank/run.py` (`brain_env` — add `CLANK_LLM_LOG`)
+- **Not** `clank/run.py` — another session owns it this week. The path is derived: `CLANK_LLM_LOG` if set, else `brain.jsonl`'s sibling `llm.jsonl` when `CLANK_BRAIN_LOG` is set, else no logging. The dashboard already exports `CLANK_BRAIN_LOG` per run, so runs get the file for free.
 - Test: `tests/test_brain.py` (new class `LlmTrace`)
 
 **Interfaces:**
 - Consumes: `_chat(config, messages, max_tokens=None) -> ModelReply`
-- Produces: if `CLANK_LLM_LOG` is set, one JSON line per call at that path with keys `t`, `prompt_text`, `image_sha256` (sha256 of the JPEG bytes if an `image_url` part is present, else `""`), `raw_reply`, `prompt_ms`, `decode_ms`, `error`; never write `data:image` bytes; a missing path or `OSError` must not raise
+- Produces: `llm_log_path()` in `clank/brain.py`; when it resolves to a path, one JSON line per call at that path with keys `t`, `prompt_text`, `image_sha256` (sha256 of the JPEG bytes if an `image_url` part is present, else `""`), `raw_reply`, `prompt_ms`, `decode_ms`, `error`; never write `data:image` bytes; a missing path or `OSError` must not raise
 
 - [ ] **Step 1: Write `LlmTrace` in `tests/test_brain.py`**
 
@@ -146,7 +146,7 @@ Also: `test_a_broken_log_path_does_not_fail_the_call` (parent dir unwritable →
 
 - [ ] **Step 2: Run it, expect FAIL** (`CLANK_LLM_LOG` unknown)
 
-- [ ] **Step 3: Implement the writer inside `_chat` after the reply is parsed.** `run.py` `brain_env`: `env["CLANK_LLM_LOG"] = str(run_dir / "llm.jsonl")`. Tests that replace `_chat` (the mixin) do not write, which is correct.
+- [ ] **Step 3: Implement `llm_log_path()` and the writer inside `_chat` after the reply is parsed.** Resolution order: `CLANK_LLM_LOG` (explicit, `""` disables) → `Path(CLANK_BRAIN_LOG).with_name("llm.jsonl")` → none. Never touch `clank/run.py`. Tests that replace `_chat` (the mixin) do not write, which is correct.
 
 - [ ] **Step 4: `python3 -m unittest tests.test_brain.LlmTrace tests.test_run`** — PASS
 
