@@ -458,7 +458,7 @@ def one_turn(say: str = "", pattern: str = ears.DEFAULT_PATTERN,
         left, right = hands_holding()
         thought = brain.think(
             BrainConfig(max_tokens=160), Frame(0, 0.0, jpeg, "live"),
-            spoken, [], memory, left=left, right=right, last=last,
+            spoken, memory, left=left, right=right, last=last,
         )
         if thought.plan.error:
             brainlog.log("error", f"the model did not answer: {thought.plan.error}")

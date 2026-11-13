@@ -261,7 +261,7 @@ class MenuSkill(unittest.TestCase):
         try:
             thought = brain.think(
                 brain.BrainConfig(), fake_frame(),
-                "press the menu button", [], brain.WorkingMemory())
+                "press the menu button", brain.WorkingMemory())
         finally:
             case.tearDown()
         self.assertEqual(thought.plan.skill, "menu")
@@ -364,7 +364,7 @@ class ThinkTests(ChatPatchMixin, unittest.TestCase):
     def run_think(self, reply: str, heard: str, memory=None, **kw):
         self.reply = reply
         return brain.think(
-            brain.BrainConfig(), fake_frame(), heard, [],
+            brain.BrainConfig(), fake_frame(), heard,
             memory if memory is not None else brain.WorkingMemory(), **kw)
 
     def test_a_greeting_does_not_call_the_model(self) -> None:
@@ -432,6 +432,82 @@ class ThinkTests(ChatPatchMixin, unittest.TestCase):
         text = self.user_text()
         self.assertIn("not_visible", text)
         self.assertIn("left=holding", text)
+
+
+class SessionMemoryTests(ChatPatchMixin, unittest.TestCase):
+    """The run is one conversation: every call carries what was said, asked and done.
+
+    Spec 2026-11-13 §3.3. The still is the only image and only on the newest user message;
+    every earlier message is text, because a pixel from last turn is a guess.
+    """
+
+    take_card = ('{"goal": "take the JobBot card", "object": "card", '
+                 '"destination": "none", "side": "right"}')
+
+    def think(self, session: brain.SessionMemory | None, heard: str) -> brain.Thought:
+        return brain.think(brain.BrainConfig(), fake_frame(), heard,
+                           brain.WorkingMemory(), session=session)
+
+    def test_the_second_think_sends_the_first_reply(self) -> None:
+        session = brain.SessionMemory()
+        self.reply = self.take_card
+        self.think(session, "take my card")
+        self.think(session, "take my card")
+        replies = [m for m in self.chat_calls[1]["messages"] if m["role"] == "assistant"]
+        self.assertEqual(len(replies), 1)
+        self.assertIn("take the JobBot card", replies[0]["content"])
+
+    def test_prior_messages_have_no_image(self) -> None:
+        session = brain.SessionMemory()
+        self.reply = self.take_card
+        self.think(session, "take my card")
+        self.think(session, "take my card")
+        messages = self.chat_calls[-1]["messages"]
+        image_parts = [part for message in messages if isinstance(message["content"], list)
+                       for part in message["content"] if part["type"] == "image_url"]
+        self.assertEqual(len(image_parts), 1)
+        self.assertIn(image_parts[0], messages[-1]["content"])
+        self.assertEqual([part["type"] for part in messages[-1]["content"]],
+                         ["image_url", "text"])
+
+    def test_the_newest_heard_line_wins_over_an_old_goal(self) -> None:
+        # Measured 2026-11-10: text in the prompt overrode speech when it named an errand. The
+        # prior reply stays in history, so the newest heard line must be the last thing read.
+        session = brain.SessionMemory()
+        session.remember_turn(
+            'You are a robot playing a VR game. This is what was heard: "put the job cartridge '
+            'into the console"',
+            '{"goal": "place the job cartridge into the console", "object": "job cartridge", '
+            '"destination": "console", "side": "right"}')
+        self.reply = self.take_card
+        self.think(session, "take my card")
+        messages = self.chat_calls[-1]["messages"]
+        newest = "\n".join(part["text"] for part in messages[-1]["content"]
+                            if part["type"] == "text")
+        self.assertIn("take my card", newest)
+        self.assertIn("Obey the newest thing that was heard", newest)
+        self.assertIn("place the job cartridge into the console", json.dumps(messages[:-1]))
+
+    def test_heard_lines_survive_the_cap(self) -> None:
+        session = brain.SessionMemory()
+        session.note_heard("here's my card")
+        for i in range(100):
+            session.remember_turn(f"user {i}", '{"goal":"hold"}')
+            session.note_result(f"hold {i}")
+        session.cap(80)
+        blob = json.dumps(session.messages)
+        self.assertIn("here's my card", blob)
+        self.assertLessEqual(
+            sum(1 for m in session.messages if m["role"] == "assistant"), 80)
+
+    def test_a_greeting_is_remembered_without_a_model_call(self) -> None:
+        session = brain.SessionMemory()
+        greeting = "Hello human! Welcome to the Job Simulator."
+        self.think(session, greeting)
+        self.assertEqual(self.chat_calls, [])
+        self.assertEqual(session.heard, [greeting])
+
+
 class PromptText(unittest.TestCase):
     def test_the_seed_carries_no_choreography(self) -> None:
         # MEASURED 2026-11-10: a seed naming the cartridge, the slot and the lever overrode what
@@ -1454,9 +1530,9 @@ class GateAndWording(unittest.TestCase):
 
     def test_nothing_heard_is_not_a_greeting(self) -> None:
         with mock.patch.object(brain, "_chat", side_effect=AssertionError("model called")):
-            quiet = brain.think(brain.BrainConfig(), fake_frame(), "", [],
+            quiet = brain.think(brain.BrainConfig(), fake_frame(), "",
                                 brain.WorkingMemory())
-            greeted = brain.think(brain.BrainConfig(), fake_frame(), "Hello human!", [],
+            greeted = brain.think(brain.BrainConfig(), fake_frame(), "Hello human!",
                                   brain.WorkingMemory())
         self.assertEqual(quiet.plan.note, "nothing heard yet")
         self.assertEqual(greeted.plan.note, "nothing asked yet")
@@ -1483,3 +1559,49 @@ class GateAndWording(unittest.TestCase):
         self.assertNotIn("ghost", brain.CONSTITUTION.lower())
         self.assertNotIn("cartridge", brain.NEXT_STEP_PROMPT.lower())
         self.assertNotIn("console", brain.NEXT_STEP_PROMPT.lower())
+
+    def test_the_token_budget_binds_before_the_pair_count(self) -> None:
+        # 80 pairs of a real planner prompt is ~59k tokens of prefill, which is 11 s per call at
+        # the measured rate. The budget keeps the history useful instead of ruinous, and the heard
+        # lines survive it - that is the whole point of remembering.
+        session = brain.SessionMemory()
+        session.note_heard("here's my card")
+        for i in range(40):
+            session.remember_turn("x" * 2000, '{"goal": "hold"}')
+            session.note_result("grab(card) reached")
+            session.cap()
+        self.assertLessEqual(session._tokens(), brain.MEMORY_TOKEN_BUDGET)
+        self.assertIn("here's my card", session.heard)
+        self.assertIn("here's my card", json.dumps(session.messages))
+
+class SessionMemorySend(ChatPatchMixin, unittest.TestCase):
+    """What a session actually puts in front of the model."""
+
+    reply = ('{"goal": "take the card", "object": "card", '
+             '"destination": "none", "side": "right"}')
+
+    def test_history_stores_the_situation_not_the_instruction_block(self) -> None:
+        # The instruction block is ~72 of the ~123 tokens a pair costs, and repeating it dozens of
+        # times is the text that overrode the newest utterance once already. The exact prompt of
+        # every call is in llm.jsonl, so the record does not lose it.
+        session = brain.SessionMemory()
+        brain.think(brain.BrainConfig(), fake_frame(), "take my card",
+                    brain.WorkingMemory(), session=session)
+        blob = json.dumps(session.messages)
+        self.assertIn("take my card", blob)
+        self.assertNotIn("You are a robot playing a VR game", blob)
+        self.assertNotIn("Obey the newest thing that was heard", blob)
+
+    def test_the_send_trims_itself(self) -> None:
+        # cap() has no other production caller: for_chat is the one place every send passes.
+        session = brain.SessionMemory()
+        session.note_heard("here is my card")
+        for _ in range(200):
+            session.remember_turn("x" * 2000, '{"goal": "hold"}')
+        self.assertGreater(session._tokens(), brain.MEMORY_TOKEN_BUDGET)
+        brain.think(brain.BrainConfig(), fake_frame(), "take my card",
+                    brain.WorkingMemory(), session=session)
+        sent = self.chat_calls[-1]["messages"]
+        history = "".join(m["content"] for m in sent if isinstance(m.get("content"), str))
+        self.assertLessEqual(len(history) // 4, brain.MEMORY_TOKEN_BUDGET + 200)
+        self.assertIn("here is my card", history)

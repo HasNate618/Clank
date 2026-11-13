@@ -909,6 +909,8 @@ def next_step(
     frame: Frame,
     situation: str,
     default_side: str = "right",
+    *,
+    session: SessionMemory | None = None,
 ) -> NextStep:
     """Ask what to do next, given the situation in words and one still.
 
@@ -919,11 +921,27 @@ def next_step(
     "destination": "INSERT CARTRIDGE screen on the central console"}`, which is a
     destination `locate` can resolve. The same question with a skill enum in the
     prompt degenerated to `{"skill": "grab"}` - hence the split.
+
+    `session` is the run's transcript. When it is given the call carries every earlier utterance,
+    prompt, reply and result, and this exchange is appended to it - one owner for the prompt, the
+    call and the memory, so the trace and the history cannot disagree. `None` is the single user
+    message this has always sent.
     """
     prompt = NEXT_STEP_PROMPT.format(situation=situation)
-    reply = _chat(config, [{"role": "user", "content": [
-        _image_part(frame), {"type": "text", "text": prompt},
-    ]}])
+    if session is None:
+        messages = [{"role": "user", "content": [
+            _image_part(frame), {"type": "text", "text": prompt},
+        ]}]
+    else:
+        messages = session.for_chat(frame, prompt)
+    reply = _chat(config, messages)
+    if session is not None and reply.text:
+        # A failed call has no reply to remember, and an empty assistant message is not a turn.
+        # The SITUATION, not the whole prompt: the instruction block is ~72 of the ~123 tokens a
+        # stored pair costs, and repeating "You are a robot..." and "Obey the newest thing" forty
+        # times is the class of text that overrode the newest utterance once already. The exact
+        # prompt of every call is in `llm.jsonl`, so nothing is lost from the record.
+        session.remember_turn(situation, reply.text)
     if reply.error:
         return NextStep(raw=reply.text, error=reply.error)
 
@@ -1292,6 +1310,146 @@ class WorkingMemory:
 
 
 # --------------------------------------------------------------------------- #
+# SESSION MEMORY
+# --------------------------------------------------------------------------- #
+
+#: What a heard line starts with. `SessionMemory.cap` reads it to keep every utterance: the run's
+#: speech is the one thing that must survive a trim, because it is the record of what was asked.
+HEARD_PREFIX = "This is what was heard: "
+
+#: What a result line starts with. Results are trimmed first: they are the most replaceable, and
+#: the next `last:` line says the same thing.
+RESULT_PREFIX = "result: "
+
+#: What the run may spend on history, in estimated text tokens.
+#:
+#: The binding limit is the server's, not ours: `/props` reports `total_slots: 4` for a 65536
+#: context, so a single request gets ~16384 tokens, and an oversize request is refused outright -
+#: a blind planner rather than a slow one. A stored pair is ~400 chars of situation and ~90 of
+#: reply, ~123 tokens by the estimate below, so 80 pairs is ~10k estimated (~13k real for
+#: JSON-heavy text) against a ~16k slot with the current prompt and output still to fit.
+#:
+#: 8000 of history keeps a request near 9k: a safe margin, and ~1.5 s of prefill at the ~5400
+#: prompt tokens/s measured against this endpoint (`research/brain-tools.md`). The pair count is
+#: the loose bound and the budget is the one that trips.
+MEMORY_TOKEN_BUDGET = 8000
+
+
+@dataclass
+class SessionMemory:
+    """The run as one conversation: what was heard, asked, answered and done.
+
+    Spec 2026-11-13 §3.3. The lifetime is the run, not the turn: every planner call sends this
+    whole list, so the newest utterance is read against everything said before it. The current
+    still is the only image and it always rides the newest user message - a pixel from last turn is
+    a guess (spec §3.3; `WorkingMemory` is the per-turn, geometric half of the same idea).
+
+    Text only, in the OpenAI chat-message form `_chat` posts unchanged. Locate calls are one-shot
+    and never read this: they answer a different question and would drown the planner in crops.
+    """
+
+    messages: list[dict[str, Any]] = field(default_factory=list)
+    heard: list[str] = field(default_factory=list)
+
+    def note_heard(self, text: str) -> None:
+        """Record one transcribed utterance. An empty transcription is not an utterance."""
+        text = text.strip()
+        # Two callers can report the same utterance - `think` remembers a greeting it did not act
+        # on, and the loop remembers what it heard - so the repeat is not a second thing said.
+        if not text or (self.heard and self.heard[-1] == text):
+            return
+        self.heard.append(text)
+        self.messages.append({"role": "user", "content": f'{HEARD_PREFIX}"{text}"'})
+
+    def note_result(self, text: str) -> None:
+        """Record what the loop did: `result: locate(card) present 0.4 m`."""
+        text = text.strip()
+        if text:
+            self.messages.append({"role": "user", "content": f"{RESULT_PREFIX}{text}"})
+
+    def remember_turn(self, user_text: str, assistant_text: str) -> None:
+        """Keep one planner exchange: the prompt as it was sent, and the raw reply."""
+        self.messages.append({"role": "user", "content": user_text})
+        self.messages.append({"role": "assistant", "content": assistant_text})
+
+    def for_chat(self, frame: Frame, prompt_text: str) -> list[dict[str, Any]]:
+        """`messages` as the next planner call sends them: history, then the still and question.
+
+        `cap()` runs here, at the one place every send goes through. A caller that forgets to trim
+        would otherwise grow the history until the server refuses the request - and a refused
+        request is a blind planner, not a slow one.
+        """
+        self.cap()
+        return [
+            *self.messages,
+            {"role": "user", "content": [
+                _image_part(frame), {"type": "text", "text": prompt_text},
+            ]},
+        ]
+
+    def cap(self, max_pairs: int = 80, max_tokens: int = MEMORY_TOKEN_BUDGET) -> None:
+        """Trim to `max_pairs` exchanges and `max_tokens` of prompt, newest kept, heard kept.
+
+        Results go first: they are the most replaceable (the next `last:` line says the same
+        thing), and a planner pair goes only when no result is left. A heard line is never a
+        candidate - losing the run's speech is exactly the failure this class prevents.
+
+        The token budget is the one that binds in practice. A planner prompt measures 692-731
+        tokens on the live endpoint, so 80 pairs is ~59k tokens of prefill: at the measured 5400
+        prompt tokens/s that is 11 s per call, every call, which would make the loop slower than
+        the reach it is asking for. `MEMORY_TOKEN_BUDGET` is sized to keep prefill near 1.5 s.
+        """
+        while self._pairs() > max_pairs or self._tokens() > max_tokens:
+            index = self._oldest_result()
+            if index is not None:
+                del self.messages[index]
+                continue
+            index = self._oldest_planner_prompt()
+            if index is None:
+                break
+            del self.messages[index:index + 2]
+
+    def _tokens(self) -> int:
+        """A deliberately cheap estimate: 4 characters per token, no tokeniser in `clank/`.
+
+        It measures the stored history only - not the current prompt and not the still, which are
+        another ~700 tokens - and 4 chars/token is optimistic for the JSON-heavy replies, where a
+        real tokeniser lands nearer 3. Both errors point the same way, which is why the budget
+        leaves a wide margin rather than sitting just under the slot.
+        """
+        return sum(len(self._text(message)) for message in self.messages) // 4
+
+    def _pairs(self) -> int:
+        return sum(1 for message in self.messages if message["role"] == "assistant")
+
+    @staticmethod
+    def _text(message: dict[str, Any]) -> str:
+        content = message.get("content")
+        return content if isinstance(content, str) else ""
+
+    def _oldest_result(self) -> int | None:
+        for index, message in enumerate(self.messages):
+            if message["role"] != "user":
+                continue
+            if self._text(message).startswith(RESULT_PREFIX):
+                return index
+        return None
+
+    def _oldest_planner_prompt(self) -> int | None:
+        """The oldest user message with an assistant reply right after it.
+
+        Structural, not prefix-based: a stored prompt is the situation (`heard: ... / self: ... /
+        last: ...`), which has no fixed opening, and matching on prefixes is how a trimmer ends up
+        unable to delete anything. Nothing else appends an assistant message, so "user followed by
+        assistant" is exactly a planner exchange.
+        """
+        for index, message in enumerate(self.messages[:-1]):
+            if message["role"] == "user" and self.messages[index + 1]["role"] == "assistant":
+                return index
+        return None
+
+
+# --------------------------------------------------------------------------- #
 # ASSEMBLE
 # --------------------------------------------------------------------------- #
 
@@ -1495,9 +1653,9 @@ def think(
     config: BrainConfig,
     frame: Frame,
     heard: str,
-    history: list[str],
     memory: WorkingMemory,
     *,
+    session: SessionMemory | None = None,
     seq: int = 0,
     t_mono_ns: int = 0,
     left: str = "empty",
@@ -1519,6 +1677,10 @@ def think(
 
     No seed as well. The seed was the largest measured cause of a wrong verb (see `DEFAULT_SEED`),
     and nothing here reads it.
+
+    `session` is the run's memory (spec 2026-11-13 §3.3): when given, the planner call carries the
+    whole transcript and the exchange is appended to it. `None` keeps the old one-shot behaviour
+    for callers that do not own a run.
     """
     # Whether a task exists is not the same question as what the task is. MEASURED 2026-11-13:
     # the greeting plus a still produced `place(console)` because the prompt demanded a goal, so an
@@ -1526,6 +1688,10 @@ def think(
     # Nothing heard at all is a different fact and gets its own note: a deaf run (a muted sink
     # input, a game sitting at its menu) must not look like a greeting in the diary.
     if not heard.strip() or task_intent(heard) == ("", ""):
+        if session is not None:
+            # A greeting is still something JobBot said, and the next call must read it. Nothing
+            # heard has nothing to remember: `note_heard` ignores an empty utterance.
+            session.note_heard(heard)
         idle = Plan(skill="hold", side="none",
                     note="nothing asked yet" if heard.strip() else "nothing heard yet")
         decision = assemble(idle, None, seq, t_mono_ns, left=left, right=right,
@@ -1544,7 +1710,7 @@ def think(
     # was told, are exactly the context a choice needs, and NEXT_STEP_PROMPT has a slot for it.
     # Without this the model reasons about the scene with no memory of the last outcome.
     situation = f"{said}\n{live}"
-    step = next_step(config, frame, situation, default_side=default_side)
+    step = next_step(config, frame, situation, default_side=default_side, session=session)
     if step.error:
         plan_result = Plan(raw=step.raw, error=step.error, prompt_ms=step.prompt_ms,
                            decode_ms=step.decode_ms)
