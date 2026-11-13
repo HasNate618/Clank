@@ -223,8 +223,10 @@ DEFAULTS: dict[str, dict[str, Any]] = {
         "python": "spike/e3/.venv/bin/python",
         "script": "spike/wbc/body_view.py",
         "fps": 10.0,
-        "width": 560,
-        "height": 420,
+        # Portrait, so the recording's robot tile is 9:16 instead of a 4:3
+        # letterbox inside a wide frame. Exactly 405x720 = 9:16.
+        "width": 405,
+        "height": 720,
         # Cycle the verb reel instead of holding one pose, so the tile shows motion.
         "reel": True,
         # false = physics and verbs only, no third-person image. Needs no GPU,

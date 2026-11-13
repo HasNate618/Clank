@@ -518,6 +518,13 @@ class RunConfigTests(unittest.TestCase):
         self.assertEqual(cfg.run.required_model, "LFM3-Omni-2B")
 
 
+class BodyConfigTests(RunConfigTests):
+    def test_the_default_body_render_is_portrait(self):
+        cfg = load_config(None, env={})
+        self.assertEqual((cfg.body.width, cfg.body.height), (405, 720))
+        self.assertEqual(cfg.body.width * 16, cfg.body.height * 9)   # exactly 9:16
+
+
 class RecordingConfigTests(RunConfigTests):  # inherits write_toml
     def test_defaults_describe_a_small_watchable_recording(self):
         cfg = load_config(None, env={})

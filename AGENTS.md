@@ -197,10 +197,15 @@ reason, and none of it fails, delays or blocks the run.
   already recorded; only a part that wrote nothing is deleted.
 - **`started_at` is the recorder's clock**, not `run.started_at`: the run starts ~25 s before
   the recorder can see a frame, and the page seeks the diary against this field.
-- **Fixed geometry 1680x540**: game 960x540, robot scaled 720x540, black padding for a missing
-  side. 15 fps, `crf 28`, `preset veryfast`, `+faststart`. Measured 24.1 MB/min at
-  `ultrafast`, so a 20-minute run is a few hundred megabytes; `max_total_mb` (20480) prunes
-  oldest-first and never the run just recorded.
+- **Fixed geometry 1264x540**: game 960x540, robot rendered **405x720** (exactly 9:16) and scaled
+  into its **304x540** tile, black padding for a missing side. The tile is portrait because the
+  policy's 4:3 framing was a small figure in a wide shot, and cropping 4:3 to 9:16 cuts the arms
+  off; the render changed, not the crop. `[body] width/height` are that render, and the Robot
+  panel's tiles take their shape from the frame itself. **Unverified live:** whether the follow
+  camera frames the body well in 9:16 -- if a raised arm leaves the frame, the fallback is the
+  portrait render padded, never a 4:3 crop. 15 fps, `crf 28`, `preset veryfast`, `+faststart`.
+  Measured 24.1 MB/min at `ultrafast`, so a 20-minute run is a few hundred megabytes;
+  `max_total_mb` (20480) prunes oldest-first and never the run just recorded.
 - **Pruning takes the video and keeps the diary.** `brain.jsonl`, `brain.log`, `run.json` and
   `frames/` stay: they are kilobytes beside the megabytes, and the diary is the other half of
   what a recording is for. The run stays listed with `state: pruned`.

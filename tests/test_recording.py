@@ -46,8 +46,8 @@ class CompositeArgvTests(unittest.TestCase):
         argv = self.argv()
         graph = argv[argv.index("-filter_complex") + 1]
         self.assertIn("hstack", graph)
-        self.assertIn("scale=960:540", graph)
-        self.assertIn("scale=720:540", graph)
+        self.assertIn(f"scale={recording.GAME_WIDTH}:{recording.HEIGHT}", graph)
+        self.assertIn(f"scale={recording.ROBOT_WIDTH}:{recording.HEIGHT}", graph)
         self.assertEqual(argv[argv.index("-movflags") + 1], "+faststart")
 
     def test_audio_is_muxed_and_the_shorter_stream_wins(self):
@@ -365,7 +365,7 @@ class RecorderTests(unittest.TestCase):
         rec.pump(0.4)
         manifest = rec.stop()
         self.assertEqual(manifest["state"], "composing")
-        self.assertEqual(manifest["width"], 1680)
+        self.assertEqual(manifest["width"], recording.WIDTH)
         self.assertEqual(manifest["height"], 540)
         self.assertEqual(manifest["fps"], 15)
         self.assertEqual(manifest["sources"], {"game": "ok", "robot": "ok", "audio": "ok"})
@@ -565,7 +565,7 @@ class RecorderTests(unittest.TestCase):
         robot = self.argv_of("robot.mp4")
         self.assertIn("image2pipe", robot)
         self.assertIn("-framerate 10", robot)
-        self.assertIn("scale=720:540", robot)
+        self.assertIn(f"scale={recording.ROBOT_WIDTH}:{recording.HEIGHT}", robot)
         audio = self.argv_of("audio.m4a")
         self.assertIn("s16le", audio)
         self.assertIn("-ar 16000", audio)
@@ -720,6 +720,21 @@ def manifest_of(test: unittest.TestCase, run_dir: Path) -> dict:
     if doc is None:
         test.fail(f"no {recording.MANIFEST_NAME} in {run_dir}")
     return doc
+
+
+class GeometryTests(unittest.TestCase):
+    def test_the_composite_is_a_portrait_tile_beside_the_game(self):
+        self.assertEqual(recording.WIDTH, 1264)
+        self.assertEqual(recording.HEIGHT, 540)
+        self.assertEqual(recording.ROBOT_WIDTH, 304)
+        self.assertEqual(recording.GAME_WIDTH, 960)
+
+    def test_the_robot_part_scales_into_the_portrait_tile(self):
+        argv = composite_argv(game=Path("g.mp4"), robot=Path("r.mp4"), audio=None,
+                              out=Path("o.mp4"), fps=15, crf=28, preset="veryfast")
+        graph = argv[argv.index("-filter_complex") + 1]
+        self.assertIn("scale=304:540", graph)
+        self.assertIn("scale=960:540", graph)
 
 
 class CompositeTests(unittest.TestCase):

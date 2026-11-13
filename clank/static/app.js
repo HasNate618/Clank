@@ -1456,6 +1456,12 @@ function bodyRefresh() {
     const name = tile.dataset.view;
     probe.onload = () => {
       bodyFailures = 0;
+      // The tile takes the render's own shape. It used to be pinned to 4:3, so a
+      // portrait render sat pillarboxed inside a wide box: the whitespace the
+      // operator kept pointing at was the tile disagreeing with its picture.
+      if (probe.naturalWidth && probe.naturalHeight) {
+        img.style.aspectRatio = `${probe.naturalWidth} / ${probe.naturalHeight}`;
+      }
       img.src = probe.src;
       delete img.dataset.busy;
     };

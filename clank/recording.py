@@ -40,7 +40,10 @@ if TYPE_CHECKING:  # imported for the annotations only: config never imports thi
 
 GAME_WIDTH = 960
 GAME_HEIGHT = 540
-ROBOT_WIDTH = 720
+#: The robot tile is 9:16 beside the game's 16:9. It is rendered portrait by the
+#: body view ([body] width/height) rather than cropped to portrait here: cropping
+#: a 4:3 render to 9:16 cuts the arms off.
+ROBOT_WIDTH = 304
 HEIGHT = GAME_HEIGHT
 WIDTH = GAME_WIDTH + ROBOT_WIDTH
 

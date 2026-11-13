@@ -961,7 +961,9 @@ body.manual-active .manual-panel { border-color: var(--warm); }
 }
 .body-tile img {
   width: 100%;
-  aspect-ratio: 4 / 3;
+  /* app.js sets this to the frame's own shape on load; 9:16 is the render the
+     body view produces now, and a stale 4:3 here is a pillarboxed portrait. */
+  aspect-ratio: 9 / 16;
   object-fit: contain;
   border-radius: var(--r-md);
   background: var(--screen);
