@@ -1,5 +1,8 @@
 # Hands that follow the head, and a camera we can measure
 
+> **Archived 2026-11-13.** Implementation plan, carried out. Kept for the task breakdown and the gates it defined; the code is the record now.
+> Current behaviour: [`README.md`](../../../README.md) · agent rules: [`AGENTS.md`](../../../AGENTS.md).
+
 **Goal:** make the wrist verbs move where their names say, make hand targets head-relative so a
 hand stays in view when the body turns, and calibrate the HMD→capture map automatically — so
 projection can drive a reach without a human watching the screen.
@@ -60,7 +63,7 @@ already takes.
 
 ## Spec
 
-Extends `docs/superpowers/specs/2026-10-30-targeting-adapter.md` §S3 (FOV / crop map) and §8
+Extends `docs/archive/specs/2026-10-30-targeting-adapter.md` §S3 (FOV / crop map) and §8
 (signals). Supersedes nothing. Play rules: `research/superhot-play.md`.
 
 ## Global constraints

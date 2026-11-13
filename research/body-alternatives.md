@@ -256,7 +256,7 @@ This is a judgment, not a measurement. If the goal is specifically to be early o
 
 ### Project documents
 
-- `[P1]` `docs/2026-10-23-Clank-design.md` — body constraints, `BodyCommand`, authority bits, executor, C0–C5, HMD height.
+- `[P1]` `../docs/2026-10-23-clank-design.md` — body constraints, `BodyCommand`, authority bits, executor, C0–C5, HMD height.
 - `[P2]` `research/e3-spike-results.md` — G1 stand, 500 Hz, packet match, head/wrist measurements.
 - `[P3]` `research/g1-integration-control.md` — WBC architecture, neckless head-look, IK, policy caveats.
 - `[P4]` `RESEARCH.md` §5 — body mapping, G1 29/43 DoF, no neck.

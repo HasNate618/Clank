@@ -1,7 +1,10 @@
 # Builder check — open questions before planning
 
+> **Archived 2026-11-13.** The open-questions audit taken before implementation began. The questions were answered by building; kept as the audit trail for `2026-10-23-clank-design.md`.
+> Current behaviour: [`README.md`](../../README.md) · agent rules: [`AGENTS.md`](../../AGENTS.md).
+
 **Date:** 2026-10-23
-**Inputs:** `docs/2026-10-23-Clank-design.md`, E1–E3 spike results, `research/humanoid-command-space.md`, `RESEARCH.md` §5/§12, `stubborn-gamer/SEED.md`.
+**Inputs:** `docs/2026-10-23-clank-design.md`, E1–E3 spike results, `research/humanoid-command-space.md`, `RESEARCH.md` §5/§12, `stubborn-gamer/SEED.md`.
 **Scope:** Only questions where a wrong answer changes what gets planned. §15 author calls and §16 builder choices are treated as closed. Ordered by blast radius: #1–#2 can invalidate the milestone; #3–#4 change the architecture; #5 changes C5's scope.
 
 ## 1. Is the game-side path known to work, or is E4 the first test?

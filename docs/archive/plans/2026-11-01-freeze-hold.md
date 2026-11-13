@@ -1,5 +1,8 @@
 # Freeze-Hold Implementation Plan
 
+> **Archived 2026-11-13.** Implementation plan, carried out. Kept for the task breakdown and the gates it defined; the code is the record now.
+> Current behaviour: [`README.md`](../../../README.md) · agent rules: [`AGENTS.md`](../../../AGENTS.md).
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Make adapter `hold` latch last-achieved head and both wrists, and make `rest` the only path that returns the standing-clip VR points.
@@ -8,7 +11,7 @@
 
 **Tech Stack:** Python 3.14 stdlib in `clank/` (`unittest`). `python3 -m unittest` (pytest is not installed). Numpy/MuJoCo stay in `spike/wbc/sonic_executor.py`; this plan does not add ONNX tests.
 
-**Spec:** `docs/superpowers/specs/2026-10-31-brain.md` §6.1, §14 (`rest`), §19 P2, §20 item 5. Parent: `docs/2026-10-23-clank-design.md` §8 `hold` row. Adapter: `docs/superpowers/specs/2026-10-30-targeting-adapter.md` §6 hold row (currently wrong: "empty authority (executor standing clip)").
+**Spec:** `docs/superpowers/specs/2026-10-31-brain.md` §6.1, §14 (`rest`), §19 P2, §20 item 5. Parent: `docs/2026-10-23-clank-design.md` §8 `hold` row. Adapter: `docs/archive/specs/2026-10-30-targeting-adapter.md` §6 hold row (currently wrong: "empty authority (executor standing clip)").
 
 ## Global Constraints
 
@@ -315,7 +318,7 @@ EOF
 
 **Files:**
 - Modify: `spike/wbc/sonic_executor.py` (`_targets`)
-- Modify: `docs/superpowers/specs/2026-10-30-targeting-adapter.md` §6 hold row
+- Modify: `docs/archive/specs/2026-10-30-targeting-adapter.md` §6 hold row
 - Modify: `docs/superpowers/specs/2026-10-31-brain.md` §19 P2 row only if you can mark it implemented; otherwise leave P2 as the gate until a live soak
 - Test: none new. Policy is Task 1. Do not import `SonicExecutor` from `tests/`.
 
@@ -369,7 +372,7 @@ Expected: OK, same count as before plus the new FreezeHold / rest / bus tests (e
 - [ ] **Step 5: Commit**
 
 ```bash
-git add spike/wbc/sonic_executor.py docs/superpowers/specs/2026-10-30-targeting-adapter.md docs/superpowers/specs/2026-10-31-brain.md
+git add spike/wbc/sonic_executor.py docs/archive/specs/2026-10-30-targeting-adapter.md docs/superpowers/specs/2026-10-31-brain.md
 git commit -m "$(cat <<'EOF'
 fix(executor): unmentioned pose channels hold last achieved
 

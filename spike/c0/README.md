@@ -75,7 +75,7 @@ Record the frames. The number goes in the doc as the freeze budget, and it decid
 
 ## Hard fails, and what they mean
 
-- **No non-black view / the game never binds** → Monado `remote` is not acceptable to this build. This is the one case where switching title is allowed (`docs/2026-10-23-Clank-design.md` §12).
+- **No non-black view / the game never binds** → Monado `remote` is not acceptable to this build. This is the one case where switching title is allowed (`../../docs/2026-10-23-clank-design.md` §12).
 - **The view follows once then freezes while packets still arrive** → the driver adopted a pose and stopped reading; check `IPC_EXIT_ON_DISCONNECT` and that only one client is connected (the hub accepts exactly one).
 - **Trigger does nothing** → first suspect controller `active`/`trigger_click` bits in the packet rather than the game; then the game's input mapping.
 - **grim returns the desktop** → window class/title matching; `capture_game.sh` prints every open window when it fails.

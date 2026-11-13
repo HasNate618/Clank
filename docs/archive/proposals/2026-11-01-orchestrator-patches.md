@@ -1,5 +1,8 @@
 # Three patches to `clank/orchestrator.py` (proposed, not applied)
 
+> **Archived 2026-11-13.** Proposed diffs, never applied. Kept as the record of what was considered.
+> Current behaviour: [`README.md`](../../../README.md) · agent rules: [`AGENTS.md`](../../../AGENTS.md).
+
 `clank/orchestrator.py` is another agent's file, so these are written as proposed
 diffs. Each one is small, each unblocks something measured, and each has a check that
 tells you whether it worked.

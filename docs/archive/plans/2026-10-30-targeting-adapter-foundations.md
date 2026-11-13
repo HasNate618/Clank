@@ -1,5 +1,8 @@
 # Targeting Adapter Foundations Implementation Plan
 
+> **Archived 2026-11-13.** Implementation plan, carried out. Kept for the task breakdown and the gates it defined; the code is the record now.
+> Current behaviour: [`README.md`](../../../README.md) · agent rules: [`AGENTS.md`](../../../AGENTS.md).
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Land the three stdlib-computable pieces of the targeting adapter — the intent schema, the wrist→camera projection, and the glow patch score — plus parameterised verbs, so the only thing left before a hub pickup is the live-session capture and the script.
@@ -8,7 +11,7 @@
 
 **Tech Stack:** Python 3.12 standard library only for `clank/`. The adapter's capture loop (VNC/RFB) and any image decoding stay in `spike/wbc/` in a later plan.
 
-**Spec:** `docs/superpowers/specs/2026-10-30-targeting-adapter.md`. Parent design: `docs/2026-10-23-clank-design.md` §§6, 8, 9. Play rules: `research/superhot-play.md`.
+**Spec:** `docs/archive/specs/2026-10-30-targeting-adapter.md`. Parent design: `docs/2026-10-23-clank-design.md` §§6, 8, 9. Play rules: `research/superhot-play.md`.
 
 ## Global Constraints
 
@@ -213,7 +216,7 @@ Landed after the operator corrected the hub sequence: the floppy and headset hav
 
 **Files:**
 - Modify: `clank/glow.py`, `tests/test_glow.py`
-- Modify: `docs/superpowers/specs/2026-10-30-targeting-adapter.md` §1, §8, §10
+- Modify: `docs/archive/specs/2026-10-30-targeting-adapter.md` §1, §8, §10
 - Modify: `research/superhot-play.md` §1, §2
 
 **Interfaces:**

@@ -1,6 +1,6 @@
 # d1 decision models — capabilities, runtime parity, and whether d1 is Laya again
 
-**Date:** 2026-10-28. **Scope:** Liquid AI open d1 (`d1-2B`, `d1-Omni-2B`, and the runtime support around them), measured against the job in `docs/2026-10-23-Clank-design.md` §9: name a skill and a side from one frame plus a ≤10-line digest, on CPU, in place of MiniCPM5-2B (20 s p50 / 31 s p95) and LFM2.5-3B (0.21 s, degenerate).
+**Date:** 2026-10-28. **Scope:** Liquid AI open d1 (`d1-2B`, `d1-Omni-2B`, and the runtime support around them), measured against the job in `../docs/2026-10-23-clank-design.md` §9: name a skill and a side from one frame plus a ≤10-line digest, on CPU, in place of MiniCPM5-2B (20 s p50 / 31 s p95) and LFM2.5-3B (0.21 s, degenerate).
 
 **Claim tags.** `[MEASURED]` = a local spike on this machine, file named. `[CITED: url]` = a source I read today. `[VENDOR]` after a citation means the number was produced by Liquid AI or by a model's own authors. `[ASSUMPTION]` = my reasoning, untested. **The desk study below is `[CITED]`/`[VENDOR]` only — it was written without touching the model.** Local CPU latency was then measured on this machine and is recorded in **§6b**, which supersedes the three places below that say no CPU image number exists (§0, §6, §9.1).
 
@@ -105,7 +105,7 @@ Every question is `{type, instructions, ...}`; every answer repeats its `type`. 
 
 `[CITED: https://huggingface.co/LiquidAI/d1-2B-ONNX]` `[CITED: https://huggingface.co/LiquidAI/LFM3-VL-2B]` `[CITED: https://huggingface.co/LiquidAI/LFM3-1.7B]` `[CITED: https://docs.liquid.ai/lfm/models/complete-library]` `[CITED: https://github.com/prometheion/nerve-protocol/issues/178]`
 
-RAM figure for MiniCPM5-2B (3,932 MiB) and MiMo (7,346 MiB) are from `docs/2026-10-23-Clank-state-of-findings.md` §6 — `[MEASURED]`, ours.
+RAM figure for MiniCPM5-2B (3,932 MiB) and MiMo (7,346 MiB) are from `../docs/archive/2026-10-23-clank-state-of-findings.md` §6 — `[MEASURED]`, ours.
 
 ---
 
@@ -242,4 +242,4 @@ Practical notes for whoever runs it: do **not** reuse port 11434 (the user is re
 
 ## 10. Sources read
 
-Primary: `huggingface.co/LiquidAI/d1-2B`, `/d1-2B-GGUF`, `/d1-2B-ONNX`, `/d1-Omni-2B`, `/LFM3-VL-2B`, `/LFM3-1.7B` (raw READMEs + `LICENSE`), `docs.liquid.ai/lfm/models/decision-models`, `/lfm/models/complete-library`, `/guides/decision-model-guide`, `/examples/laptop-examples/build-a-game-with-decision-models`, `/lfm/key-concepts/vision-capabilities`, `/deployment/on-device/onnx`, `liquid.ai/blog/open-d1`, `liquid.ai/blog`. GitHub: `ggml-org/llama.cpp` PRs #31275, #31283, #31309, #29818, #29321; issues #31150, #30482, #30064, #30161. Third-party: `prometheion/nerve-protocol` issues #178 and #141, `kevinmichaelchen/effect-coffee-shop` #123/#126, `pennel-app/pennel` #53. Hugging Face discussion and model-search APIs. Prior art: `../stubborn-gamer/research/squads/wave78-laya-capabilities.md`. Local context: `docs/2026-10-23-Clank-state-of-findings.md` §6–§7, `docs/2026-10-23-Clank-design.md` §9, `research/system1-game-agents.md` §4.2/§7.
+Primary: `huggingface.co/LiquidAI/d1-2B`, `/d1-2B-GGUF`, `/d1-2B-ONNX`, `/d1-Omni-2B`, `/LFM3-VL-2B`, `/LFM3-1.7B` (raw READMEs + `LICENSE`), `docs.liquid.ai/lfm/models/decision-models`, `/lfm/models/complete-library`, `/guides/decision-model-guide`, `/examples/laptop-examples/build-a-game-with-decision-models`, `/lfm/key-concepts/vision-capabilities`, `/deployment/on-device/onnx`, `liquid.ai/blog/open-d1`, `liquid.ai/blog`. GitHub: `ggml-org/llama.cpp` PRs #31275, #31283, #31309, #29818, #29321; issues #31150, #30482, #30064, #30161. Third-party: `prometheion/nerve-protocol` issues #178 and #141, `kevinmichaelchen/effect-coffee-shop` #123/#126, `pennel-app/pennel` #53. Hugging Face discussion and model-search APIs. Prior art: `../stubborn-gamer/research/squads/wave78-laya-capabilities.md`. Local context: `../docs/archive/2026-10-23-clank-state-of-findings.md` §6–§7, `../docs/2026-10-23-clank-design.md` §9, `research/system1-game-agents.md` §4.2/§7.

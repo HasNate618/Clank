@@ -15,7 +15,7 @@
 **Agent:** OpenCode `wbc-game`
 **Question:** given the measured game-side facts and the measured classical WBC, which whole-body demo should be built first, and what would it prove?
 
-**Inputs:** `docs/2026-10-23-Clank-state-of-findings.md`, `docs/2026-10-23-Clank-design.md`, `research/wbc-classical-proposal.md`, `research/wbc-policy-proposal.md`, `/tmp/opencode/spawn_contract.txt`, `/tmp/opencode/level1_scan.txt`, `/tmp/opencode/level3_scan.txt`, `/tmp/opencode/level4_scan.txt`, `/tmp/opencode/gamedata.xml`, `/tmp/opencode/il2cpp/dump.cs`.
+**Inputs:** `../docs/archive/2026-10-23-clank-state-of-findings.md`, `../docs/2026-10-23-clank-design.md`, `research/wbc-classical-proposal.md`, `research/wbc-policy-proposal.md`, `/tmp/opencode/spawn_contract.txt`, `/tmp/opencode/level1_scan.txt`, `/tmp/opencode/level3_scan.txt`, `/tmp/opencode/level4_scan.txt`, `/tmp/opencode/gamedata.xml`, `/tmp/opencode/il2cpp/dump.cs`.
 
 **Claim tags.** `[MEASURED]` = produced locally by a named script/run. `[CITED]` = prior local result or external source, named. `[ASSUMPTION]` = reasoning, untested. Day estimates are assumptions.
 
@@ -34,7 +34,7 @@
 
 **Walking is no longer unscoped, but it is still not on Demo 1's critical path.** Corridor (story level 3) puts the first enemy factory **12.31 m** away and the first item **1.62 m** away `[MEASURED: level3 scan]`; it requires traversal and turning. Do not make Corridor the first target. The parallel `research/wbc-policy-proposal.md` measures **GEAR-SONIC default**: **6.36 m/10 s**, hold **3.6 cm/20 s**, walk→hold→walk without falling (4 s and 10 s holds), and dodge **0.15–0.18 m in <0.5 s** `[MEASURED: research/wbc-policy-proposal.md]`. That is the recommended walking executor (route A), but its R1 tracking is partial (hold 4–6 cm / 17–23°, walking 5–10 cm / 8–19°; head z/x and pitch/roll not tracked), and its 5-cycle/60 s/live tests are unrun. The first walking gate is SONIC's one-day falsification, not the classical single-support test; the classical contact-QP remains a fallback, and the hybrid WBC-stand + SONIC-walk is the precision route.
 
-**C0 has never been run and is the first go/no-go.** The game is not installed; the synthetic-HMD path under Proton/xrizer/Monado is still untested `[CITED: docs/2026-10-23-Clank-state-of-findings.md §4]`. Demo 1 is meaningless if C0 fails.
+**C0 has never been run and is the first go/no-go.** The game is not installed; the synthetic-HMD path under Proton/xrizer/Monado is still untested `[CITED: ../docs/archive/2026-10-23-clank-state-of-findings.md §4]`. Demo 1 is meaningless if C0 fails.
 
 ---
 
@@ -175,7 +175,7 @@ The classical WBC in `research/wbc-classical-proposal.md` is **weighted task-spa
 
 `[MEASURED: spike/wbc_classical/logs/summary.json, via research/wbc-classical-proposal.md]`
 
-The **C3 lineage's** walking side is the learned Playground policy's regime: **0.743 m/s**, +0.23°/10 s on the Playground XML, but arms-on-IK falls in **3.39–4.84 s**, zero-command creep is **1.344 m/20 s**, and walk→hold falls in **3.11–4.24 s** `[MEASURED: docs/2026-10-23-Clank-design.md §18]`. That lineage is superseded as the walking candidate by SONIC (§2.3); it remains the record of why the frozen 29-DoF policy is not bolted to the WBC. The WBC's 0.10 m weight-shift limit and 1.3–1.6 s single-support tip are the boundary `[MEASURED: research/wbc-classical-proposal.md §3.1]`.
+The **C3 lineage's** walking side is the learned Playground policy's regime: **0.743 m/s**, +0.23°/10 s on the Playground XML, but arms-on-IK falls in **3.39–4.84 s**, zero-command creep is **1.344 m/20 s**, and walk→hold falls in **3.11–4.24 s** `[MEASURED: ../docs/2026-10-23-clank-design.md §18]`. That lineage is superseded as the walking candidate by SONIC (§2.3); it remains the record of why the frozen 29-DoF policy is not bolted to the WBC. The WBC's 0.10 m weight-shift limit and 1.3–1.6 s single-support tip are the boundary `[MEASURED: research/wbc-classical-proposal.md §3.1]`.
 
 ### 2.1 The new far-reach probe
 

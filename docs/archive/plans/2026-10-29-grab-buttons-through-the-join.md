@@ -1,5 +1,8 @@
 # Grab Buttons Through the Join Implementation Plan
 
+> **Archived 2026-11-13.** Implementation plan, carried out. Kept for the task breakdown and the gates it defined; the code is the record now.
+> Current behaviour: [`README.md`](../../../README.md) · agent rules: [`AGENTS.md`](../../../AGENTS.md).
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Make the simulated humanoid's hand closure and trigger reach the game as two independent, per-hand controller channels, so a glowing floppy in Superhot's hub can actually be picked up.

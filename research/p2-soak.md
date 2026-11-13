@@ -26,7 +26,7 @@ latched once drifts 2.3 cm. **The latch is not a latch: it re-reads the live
 achieved pose every tick**, so the target follows the body. There is no restoring
 force, and any perturbation becomes the new target — a random walk at 4 cm/s.
 
-That is the opposite of the documented intent. `docs/superpowers/plans/2026-11-01-freeze-hold.md`
+That is the opposite of the documented intent. `../docs/archive/plans/2026-11-01-freeze-hold.md`
 says "freeze-hold latches last poses"; `clank/body.py::channel_pose` rule 3
 returns `last`, and `clank/bus.py` passes `self._state`, which `publish_state()`
 overwrites every tick.

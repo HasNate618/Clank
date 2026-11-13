@@ -1,5 +1,8 @@
 # C0 Hidden Session Dashboard Implementation Plan
 
+> **Archived 2026-11-13.** Implementation plan, carried out. Kept for the task breakdown and the gates it defined; the code is the record now.
+> Current behaviour: [`README.md`](../../../README.md) · agent rules: [`AGENTS.md`](../../../AGENTS.md).
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Build a local dashboard that launches, monitors, previews, and cleanly stops one hidden C0 session (Monado, Weston headless, Steam, Superhot VR, and the pose client).
@@ -24,7 +27,7 @@
 - `clank/static/index.html`, `style.css`, `app.js` — dashboard UI.
 - `tests/__init__.py`, `tests/test_config.py`, `tests/test_processes.py`, `tests/test_preview.py`, `tests/test_orchestrator.py`, `tests/test_dashboard.py`.
 
-The approved design is `docs/superpowers/specs/2026-10-25-c0-hidden-session-dashboard-design.md`.
+The approved design is `docs/archive/specs/2026-10-25-c0-hidden-session-dashboard-design.md`.
 
 ---
 
@@ -3367,7 +3370,7 @@ Expected: all tests pass, `OK`.
 
 - [ ] **Step 2: Review the implementation against the spec**
 
-Check each item against `docs/superpowers/specs/2026-10-25-c0-hidden-session-dashboard-design.md`:
+Check each item against `docs/archive/specs/2026-10-25-c0-hidden-session-dashboard-design.md`:
 
 - preflight checks host Steam, Monado units, stale pointer, TCP 4242, stale socket, required binaries;
 - startup order is Monado, Weston, preview, pose, Steam, game;

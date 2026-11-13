@@ -1,39 +1,29 @@
-# ARDY Reach Implementation Plan
+# MotionBricks Reach Implementation Plan
+
+> **Archived 2026-11-13.** Implementation plan, carried out. Kept for the task breakdown and the gates it defined; the code is the record now.
+> Current behaviour: [`README.md`](../../../README.md) · agent rules: [`AGENTS.md`](../../../AGENTS.md).
+
+> **Superseded** by `2026-11-11-ardy-reach.md`. The work it describes was carried out against ARDY
+> instead; keep this for the task breakdown and the gates, not as a sequence to follow.
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Replace the VR-cruise reach/grab with constraints, a generated reference, and SONIC mode-0 tracking, so an in-front grab plants and looks, and an off-axis grab turns or steps because the model chose to.
+**Goal:** Replace the VR-cruise reach/grab with an IK still frame, a MotionBricks inbetween, and SONIC mode-0 tracking, so an in-front grab plants and looks, and an off-axis grab steps or pivots.
 
-**Architecture:** Adapter process (`reach_ardy.py`) states what to achieve — right hand at the object, feet planted, or a root waypoint when the object is out of reach — and ARDY-G1 generates the motion. The 50 Hz body process only writes a pose ring and plays deposited clips. CUDA and torch stay out of SONIC. `hold` / `look` / `rest` stay on VR mode 1. `reach_vr.py` stays until the live gate passes.
+**Architecture:** Adapter process (`reach_mb.py`) authors a 36-float G1 pose and generates a clip. The 50 Hz body process only writes a pose ring and plays deposited clips. CUDA stays out of SONIC. `hold` / `look` / `rest` stay on VR mode 1. `reach_vr.py` stays until the live gate passes.
 
-**Tech Stack:** Python 3 stdlib in packing, mailbox, geometry, chain policy, and `tests/`. NumPy / MuJoCo / torch / ARDY in `spike/ardy/.venv`. ARDY `ARDY-G1-RP-25FPS-Horizon52`, text tower absent (zero text vector). `python3 -m unittest` (pytest is not installed).
+**Tech Stack:** Python 3 stdlib in packing, mailbox, geometry, and `tests/`. NumPy / MuJoCo / mink / ONNX in `spike/e3/.venv`. MotionBricks G1 ONNX (FP16) via ONNX Runtime CUDA, TensorRT engine if it loads, CPU ORT last. `python3 -m unittest` (pytest is not installed).
 
-**Re-scope 2026-11-11 — read this before executing any task.** `research/motion-generators.md` compares MotionBricks, Kimodo and ARDY, and §9 records ARDY measured on this machine: 0.94 GB peak VRAM, 0.07-0.20 s per 52-frame window, and 60.3 mm hand-constraint adherence. Decision: pursue ARDY. Consequences for this document, which was written MotionBricks-first:
-
-| Task | Status |
-| --- | --- |
-| 3 mailbox, 4 resample, 7 executor playback | unchanged, generator-agnostic |
-| 1 packing | unchanged; ARDY's MuJoCo export is the same 36-float layout |
-| 2 envelope geometry | **demoted**: `classify` decides only whether a root goal is needed; `step_root` and `MAX_STEP_*` are no longer how a step is produced |
-| 5 (was: mink still frames) | **replaced** by the ARDY adapter |
-| 6 (was: MotionBricks generate) | **replaced** by constraint authoring plus the reachability escalation |
-| 8 adapter | same loop minus the step chain |
-
-The spec itself was rewritten the same day: it now argues ARDY and carries no superseded sections. MotionBricks appears only as the documented fallback (spec §14, plan §"Fallback"), and no task should build it without a new decision.
-
-**Spec:** `docs/superpowers/specs/2026-11-11-ardy-reach-design.md`.
+**Spec:** `docs/archive/specs/2026-11-11-motionbricks-reach-design.md`.
 
 ## Global Constraints
 
-- `clank/` stays **standard-library only**. No generator, torch, ARDY, mink, or ONNX import in `clank/`.
+- `clank/` stays **standard-library only**. No generator, mink, ONNX, or MotionBricks import in `clank/`.
 - `tests/` stays stdlib: no NumPy, no MuJoCo, no ONNX, no constructing `SonicExecutor`.
 - Unittest **must not** open `:4242`, `:5901`, `:8765`, `:8770`, `:8771`, or `:11434`.
 - Do **not** edit `run.sh`, `config.toml`, `flake.nix`, `clank/orchestrator.py`, `clank/config.py`, `clank/body.py` (`FRAMES`, `BodyCommand`), or `reach_vr.py` except a later one-line pointer after §11.5.
 - Do **not** put object XYZ or a clip on `BodyCommand`. Do **not** feed mink joints to SONIC as `upper_body` or `ctrl`.
-- Do **not** enable TF32. Do **not** build a TensorRT plan while the game is up. (ARDY needs none of this; the rule survives because the fallback does. Torch's own first CUDA call is the only warm-up ARDY needs.)
-- **ARDY's torch needs `LD_LIBRARY_PATH=/run/opengl-driver/lib`.** NixOS keeps `libcuda.so.1` off the loader path, so torch reports `cuda False` with a working driver. Every ARDY run uses `spike/ardy/.venv/bin/python` with that variable set.
-- **A scalar `cfg_weight` disables constraints.** With `cfg_type="separated"`, ARDY sets `w_text, w_cstr = cfg_weight, 0.0`, so a constrained run under the default ignores its constraints (measured: 870 mm instead of 60 mm). Always pass `(text, constraint)`.
-- **`num_denoising_steps` must be <= `num_base_steps`** (10 for this checkpoint). Larger values trip a device-side assert, not a clean error.
+- Do **not** enable TF32. Do **not** build a TensorRT plan while the game is up.
 - Do **not** inherit `STEP_GUARD_M` from `reach_vr.py` onto stepped reaches.
 - Default executor mode stays **1**. Mode 0 is only while a generated clip is playing.
 - Commit only paths this plan names. Conventional commits, lowercase, no embedded double quotes; `git commit -F /tmp/msg.txt`.
@@ -149,7 +139,7 @@ Message: `add g1 pose36 packing that skips the interleaved hands`
 ### Task 2: Envelope and stepped placement
 
 **Files:**
-- Create: `spike/wbc/end_pose.py` (stdlib at import time; no IK in it — Task 5+ replaced the mink solves with constraints)
+- Create: `spike/wbc/end_pose.py` (stdlib at import time; mink stays inside `solve_*`)
 - Test: `tests/test_end_pose.py`
 
 **Interfaces:**
@@ -294,14 +284,14 @@ Message: `add pose36 and clip-play mailbox as session json files`
 - Produces:
 
 ```python
-SRC_HZ = 25          # ARDY-G1 runs at 25 fps; 30 was MotionBricks
+SRC_HZ = 30
 DST_HZ = 50
 LOOKAHEAD = 10
 LOOKAHEAD_STEP = 5  # 0.9 s at 50 Hz
 
 def lerp(a: float, b: float, t: float) -> float
 def slerp_xyzw(q0, q1, t) -> tuple[float, float, float, float]
-def resample_pose36(frames: Sequence[Sequence[float]], src_hz: float = SRC_HZ, dst_hz: float = DST_HZ) -> list[tuple[float, ...]]
+def resample_pose36(frames: Sequence[Sequence[float]], src_hz: float = 30.0, dst_hz: float = 50.0) -> list[tuple[float, ...]]
 def sonic_dict(frames50: Sequence[Sequence[float]]) -> dict
     # keys jp, jv, bp, bq, n. jp (n,29) CSV order; jv finite-diff, last row copied;
     # bp (n,14,3) zeros except [:,0] = root xyz; bq (n,14,4) identity wxyz except [:,0] = xyzw_to_wxyz(root)
@@ -316,15 +306,11 @@ def clip_tick(frame: int, n: int) -> tuple[int, bool]
 - [ ] **Step 1: Write the failing tests** in `tests/test_mb_clip.py`
 
 ```python
-def test_resample_25_to_50_length(self) -> None:
-    # 25 frames @ 25 Hz (ARDY) = 1.0 s -> 50 frames. Unit xyzw (0,0,0,1).
-    frames = [(i / 25, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0) + (0.0,) * 29 for i in range(25)]
+def test_resample_30_to_50_length(self) -> None:
+    # 30 frames @ 30 Hz = 1.0 s -> 50 frames. Unit xyzw (0,0,0,1).
+    frames = [(i / 30, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0) + (0.0,) * 29 for i in range(30)]
     out = clip_from_gen.resample_pose36(frames)
     self.assertEqual(len(out), 50)
-
-def test_resample_30_to_50_still_supported(self) -> None:
-    frames = [(i / 30, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0) + (0.0,) * 29 for i in range(30)]
-    self.assertEqual(len(clip_from_gen.resample_pose36(frames, src_hz=30.0)), 50)
     self.assertAlmostEqual(out[0][0], frames[0][0])
     self.assertAlmostEqual(out[-1][0], frames[-1][0], places=5)
 
@@ -369,139 +355,108 @@ Message: `resample motionbricks clips to sonic 50 hz with a flat hold`
 
 ---
 
-### Task 5: ARDY generator adapter
+### Task 5: Mink still frames
 
 **Files:**
-- Create: `spike/wbc/ardy_gen.py` (torch + ARDY; the only module that imports them)
-- Create: `spike/wbc_game/probe_ardy_reach.py` (game off; prints residuals and timing)
-- Test: `tests/test_ardy_gen.py` (stdlib: constraint geometry and the wrapper's pure parts only)
+- Modify: `spike/wbc/end_pose.py` (`solve_planted`, `solve_stepped`, `end_pose`)
+- Create: `spike/wbc_game/probe_end_pose.py` (game off; prints residuals)
+- Test: geometry already in Task 2. This task's check is the probe, not flake unittest.
 
 **Interfaces:**
-- Consumes: Task 1 `pose36_from_qpos` / `jp_from_pose36`; Task 2 `classify` (root-goal decision only); measured facts in `research/motion-generators.md` §9.
+- Consumes: Task 1 `pose36_from_qpos` / `apply_pose36`; Task 2 `classify` / `step_root`; `scene_sonic_floor.xml` via `sonic_runner.XML`; mink `FrameTask` / `PostureTask` / `ComTask` as in `spike/wbc_classical/wbc_spike.py` (`DEFAULT_WEIGHTS`, head ori cost **500** for look).
 - Produces:
 
 ```python
-ARDY_CKPT_DIR = Path.home() / ".local/state/Clank/ardy"
-ARDY_MODEL = "ARDY-G1-RP-25FPS-Horizon52"
-ARDY_FPS = 25
-ARDY_HORIZON = 52
-ARDY_TEXT_DIM = 4096
-CFG_WEIGHT = (1.0, 2.0)          # (text, constraint) -- the scalar form zeroes the constraint
-HAND_DELTA_FWD = 0.35            # m, ARDY model space (y up, z forward)
-HAND_DELTA_UP = 0.15
+@dataclass(frozen=True)
+class EndPose:
+    kind: str                    # "planted" | "step" | "saturated"
+    pose36: tuple[float, ...]    # zeros if saturated
+    residual_m: float
+    yaw: float
 
-def load_ardy(device: str = "cuda") -> object            # text_encoder=False
-def zero_text(device: str) -> Tensor                     # zeros(1, 1, 4096)
-def hand_constraint(skeleton, pose: dict, hand_delta: tuple[float, float, float]) -> list
-def root_goal_constraint(skeleton, num_frames: int, forward_m: float) -> list
-def generate(pose36_context: Sequence[Sequence[float]], *, hand_delta, root_forward_m: float | None,
-             num_frames: int = ARDY_HORIZON, steps: int = 10,
-             history_features=None) -> tuple[list[tuple[float, ...]], dict]
-    # returns (25 Hz pose36 frames, metrics dict with seconds/peak_vram/hand_residual_m)
+def solve_planted(qpos: Sequence[float], obj_world: tuple[float, float, float], side: str) -> EndPose
+def solve_stepped(qpos: Sequence[float], obj_world: tuple[float, float, float], side: str) -> EndPose
+def end_pose(qpos, obj_world, side) -> EndPose
+    # classify with a planted solve when yaw is inside the gate; fall through to stepped if residual >= 5 cm
+    # stepped: if step_too_far -> kind saturated, do not solve
 ```
 
-`generate` must: build the constraint from the **latest achieved pose** in the context; pass `cfg_weight=CFG_WEIGHT`; reject `steps > model.diffusion.num_base_steps` with a message; run `model.motion_rep.inverse(...)` then `MujocoQposConverter` (which already returns our 36 floats, `(1, T, 36)`); and return the achieved right-hand residual against the requested point.
+Reported hand is `wrist_yaw_link` + `sonic_runner.VR_OFFSETS[side]`, same as `arm_ik.vr_point` but in **world** metres (mink target is world). Scratch `MjModel` of `scene_sonic_floor.xml`; do not touch the live `mjData`. Seed planted from `qpos`; seed stepped from the stand keyframe with `step_root` yaw/xy and stand `root_z`. Clamp hinges to `jnt_range ± 0.02`. Wrist ori cost 100, roll free (LookAt or skip ori). Other wrist holds achieved.
 
-**Continuity, and the one thing to leave out at first.** ARDY continues from `init_history_sequence`, which the demo fills from its own previously generated *feature* tensor (`scripts/interactive_demo/generation.py:150-176, 275`). Our body state is MuJoCo `qpos`, and there is no `motion_rep.encode(pose36)` — feature assembly lives in `ardy/data_processing`. So v1 does **not** pass history: it generates from a canonical standing pose translated to the body's current root and heading (`init_global_translation`, `init_first_heading_angle`), and lets SONIC absorb the small pose offset because it starts from the live `mjData` regardless. Chained generation inside one reach reuses the previous window's features, which is the case the demo already exercises. A pose36 -> features encoder is a known follow-on, not a Task 5 requirement.
+`probe_end_pose.py`: load stand qpos from a scratch model, object `(rest_hand + (0.35, 0, 0.15))` world → planted residual **< 15 mm**, `|Δroot_xy| < 1 cm`, head yaw toward object **< 2°**. Second object 1.0 m forward → `kind=="step"`, hand residual **< 15 mm** on the keyframe.
 
-- [ ] **Step 1: Write the failing stdlib tests** in `tests/test_ardy_gen.py`
+- [ ] **Step 1: Implement `solve_planted` / `solve_stepped` / `end_pose` in `spike/wbc/end_pose.py`**
 
-```python
-def test_cfg_weight_is_a_pair_not_a_scalar(self) -> None:
-    self.assertEqual(ardy_gen.CFG_WEIGHT, (1.0, 2.0))
-    self.assertIsInstance(ardy_gen.CFG_WEIGHT[1], float)
-    self.assertGreater(ardy_gen.CFG_WEIGHT[1], 0.0)
+Lazy-import mink/mujoco/numpy inside those functions so `import end_pose` stays flake-safe.
 
-def test_steps_above_the_schedule_are_refused(self) -> None:
-    with self.assertRaises(ValueError):
-        ardy_gen.check_steps(25, num_base_steps=10)
+- [ ] **Step 2: Run the probe, game off**
 
-def test_hand_delta_is_forward_and_up_in_ardy_space(self) -> None:
-    d = ardy_gen.hand_delta(0.35, 0.15)
-    self.assertEqual(d, (0.0, 0.15, 0.35))   # y up, z forward
-```
+Run: `spike/e3/.venv/bin/python spike/wbc_game/probe_end_pose.py`
 
-- [ ] **Step 2: Run them to verify they fail**
+Expected: printed planted residual < 0.015 m, stepped residual < 0.015 m, both kinds as above. If mink cannot aim the VR lever, stop and fix the site/offset; do not proceed.
 
-Run: `python3 -m unittest tests.test_ardy_gen -v`
-Expected: FAIL, `ardy_gen` not found.
+- [ ] **Step 3: Commit**
 
-- [ ] **Step 3: Implement `spike/wbc/ardy_gen.py`**
-
-Import torch/ARDY lazily inside `generate`/`load_ardy` so `import ardy_gen` stays cheap and the stdlib tests can import the module. `check_steps(steps, num_base_steps)` raises `ValueError` with the model's limit in the message.
-
-- [ ] **Step 4: Run stdlib tests**
-
-Run: `python3 -m unittest tests.test_ardy_gen -v`
-Expected: PASS.
-
-- [ ] **Step 5: Run the probe, game off, GPU free**
-
-Run: `LD_LIBRARY_PATH=/run/opengl-driver/lib spike/ardy/.venv/bin/python spike/wbc_game/probe_ardy_reach.py`
-
-Expected: prints peak VRAM **< 2.0 GB**, generation **< 1.0 s** per window, and hand residual **< 0.10 m** at `CFG_WEIGHT`. All three are already measured (0.94 GB / 0.07-0.20 s / 60 mm) — the probe exists so a regression is visible, not to discover them again.
-
-- [ ] **Step 6: Commit**
-
-Message: `generate g1 reaches from hand and root constraints with ardy`
+Message: `author planted and stepped g1 still frames with mink`
 
 ---
 
-### Task 6: Reachability escalation
+### Task 6: MotionBricks generate
 
 **Files:**
-- Modify: `spike/wbc/end_pose.py` (`decide_next`, and demote `step_root`'s docstring to "root-goal placement")
-- Test: `tests/test_end_pose.py` (extend)
+- Create: `spike/wbc/motionbricks_gen.py`
+- Create: `spike/wbc_game/probe_mb_gen.py`
+- Test: `tests/test_mb_gen.py` (no GPU; mocks the ONNX session)
 
 **Interfaces:**
-- Consumes: Task 2 `classify`, `yaw_error`, `step_too_far`, `MAX_STEP_M`; Task 5 `generate`'s `hand_residual_m`.
+- Consumes: Task 1 pose36; spec §7.1 call shape.
 - Produces:
 
 ```python
-ROOT_GOAL_RESIDUAL_M = 0.10      # above this, retry once with a root goal
-def decide_next(*, kind: str, residual_m: float, escalated: bool, gen: int, elapsed_s: float,
-                generated: int) -> str      # "generate" | "escalate" | "stop" | "saturated"
+PLANTED_TOKENS = tuple(range(6, 11))   # 6..10
+STEPPED_TOKENS = tuple(range(10, 17))  # 10..16
+ONNX_DIR = Path.home() / ".local/state/Clank/motionbricks"
+TRT_CACHE = Path.home() / ".local/state/Clank/motionbricks-trt"
+
+def allowed_tokens(kind: str) -> tuple[int, ...]
+def valid_frame_count(pred_num_tokens: int) -> int  # 4*n - 6, clamp 18..58
+def generate(context4: Sequence[Sequence[float]], target: Sequence[float], *, kind: str) -> list[tuple[float, ...]]
+    # returns trimmed, endpoint-corrected 30 Hz poses. Raises FileNotFoundError if ONNX missing.
 ```
 
-Rules: `residual_m <= TRACK_SUCCESS_M` -> `"stop"`; else if not `escalated` and `residual_m > ROOT_GOAL_RESIDUAL_M` and `generated < MAX_STEP_GEN` and `elapsed_s < STEP_CHAIN_S` -> `"escalate"`; else `"stop"` with the best-so-far. **No mink solve, no constructed stepped pose** — the root goal is a constraint given to the generator, which is what ARDY is for. mink is optional as a pre-flight feasibility check and is not required by any test in this plan.
+Fallback order inside `generate`: TensorRT G1 engine if `MotionBricksUnitreeG1Engine` imports; else `onnxruntime` CUDA; else CPU. `enable_tf32=False`. `num_poses_to_use=1`. `correct_generated_diff=True`. Do not ship raw `pred_qpos`.
 
-- [ ] **Step 1: Write the failing tests** in `tests/test_end_pose.py`
+Weights: download FP16 `mmm_v6_g1_fp16.onnx` from Hugging Face `nvidia/MotionBricks` (G1 folder) into `ONNX_DIR` on first use if absent. Do not git-add the ONNX. Do not `git lfs pull` a 134-byte stub and call it a model.
 
-```python
-def test_success_stops(self) -> None:
-    self.assertEqual(end_pose.decide_next(kind="planted", residual_m=0.06, escalated=False,
-                                          gen=1, elapsed_s=1.0, generated=1), "stop")
+`tests/test_mb_gen.py`: `allowed_tokens("planted") == PLANTED_TOKENS`, stepped 10–16, `valid_frame_count(8) == 26`, `valid_frame_count(6) == 18`, `valid_frame_count(16) == 58`. Patch `generate`'s session to return a linear lerp of context[-1] → target over 24 raw frames and assert the trimmed clip starts at context[-1] and ends at target (endpoint correction). No real ONNX.
 
-def test_short_hand_escalates_once(self) -> None:
-    self.assertEqual(end_pose.decide_next(kind="planted", residual_m=0.25, escalated=False,
-                                          gen=1, elapsed_s=1.0, generated=1), "escalate")
+- [ ] **Step 1: Write the failing token/trim tests** in `tests/test_mb_gen.py`
 
-def test_already_escalated_stops(self) -> None:
-    self.assertEqual(end_pose.decide_next(kind="planted", residual_m=0.25, escalated=True,
-                                          gen=2, elapsed_s=2.0, generated=2), "stop")
+- [ ] **Step 2: Run tests to verify they fail**
 
-def test_generation_budget_is_bounded(self) -> None:
-    self.assertEqual(end_pose.decide_next(kind="planted", residual_m=0.25, escalated=False,
-                                          gen=1, elapsed_s=1.0, generated=end_pose.MAX_STEP_GEN), "saturated")
-```
+Run: `python3 -m unittest tests.test_mb_gen -v`
 
-- [ ] **Step 2: Run them to verify they fail**
+Expected: FAIL, `motionbricks_gen` not found.
 
-Run: `python3 -m unittest tests.test_end_pose -v`
-Expected: FAIL, `decide_next` not defined.
+- [ ] **Step 3: Implement `spike/wbc/motionbricks_gen.py`**
 
-- [ ] **Step 3: Implement `decide_next` in `spike/wbc/end_pose.py`**
+Keep Warp/Newton optional. If the NVIDIA engine is not importable, copy only heading alignment, 3-frame boundary trim, and endpoint correction (root lerp over the clip, joint fade) so ORT output matches spec §7.1. Document the copy as such in the module docstring.
 
-Pure stdlib arithmetic over the constants; no imports added beyond `math`.
+- [ ] **Step 4: Run stdlib tests**
 
-- [ ] **Step 4: Run tests to verify they pass**
+Run: `python3 -m unittest tests.test_mb_gen -v`
 
-Run: `python3 -m unittest tests.test_end_pose -v`
-Expected: PASS (all previous Task 2 tests still green).
+Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 5: Probe generation, game off, GPU allowed**
 
-Message: `escalate to a root goal once instead of authoring a stepped pose`
+Run: `spike/e3/.venv/bin/python spike/wbc_game/probe_mb_gen.py`
+
+Uses stand × 4 as context and Task 5 still frames as targets. Assert duration 0.6–1.9 s, no NaNs, first frame ≈ stand, last ≈ target. Print whether backend was TRT / CUDA / CPU. If OOM, drop to CPU and record that; do not build TRT next to a session.
+
+- [ ] **Step 6: Commit** (code and probes only, no ONNX weights)
+
+Message: `generate g1 inbetweens from a still frame with motionbricks`
 
 ---
 
@@ -540,9 +495,9 @@ def after_clip(frame: int, n: int) -> str  # "playing" | "done"
 Grep test in the same file:
 
 ```python
-def test_executor_does_not_import_the_generator(self) -> None:
+def test_executor_does_not_import_motionbricks(self) -> None:
     text = Path("spike/wbc/sonic_executor.py").read_text()
-    self.assertNotIn("ardy_gen", text)
+    self.assertNotIn("motionbricks_gen", text)
     self.assertNotIn("end_pose", text)
 ```
 
@@ -550,7 +505,7 @@ def test_executor_does_not_import_the_generator(self) -> None:
 
 Run: `python3 -m unittest tests.test_mb_play -v`
 
-Expected: FAIL until the helper exists / grep is red on current executor the grep should already PASS for the generator names; that is fine — the seq helper fails).
+Expected: FAIL until the helper exists / grep is red on current executor (grep should already PASS for motionbricks_gen; that's fine — the seq helper fails).
 
 - [ ] **Step 3: Implement session_dir playback in `sonic_executor.py` and pass `out` from `body_view.py`**
 
@@ -568,37 +523,37 @@ Message: `play deposited motionbricks clips in sonic mode 0 without reset`
 
 ---
 
-### Task 8: `reach_ardy` adapter
+### Task 8: `reach_mb` adapter
 
 **Files:**
-- Create: `spike/wbc_game/reach_ardy.py`
-- Create: `spike/wbc_game/probe_ardy_track.py`
-- Test: `tests/test_reach_ardy.py` (stdlib: chain policy, clasp timing, no STEP_GUARD)
+- Create: `spike/wbc_game/reach_mb.py`
+- Create: `spike/wbc_game/probe_mb_track.py`
+- Test: `tests/test_reach_mb.py` (stdlib: classify loop, clasp timing, no STEP_GUARD)
 
 **Interfaces:**
 - Consumes: Tasks 1–7, `clank.player_scale.read`, `clank.pixel3d` / the same unproject `reach_vr.py` uses, `control.sock` + `body_state.json` like `reach_vr.send` / `state`.
 - Produces: CLI
 
 ```text
-reach_ardy.py <px> <py> [--side left|right] [--world X Y Z] [--grab] [--tol 0.08]
+reach_mb.py <px> <py> [--side left|right] [--world X Y Z] [--grab] [--tol 0.08]
 ```
 
 Loop:
 
 1. Read `pose36.json`; abort if missing (`body` not running).
 2. Object in robot world metres (`PlayerScale.pixel_point` or `--world`). Never apply yaw offset to the camera (same bug as `reach_vr` docstring).
-3. `end_pose.classify(...)` decides only whether a root goal is plausible; there is no mink solve. Missing checkpoint / torch / CUDA → print, exit 3, **do not** kill the session.
-4. `ardy_gen.generate(context4_from_ring(...), hand_delta=..., root_forward_m=None)`.
+3. `end_pose(qpos_from_pose36, obj, side)`. `saturated` → print residual, exit 2. Missing ONNX / CUDA → print, exit 3, **do not** kill the session.
+4. `generate(context4_from_ring(...), pose36, kind=end.kind)`.
 5. `resample` → write `mb_clip.npz` (numpy, venv) → `write_play` new seq.
 6. Poll `mb_status` until `done` or 8 s. While playing, if `--grab` and `dist(hand, obj) <= CLASP_START_M`, `send(authority=AUTH_CLOSURE, closure=...)` on `control.sock`. Do **not** wait for clip end. Do **not** send a 20 Hz head pin.
-7. `end_pose.decide_next(...)` with the measured residual. `"escalate"` regenerates **once** with a root goal constraint; anything else stops with best-so-far. `"saturated"` prints the residual and exits 2.
+7. Re-run envelope on latest pose36. If still `step` and gen < `MAX_STEP_GEN` and wall < `STEP_CHAIN_S` and not `step_too_far`: goto 4 with new stepped still frame. Elif planted residual > 5 cm: **one** planted generate, then stop. If residual grew: `saturated`, best-so-far.
 8. Print achieved residual (world hand vs object). Exit 0 if ≤ `TRACK_SUCCESS_M` (8 cm).
 
-`tests/test_reach_ardy.py`:
+`tests/test_reach_mb.py`:
 
 ```python
-def test_reach_ardy_does_not_use_step_guard(self) -> None:
-    text = Path("spike/wbc_game/reach_ardy.py").read_text()
+def test_reach_mb_does_not_use_step_guard(self) -> None:
+    text = Path("spike/wbc_game/reach_mb.py").read_text()
     self.assertNotIn("STEP_GUARD", text)
     self.assertNotIn("WRIST_BOX", text)
 
@@ -606,27 +561,27 @@ def test_chain_stops_at_four(self) -> None:
     # import a pure function decide_next(kind, gen, elapsed, residual, prev_residual) -> "step"|"planted_once"|"stop"
 ```
 
-`decide_next(...)` lives in `end_pose.py` (Task 6), so the chain policy is unit-tested without a session.
+Extract `decide_next(...)` into `end_pose.py` or `reach_mb.py` so the chain policy is unit-tested without a session.
 
-`probe_ardy_track.py` (game off, body_view running against the standing clip, **no** Job Simulator): generate a constrained reach, deposit it, report the achieved hand residual against the constrained point, the root path, and any fall. Gate: residual **< 8 cm**, no fall, look error **< 15°**. If residual **> 15 cm**, stop — do not fall back to the `reach_vr` cruise.
+`probe_mb_track.py` (game off, body_view running against the standing clip, **no** Job Simulator): generate a planted clip, deposit it, report achieved hand residual vs still-frame hand, root path, falls. Gate: planted residual **< 8 cm**, no fall, look error **< 15°**. If residual **> 15 cm**, stop the project — do not fall back to `reach_vr` cruise.
 
 - [ ] **Step 1: Write the failing adapter tests**
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `python3 -m unittest tests.test_reach_ardy -v`
+Run: `python3 -m unittest tests.test_reach_mb -v`
 
-- [ ] **Step 3: Implement `reach_ardy.py`**
+- [ ] **Step 3: Implement `reach_mb.py` + `decide_next`**
 
 - [ ] **Step 4: Run stdlib tests and the track probe**
 
-Run: `python3 -m unittest tests.test_reach_ardy -v` and `LD_LIBRARY_PATH=/run/opengl-driver/lib spike/ardy/.venv/bin/python spike/wbc_game/probe_ardy_track.py`
+Run: `python3 -m unittest tests.test_reach_mb -v` and `spike/e3/.venv/bin/python spike/wbc_game/probe_mb_track.py`
 
 Expected: unittest PASS; probe residual < 0.08 m or a printed kill at > 0.15 m.
 
 - [ ] **Step 5: Commit**
 
-Message: `reach with ardy constraints and a sonic tracked clip`
+Message: `reach with an ik still frame and a motionbricks clip`
 
 ---
 
@@ -634,19 +589,19 @@ Message: `reach with ardy constraints and a sonic tracked clip`
 
 **Files:** none new. Operator run.
 
-**Interfaces:** consumes Task 8 `reach_ardy.py --grab`.
+**Interfaces:** consumes Task 8 `reach_mb.py --grab`.
 
-- [ ] **Step 1: Warm the ARDY checkpoint with the game down.** `nvidia-smi` before and after; record peak VRAM (measured 0.94 GB).
+- [ ] **Step 1: Build the TensorRT/ORT plan with the game down.** `nvidia-smi` before and after. Record backend.
 
 - [ ] **Step 2: Session up.** Reset body (`POST /api/body/stop` then `/start`). One in-front grab (card or operator pixel). One off-axis or out-of-reach grab. `--grab` both.
 
-Expected: in-front feet planted, chest toward object, residual ≤ 8 cm, HMD looks at it, clasp while approaching. Off-axis: the model turns or steps, and the player moves in Job Simulator. `body_pose.csv` `curl_*` columns change on grab. `hold` / `look` / `rest` still work afterward.
+Expected: in-front feet planted, chest toward object, residual ≤ 8 cm, HMD looks at it, clasp while approaching. Off-axis: pivot/step, player moves in Job Simulator. `body_pose.csv` `curl_*` columns change on grab. `hold` / `look` / `rest` still work afterward.
 
-- [ ] **Step 3: If Step 2 passes, add a one-line note at the top of `reach_vr.py`** pointing at `reach_ardy.py` as the live path; do not delete the cruise.
+- [ ] **Step 3: If Step 2 passes, add a one-line note at the top of `reach_vr.py`** pointing at `reach_mb.py` as the live path; do not delete the cruise.
 
 - [ ] **Step 4: Commit that note only if Step 2 passed**
 
-Message: `point live grab at reach_ardy after the in-game gate`
+Message: `point live grab at reach_mb after the in-game gate`
 
 ---
 
@@ -670,9 +625,3 @@ Message: `point live grab at reach_ardy after the in-game gate`
 ## Execution notes
 
 Mink and ONNX probes (Tasks 5, 6, 8 probe) run under `spike/e3/.venv/bin/python`. Flake `unittest discover` must stay green after every task that touches `tests/`.
-
----
-
-## Fallback (only on a new decision)
-
-If ARDY fails a gate on this machine, the documented fallback is **MotionBricks live + Kimodo-authored constraints**, not a return to the old Task 5/6 text: Kimodo generates the still poses once from `right-hand` + foot constraints (so they are in-distribution), MotionBricks in-betweens them at 2.67 ms with no torch in the loop. Rationale and measurements: `research/motion-generators.md` §6. That path needs its own plan revision; do not build it from this document's superseded tasks.

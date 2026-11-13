@@ -317,8 +317,9 @@ VNC TLS is disabled: the stream has no confidentiality or server authentication,
 | `spike/e1/`–`spike/e3/` | **Injection and evidence.** OpenXR pose injection, compositor capture and latency measurement, and the MuJoCo body → OpenXR bridge with its honesty CSV. |
 | `spike/c3/`, `spike/wbc/`, `spike/wbc_classical/`, `spike/wbc_game/` | **Controller harnesses and logs.** SONIC gates and arm-override matrix, hold/look investigation, classical QP, the 0.70 m reach probe. |
 | `research/` | **Findings.** Per-spike results with measured numbers, plus controller and game-side surveys — the source for nearly every figure in this README. |
-| `docs/` | **Design.** The design document, its builder-check, the state of findings, and the dashboard spec (historical for the PNG preview; the current preview is VNC). |
-| `RESEARCH.md` | The original feasibility study (partly superseded; see its banner). |
+| `docs/` | **Design.** `docs/README.md` is the map: what is current, what is archived. Live specs are the command contract, the brain, the reach, the runs, the recordings and the console. |
+| `docs/archive/` | **History.** The builder-check, the state of findings, the implementation plans and the superseded specs. Each opens with a banner saying what replaced it. |
+| `RESEARCH.md` | A stub. The original feasibility study now lives in `docs/archive/2026-10-11-feasibility-study.md`. |
 | `flake.nix`, `run.sh` | Pinned devShell and the one-command entry point. |
 
 ---

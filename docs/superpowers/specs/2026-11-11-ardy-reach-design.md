@@ -1,7 +1,7 @@
 # ARDY reach — Design
 
 - Date: 2026-11-11 (originally written MotionBricks-first as `2026-11-11-motionbricks-reach-design.md`; retitled and re-argued the same day after `research/motion-generators.md`)
-- Status: accepted, being implemented. Plan: `docs/superpowers/plans/2026-11-11-ardy-reach.md`
+- Status: accepted, being implemented. Plan: `docs/archive/plans/2026-11-11-ardy-reach.md`
 - Parents: `research/humanoid-command-space.md` (BodyCommand contract), `research/upper-body-override.md`, `research/motion.md`, `research/wbc-classical-proposal.md`, `research/motion-generators.md` (the generator decision and its measurements)
 - Implements against: `spike/wbc/sonic_executor.py`, `spike/wbc/sonic_runner.py`, `spike/wbc_game/reach_vr.py`, `clank/workspace.py`, `clank/player_scale.py`
 - Does not implement: brain/planner changes, locate, glow, neck, HumanML3D, motion-model training

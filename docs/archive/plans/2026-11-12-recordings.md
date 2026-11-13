@@ -1,5 +1,8 @@
 # Per-run Recordings Implementation Plan
 
+> **Archived 2026-11-13.** Implementation plan, carried out. Kept for the task breakdown and the gates it defined; the code is the record now.
+> Current behaviour: [`README.md`](../../../README.md) · agent rules: [`AGENTS.md`](../../../AGENTS.md).
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Every run leaves a playable `recording.mp4` of the game view beside the robot view, with the game's audio, and the dashboard gets a page that lists past runs and plays them with the run's diary.

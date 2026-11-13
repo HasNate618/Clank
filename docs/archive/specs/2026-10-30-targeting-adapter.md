@@ -1,5 +1,8 @@
 # Targeting Adapter — Design
 
+> **Archived 2026-11-13.** A draft that was never accepted as written. What shipped of it lives in `clank/projection.py`, `clank/pixel3d.py` and `clank/wire.py`; the reach that replaced its open-loop verbs is `spike/wbc_game/reach_ardy.py`.
+> Current behaviour: [`README.md`](../../../README.md) · agent rules: [`AGENTS.md`](../../../AGENTS.md).
+
 - Date: 2026-10-30
 - Status: draft for review; no implementation until this document is accepted
 - Scope: close the loop so the simulated G1 can put a hand on a Superhot object and grab it. The hub floppy sequence is the first proof. The brain is a drop-in writer on the same intent socket, not part of this build.
@@ -466,4 +469,4 @@ Failure modes this spec implies and that a later plan must pin with tests:
 
 - `AUTH_ROOT_VEL` is not honoured in a hold session. Do not build touring to make S6 pass.
 - Controller orientation (wrist frame → OpenXR grip) is unmeasured; the aim ray may carry a fixed rotation. If S2 passes in sim and S6 misses in game with glow never appearing, measure this before blaming glow.
-- Task 6 of `docs/superpowers/plans/2026-10-29-grab-buttons-through-the-join.md` (hub A/B on squeeze/curl) is **retired**: manual play already proved the game accepts our buttons. Curl remains documented as inert for controller-bound titles.
+- Task 6 of `docs/archive/plans/2026-10-29-grab-buttons-through-the-join.md` (hub A/B on squeeze/curl) is **retired**: manual play already proved the game accepts our buttons. Curl remains documented as inert for controller-bound titles.

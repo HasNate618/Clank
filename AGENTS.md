@@ -305,7 +305,7 @@ rebuild (`nix build .#monado`), restart the dashboard/session, and use the new
 The reach/grab path has been replaced. **It is live**: the intro card was grabbed by the generated path
 with the game running on 2026-11-12 (`research/evidence/ardy-live-grab/`), and `reach_vr.py` is now the
 fallback rather than the session's path.
-Design: `docs/superpowers/specs/2026-11-11-ardy-reach-design.md`. Plan: `docs/superpowers/plans/2026-11-11-ardy-reach.md`.
+Design: `docs/superpowers/specs/2026-11-11-ardy-reach-design.md`. Plan: `docs/archive/plans/2026-11-11-ardy-reach.md`.
 Critique and the open defects it found: `research/reach-architecture-critique.md`.
 Comparison and measurements: `research/motion-generators.md`.
 
@@ -645,3 +645,20 @@ Weston, monado) was torn down. Three measurements explain it, and two fixes stop
 `timeouts.pose_handshake_sec` must outlast the client's 20 s retry window; it is 25 now. A
 `state: failed` right after a mode switch, with `monado.log` truncated mid-hub and later
 `Connection refused` in `pose.log`, is this bug's signature.
+
+## Keeping the docs true
+
+`docs/README.md` is the map: **current** documents describe code that runs today, **archived** ones
+live under `docs/archive/` behind a banner, and `research/` is the dated measurement record that is
+never rewritten to match a new target.
+
+- **Change the document in the same commit as the code it describes.** A spec that disagrees with
+  the module it governs is a bug, and the docstrings that cite it (`clank/run.py`,
+  `clank/brain.py`, `spike/wbc_game/auto.py`) make the drift visible but not harmless.
+- **When a document stops being true, archive it and say what replaced it** - do not leave it
+  silent, and do not delete it; the record of what was believed, and why, is half the value.
+- **Dated numbers belong to their date.** `README.md` carries the current ones; `research/` carries
+  the conditions. If a number changes, update the README and add a research doc, not the reverse.
+- **A path in prose must resolve.** When you move a file, grep for its old name across `*.md`,
+  `*.py` and the static pages before you commit. Case matters: three links in `research/` pointed at
+  `2026-10-23-Clank-state-of-findings.md` for three weeks while the file was lowercase.

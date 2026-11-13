@@ -1,5 +1,8 @@
 # MotionBricks reach — Design
 
+> **Archived 2026-11-13.** Superseded by `docs/superpowers/specs/2026-11-11-ardy-reach-design.md`, which argues the same problem with a generated motion prior instead.
+> Current behaviour: [`README.md`](../../../README.md) · agent rules: [`AGENTS.md`](../../../AGENTS.md).
+
 - Date: 2026-11-11
 - Status: **superseded** by `2026-11-11-ardy-reach-design.md`, which argues the same problem with a
   generator that accepts end-effector constraints. Kept for its measurements (the MotionBricks comparison,

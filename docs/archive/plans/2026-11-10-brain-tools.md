@@ -1,5 +1,8 @@
 # Brain Tools Implementation Plan
 
+> **Archived 2026-11-13.** Implementation plan, carried out. Kept for the task breakdown and the gates it defined; the code is the record now.
+> Current behaviour: [`README.md`](../../../README.md) · agent rules: [`AGENTS.md`](../../../AGENTS.md).
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Make the live loop a chooser: Omni picks `locate` / `look` / `reach` / `grab` / `release` / `hold` from the still and the transcript, and `auto.py` only runs `locate.py` when the model just named it.

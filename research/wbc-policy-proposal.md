@@ -9,7 +9,7 @@
 > not contain walking**, and the best measured hold is a standing clip with an anchor-index freeze at
 > **RMS 1.3×10⁻⁴ m/s**. (b) The **arm-override fantasy** is dead: C3j measured the QP-on-SONIC hybrid
 > at 16 variants and it loses (12.84 cm / 22.40° vs 3.51 cm / 7.22°). See
-> `docs/2026-10-23-Clank-state-of-findings.md` for current status.
+> `../docs/archive/2026-10-23-clank-state-of-findings.md` for current status.
 **Date:** 2026-10-23
 **Agent:** OpenCode `wbc-policy`
 **Question:** can a released learned whole-body controller for the Unitree G1 (running headless in MuJoCo on this laptop, fed VR-style head/hand targets) satisfy requirements R1–R8, and which one should we adopt as the `BodyCommand` executor for Clank?
@@ -284,7 +284,7 @@ Total encoder input 1762. Mode 0 (g1) uses jp+jv (10×29) + root z (10+1) + anch
 - `github.com/amazon-far/TWIST2` (MIT; ckpt `assets/ckpts/twist2_1017_20k.onnx`)
 - `github.com/InternRobotics/OpenHomie`, `github.com/Nagi-ovo/mjlab-homierl`
 - `github.com/NVlabs/HOVER`, `github.com/LeCAR-Lab/human2humanoid`, `github.com/edpsw/exbody2`, `github.com/InternRobotics/HugWBC`
-- `research/wbc-classical-proposal.md`, `research/c3fgh-results.md`, `docs/2026-10-23-Clank-state-of-findings.md`
+- `research/wbc-classical-proposal.md`, `research/c3fgh-results.md`, `../docs/archive/2026-10-23-clank-state-of-findings.md`
 
 ## Runtime cost, revisited: the 6.8 ms above was measured with every core
 

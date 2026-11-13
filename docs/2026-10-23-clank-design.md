@@ -353,7 +353,7 @@ The phrase “balance-constrained locomotion” requires **both** legs in the lo
 
 ## 18. Builder-check settlements (2026-10-23)
 
-From `docs/2026-10-23-Clank-design-builder-check.md`.
+From `archive/2026-10-23-vr-bot-design-builder-check.md`.
 
 Builder-check items 1, 3, 4, 5 (item 2 became §18.2):
 
@@ -410,7 +410,7 @@ Differences that matter: 6 foot/leg colliders vs 25 box colliders; actuator damp
 
 ### 18.5 WBC routes (2026-10-23) — three parallel research routes, and §7 was rewritten from them
 
-Three agents ran against `docs/2026-10-23-Clank-state-of-findings.md` with deliberately non-overlapping mandates: acquire a learned controller, build a classical one, and pin down the game-side contract. Deliverables: `research/wbc-policy-proposal.md`, `research/wbc-classical-proposal.md`, `research/wbc-game-proposal.md`.
+Three agents ran against `archive/2026-10-23-clank-state-of-findings.md` with deliberately non-overlapping mandates: acquire a learned controller, build a classical one, and pin down the game-side contract. Deliverables: `research/wbc-policy-proposal.md`, `research/wbc-classical-proposal.md`, `research/wbc-game-proposal.md`.
 
 **Route A — a released whole-body controller exists and it works.** GEAR-SONIC default, headless in MuJoCo on this laptop: **6.36 m in 10 s** at 0.64 m/s, **hold 3.6 cm / 20 s**, **walk → hold → walk at 4 s and 10 s without falling**, dodge **0.15–0.18 m < 0.5 s**, **6.8 ms/tick CPU**. Its native teleop interface is head + two hands, and head yaw drives torso yaw at **~0.83 gain**. This is the first controller in the whole project that walks, holds and transitions at the same time. C3 was not wrong about the Playground ONNX; it was wrong to generalise from it. Limits: wrist **4–6 cm / 17–23°** in hold and **5–10 cm / 8–19°** walking; head **y**, only; no head z/x, no pitch/roll. Weights are the **NVIDIA Open Model License**, not Apache — attribute it.
 

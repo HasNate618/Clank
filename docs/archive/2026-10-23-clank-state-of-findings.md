@@ -1,5 +1,8 @@
 # Clank — state of findings
 
+> **Archived 2026-11-13.** The 2026-10-23/24 ground-truth file of the Superhot era. Superseded by the system as it runs now; its measurements are dated to that week and were not re-run.
+> Current behaviour: [`README.md`](../../README.md) · agent rules: [`AGENTS.md`](../../AGENTS.md).
+
 **Date:** 2026-10-23, revised **2026-10-24** after C3m and C0.
 **Purpose:** one shared ground-truth file so no researcher, builder or reader re-derives E1–E3, C3, C3m or C0. It states the goal *with no caveats*, what is proven, what is falsified, what is still open, and the pass criteria any proposal must meet.
 

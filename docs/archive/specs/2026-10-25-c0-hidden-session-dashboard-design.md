@@ -1,5 +1,8 @@
 # C0 Hidden Session Orchestrator and Local Dashboard — Design
 
+> **Archived 2026-11-13.** Designed the PNG-preview dashboard. The preview is the live depth layer (`spike/e5`) now, with VNC as the fallback.
+> Current behaviour: [`README.md`](../../../README.md) · agent rules: [`AGENTS.md`](../../../AGENTS.md).
+
 - Date: 2026-10-25
 - Status: approved for implementation planning
 - Scope: one local C0 session at a time, manually operated from a local web dashboard
@@ -323,7 +326,7 @@ tests/
   test_orchestrator.py
   test_preview.py
   test_dashboard.py
-docs/superpowers/specs/2026-10-25-c0-hidden-session-dashboard-design.md
+docs/archive/specs/2026-10-25-c0-hidden-session-dashboard-design.md
 ```
 
 `spike/c0/c0_client.py` stays where it is and is invoked by path.
