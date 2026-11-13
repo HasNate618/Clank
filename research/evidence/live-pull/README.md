@@ -237,3 +237,23 @@ reach_vr.py --move -0.200 0 0 --side right --no-rest --no-clamp --grab
 **Still open:** the `CommandBus` freeze-hold snapshot is not retired when a clip is deposited.
 That is the one thing that would let a generated clip hold its own result, and it matters for
 every generated grab, not just a pull.
+
+## The latch, 2026-11-13: a clip is not a command
+
+The fix is `CommandBus.retire_latch()`, called from `SonicExecutor._finish_clip` through a
+`body_view`-wired callback. `push()` retires the freeze-hold snapshot when a real command
+arrives; a deposited clip arrives through the mailbox and never passes through `push()`, so the
+snapshot still pointed at the pose from *before* the clip.
+
+Verified on the live session body, restarted onto the new code:
+
+```text
+rest                        0.153
+cruise to (0.45, -0.15, 0)  0.436 -> settles ~0.40
+generated --move -0.20      0.195      (residual 29.7 mm)
+7 s after the process exits 0.199 - 0.209   still there
+```
+
+Before the fix the same sequence read `0.229 -> 0.464` inside 2 s. That is the whole difference
+between a pull the game can see and one it cannot, and it applies to every generated grab: a
+grab that walked home would drag the card or the cartridge with it.

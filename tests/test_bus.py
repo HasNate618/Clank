@@ -286,6 +286,32 @@ class HoldLatchesOnce(unittest.TestCase):
         later = bus.take(now_ns=clock.now_ns)
         self.assertEqual(later.right_hand, REACHED_RIGHT)
 
+    def test_a_retired_latch_pins_the_pose_it_was_retired_at(self) -> None:
+        """A clip is not a command, so the latch has to be retired by the body explicitly.
+
+        MEASURED 2026-11-13 on a live body: a generated clip moved the glove to pelvis x 0.26,
+        and the arm was back at 0.43 - the previous reach's target - within 2 s. `push()` retires
+        the snapshot only on a real command, and a deposited clip never goes through `push()`, so
+        the freeze-hold that follows a clip baked the pose from *before* it. Re-sending the hold,
+        pinning `executor.last_state` into the verb and a keepalive were each tried and each lost
+        the arm; the snapshot was the stale thing all along.
+        """
+        clock = FakeClock(0)
+        bus = CommandBus(clock=clock)
+        bus.publish_state(published_state())
+        bus.take(now_ns=0)
+        # The clip plays: the body reaches a different place, with no command to say so.
+        bus.publish_state(self.moved_state())
+        bus.retire_latch()
+        clock.now_ns = 1_000_000_000
+        held = bus.take(now_ns=clock.now_ns)
+        self.assertEqual(held.authority, FREEZE_HOLD_AUTH)
+        self.assertEqual(held.right_hand, self.moved_state().right_hand)
+        # ... and it still latches exactly once.
+        bus.publish_state(published_state())
+        again = bus.take(now_ns=2_000_000_000)
+        self.assertEqual(again.right_hand, self.moved_state().right_hand)
+
     def test_a_new_command_clears_the_latch(self) -> None:
         clock = FakeClock(0)
         bus = CommandBus(clock=clock)

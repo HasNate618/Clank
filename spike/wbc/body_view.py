@@ -648,6 +648,10 @@ def main(argv: list[str] | None = None) -> int:
     server = None
     if args.control:
         bus = CommandBus()
+        # A clip is not a command, so nothing retires the freeze-hold snapshot when one plays.
+        # Without this the hold after a clip pins the pose from *before* it and the arm walks
+        # back: measured 2026-11-13, a pull that reached pelvis x 0.26 was at 0.43 within 2 s.
+        executor.on_clip_done = bus.retire_latch
         def set_view(name: str) -> None:
             if renderer is not None:
                 if name in renderer.views:

@@ -44,6 +44,7 @@ from __future__ import annotations
 
 import math
 import sys
+from collections.abc import Callable
 from pathlib import Path
 
 # numpy/mujoco/onnxruntime live in spike/e3/.venv, not in the system interpreter
@@ -157,6 +158,11 @@ class SonicExecutor:
         self.ticks = 0
         self.fell = False
         self.last_state: BodyState | None = None
+        #: Called when a deposited clip has played out, so the owner can retire whatever the
+        #: bus was holding: a clip is not a command, so the freeze-hold snapshot still points
+        #: at the pose from before it and the arm walks home. `body_view` points this at
+        #: `CommandBus.retire_latch`.
+        self.on_clip_done: Callable[[], None] | None = None
         #: Latched (left, right) grip. See the comment in `step()`: the body has no
         #: fingers, so this is a commanded value that persists until released.
         self._buttons: tuple[tuple[float, float], tuple[float, float]] = (
@@ -647,6 +653,8 @@ class SonicExecutor:
         """
         self.runner.mode = 1
         self.motion = self._hold_motion
+        if self.on_clip_done is not None:
+            self.on_clip_done()
         # Re-latch the freeze-hold onto where the clip left the body. `_fallback` keeps its
         # latch until the commanded poses change, and a tick with no commanded poses has the
         # same key (`()`) it held *before* the reach - so without this the arms spring back to

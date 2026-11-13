@@ -151,6 +151,22 @@ class CommandBus:
                             state=self._latched_state())
             return cmd
 
+    def retire_latch(self) -> None:
+        """Drop the freeze-hold snapshot, so the next hold pins the pose the body is at.
+
+        `push()` retires the snapshot when a real command arrives - a new instruction means a
+        different place to stand still at. A **deposited clip is not a command**: it arrives
+        through the mailbox and never passes through `push()`, so the snapshot kept pointing at
+        the pose from before the clip. MEASURED 2026-11-13 on a live body: a generated clip put
+        the glove at pelvis x 0.26 and the arm was back at 0.43 - the previous reach's target -
+        within 2 s, which made a pull invisible and would drag a grabbed object home.
+
+        The body calls this when a clip plays out (`SonicExecutor._finish_clip`), so the
+        freeze-hold that follows a clip is the clip's own result.
+        """
+        with self._lock:
+            self._latched = None
+
     def _latched_state(self) -> BodyState | None:
         """The pose this hold is pinned to, taking the snapshot on first use."""
         if self._latched is None:
