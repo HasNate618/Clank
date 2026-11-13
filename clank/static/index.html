@@ -60,9 +60,12 @@
         </nav>
         <!-- One start. The stack is booted by the run when it is down, so there
              is nothing left for a second button to do. -->
-        <button id="start-run" class="btn btn-go" disabled>Start run</button>
-        <button id="stop-run" class="btn btn-halt" disabled>Stop run</button>
-        <button id="stop" class="btn btn-halt" disabled>Shut down</button>
+        <button id="start-run" class="btn btn-go" disabled
+                title="boots the stack first when it is down (about two minutes)">Start run</button>
+        <button id="stop-run" class="btn btn-halt" disabled
+                title="ends the attempt; the stack and the body view stay up">Stop run</button>
+        <button id="stop" class="btn btn-halt" disabled
+                title="ends the run, the stack and the body view">Shut down</button>
         <button id="mute-audio" class="btn btn-icon btn-audio" type="button" aria-label="Mute game audio" disabled>
           <svg class="icon icon-on" viewBox="0 0 24 24" aria-hidden="true">
             <path d="M4 9.5h3.2L12 5.6v12.8L7.2 14.5H4z"/>

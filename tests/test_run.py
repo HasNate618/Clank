@@ -141,6 +141,10 @@ class FakeBody:
         self.alive = False
         self.path = path or Path("/nonexistent/body-control.sock")
         self.starts = 0
+        # A viewer another tool started (or one that outlived a dashboard restart)
+        # answers the socket while this object owns nothing.
+        self.foreign = False
+        self.forgotten = 0
         # A sidecar that loses the socket race exits at once: the first spawn
         # answers "another body view is already listening" and dies.
         self.dies_after_start = False
@@ -161,6 +165,12 @@ class FakeBody:
 
     def preflight(self) -> str:
         return ""
+
+    def forget_state(self) -> None:
+        self.forgotten += 1
+
+    def owner_elsewhere(self) -> bool:
+        return self.foreign
 
 
 class FakeChild:
@@ -381,7 +391,11 @@ class RunManagerTests(RunHarness):
         self.assertEqual(self.manager.calls, ["game", "mode:body"])
         self.assertEqual(self.spawned, ["brain"])
 
-    def test_mode_is_set_before_the_body_is_reset(self) -> None:
+    def test_mode_is_set_after_the_body_is_fresh(self) -> None:
+        """The relay holds the last state it read through a quiet body, buttons
+        included, so a relay restarted *before* the sim is replaced starts on the
+        previous run's final pose - a closed hand included. Order: kill, forget,
+        start, rest, then switch the relay."""
         run = self.make()
         order: list[str] = []
 
@@ -390,6 +404,7 @@ class RunManagerTests(RunHarness):
 
         self.manager.set_mode = set_mode
         self.body.stop = lambda: order.append("body-stop")
+        self.body.forget_state = lambda: order.append("forget")
 
         def start() -> str:
             order.append("body-start")
@@ -399,7 +414,9 @@ class RunManagerTests(RunHarness):
         self.body.start = start
         run.start()
         self.assertEqual(self.wait_state("running"), "running")
-        self.assertEqual(order[:2], ["mode:body", "body-stop"])
+        self.assertEqual(order[:3], ["body-stop", "forget", "body-start"])
+        self.assertEqual(order[-1], "mode:body")
+        self.assertGreater(order.index("mode:body"), order.index("body-start"))
 
     def test_a_disabled_body_does_not_block_the_run(self) -> None:
         run = self.make(body=None)
@@ -700,6 +717,27 @@ class RunManagerTests(RunHarness):
         self.assertGreaterEqual(self.body.starts, 2)
         self.assertTrue(self.body.running())
 
+    def test_a_body_view_from_elsewhere_is_a_named_failure(self) -> None:
+        """`stop()` is a no-op when this dashboard never spawned the view, so a run
+        that carries on restarts nothing and gets its `rest` answered by a process
+        it does not own - the corpse race in AGENTS.md, one `pkill` away from gone."""
+        self.body.foreign = True
+        run = self.make()
+        run.start()
+        self.assertTrue(run.wait_idle(5))
+        snapshot = run.snapshot()
+        self.assertEqual(snapshot["state"], "failed")
+        self.assertIn("already listening", snapshot["error"])
+        self.assertIn("pkill", snapshot["error"])
+        # Nothing was started and nothing was rested on the stranger's body.
+        self.assertEqual(self.body.starts, 0)
+
+    def test_a_reset_forgets_the_previous_run_state(self) -> None:
+        run = self.make()
+        run.start()
+        self.assertEqual(self.wait_state("running"), "running")
+        self.assertEqual(self.body.forgotten, 1)
+
     def test_a_silent_body_view_fails_the_run_before_the_brain(self) -> None:
         self.body.path = self.base / "never.sock"
         cfg = replace(self.cfg, run=replace(self.cfg.run, body_timeout_sec=0.6))
@@ -718,9 +756,13 @@ class RunManagerTests(RunHarness):
         self.assertEqual(snapshot["state"], "failed")
         self.assertIn("never.sock", snapshot["error"])
         self.assertIn("did not answer", snapshot["error"])
+        # No body, no relay: switching the pose client onto a sim that never came
+        # up would have the game hold the previous run's pose for the whole failure.
         self.assertEqual(self.spawned, [])
-        # The game restart is paid first; the reset that failed is the body's.
-        self.assertEqual(self.manager.calls, ["game", "mode:body"])
+        # The game restart is paid first; the reset that failed is the body's. The
+        # relay is not switched at all: with no body the client would hold the
+        # previous run's pose for the whole failure.
+        self.assertEqual(self.manager.calls, ["game"])
 
     def test_a_stopped_stack_cancels_the_run(self) -> None:
         def stop_the_stack() -> str:

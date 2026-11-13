@@ -271,18 +271,18 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 return self._error(400, str(exc))
             except Exception:
                 return self._error(500, "internal server error")
+            self._start_body()
             return self._json({"accepted": True}, status=202)
         if path == "/api/session/stop":
-            # The run goes first, and not just on process exit: `stop()` ends the
-            # brain child inline, so Steam is never shut down while a loop that
-            # drives it is still alive. `shutdown_all` waits for idle; here the
-            # request must not block, and the stack's own lifecycle lock already
-            # keeps an in-flight game restart and the teardown in order.
-            run = self.server.run
-            if run is not None:
-                run.stop()
+            # The same order as `shutdown_all`, with no wait: the run ends first (its
+            # brain child inlined, so nothing is left driving a Steam that goes down,
+            # or a body view that goes away), then the body view, then the stack. This
+            # used to leave the body view running - the robot stayed on screen after
+            # Shut down, still holding the control socket, and the next dashboard
+            # that found it could not replace it.
             try:
-                self.server.manager.stop()
+                shutdown_all(self.server.body, self.server.run, self.server.manager,
+                             wait=0.0)
             except Exception:
                 return self._error(500, "internal server error")
             return self._json({"accepted": True}, status=202)
@@ -441,6 +441,22 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
     def _error(self, status: int, message: str) -> None:
         self._json({"error": message}, status=status)
+
+    def _start_body(self) -> None:
+        """Wake the body view with the stack it is part of.
+
+        `./run.sh` used to start it at boot, minutes before monado, Weston or the
+        game existed and competing for the same GPU; it is a member of the session
+        now, so it starts when the session does and stops when the session does
+        (plus a run's own hard reset). A renderer that refuses to start does not
+        refuse the stack: a bare stack is still useful and the Robot panel says why.
+        """
+        body = self.server.body
+        if body is None or not self.server.config.body.autostart:
+            return
+        problem = body.start()
+        if problem:
+            print(f"clank dashboard: body view: {problem}", file=sys.stderr)
 
     def _bytes(self, status: int, data: bytes, content_type: str) -> None:
         self.send_response(status)
@@ -752,18 +768,23 @@ def dashboard_pidfile(cfg: Config) -> Path:
     return Path(cfg.paths.session_root) / "dashboard.pid"
 
 
-def shutdown_all(body: BodyPreview | None, run: RunManager | None, manager) -> None:
+def shutdown_all(body: BodyPreview | None, run: RunManager | None, manager,
+                 *, wait: float = 15.0) -> None:
     """Stop everything in the one order that leaves no ghost.
 
-    The run goes before the stack: its last phase may be restarting the game or
-    waiting on a game restart, and shutting Steam down underneath that is how a
-    half-killed game and an orphan brain loop happen.
+    The run goes before both the body and the stack, and the body before the
+    stack: the run's last phase may be restarting the game or waiting on a game
+    restart, and shutting Steam - or the body view the loop is driving - down
+    underneath that is how a half-killed game and an orphan brain loop happen.
+    `wait` is how long a caller may block on that run finishing; an HTTP request
+    passes 0 so it can answer, a process exiting takes the default.
     """
-    if body is not None:
-        body.stop()
     if run is not None:
         run.stop()
-        run.wait_idle(15)
+        if wait > 0:
+            run.wait_idle(wait)
+    if body is not None:
+        body.stop()
     manager.stop()
 
 
@@ -772,11 +793,11 @@ def run_dashboard(cfg: Config) -> None:
     static_dir = Path(__file__).resolve().parent / "static"
     body = None
     if cfg.body.enabled:
+        # Constructed here, started by the session (`/api/session/start`) and by
+        # every run's reset. `[body] autostart` now means "the session starts it":
+        # `./run.sh` no longer wakes MuJoCo and the weights before there is a stack
+        # for them to belong to.
         body = BodyPreview(cfg.body, out_dir=Path(cfg.paths.session_root) / "body")
-        if cfg.body.autostart:
-            problem = body.start()
-            if problem:
-                print(f"clank dashboard: body view: {problem}", file=sys.stderr)
     overlay = OverlayBoard()
     run = RunManager(manager, cfg, body=body, overlay=overlay)
     server = DashboardServer(

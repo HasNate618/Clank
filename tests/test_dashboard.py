@@ -782,6 +782,18 @@ class ShippedStaticAssetsTests(unittest.TestCase):
         self.assertIn("run.detail", code)
         self.assertIn("run.error", code)
 
+    def test_the_buttons_say_what_they_end(self) -> None:
+        """Shut down ends three things and named none of them; Start run on a dead
+        stack spends two minutes and said nothing about it."""
+        _, index = self.request("/")
+        page = index.decode()
+        stop = page.split('id="stop"', 1)[1].split(">", 1)[0]
+        self.assertIn("title=", stop)
+        self.assertIn("body", stop.lower())
+        _, js = self.request("/app.js")
+        code = js.decode()
+        self.assertIn("boots the stack", code)
+
     def test_spinner_is_styled_and_respects_reduced_motion(self) -> None:
         _, css = self.request("/style.css")
         text = css.decode()
@@ -1276,6 +1288,117 @@ class _SessionDirManager(FakeManager):
         return {**self.inner.snapshot(), "session_dir": str(self.base / "session")}
 
 
+class SessionBodyLifecycleTests(unittest.TestCase):
+    """The body view belongs to the session, not to the dashboard process.
+
+    `./run.sh` used to wake MuJoCo and the weights at boot, before monado, Weston
+    or the game existed, and Shut down left the view running - so the next start
+    inherited a renderer nobody had asked for, and a dashboard restarted under it
+    found its `start()` answered by a process it had never spawned.
+    """
+
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory()
+        self.base = Path(self.temp.name)
+        self.manager = FakeManager(self.base)
+        cfg = load_config(None, base_dir=self.base)
+        # A bare checkout defaults to not starting a renderer at all; this suite is
+        # about what the session does *when* it has one to start.
+        self.cfg = replace(cfg, body=replace(cfg.body, autostart=True))
+
+    def tearDown(self) -> None:
+        self.temp.cleanup()
+
+    def _serve(self, body, calls: list[str]) -> tuple[int, dict]:
+        """A dashboard whose manager and body both write into `calls`."""
+
+        class Manager:
+            def start(_self) -> None:
+                calls.append("stack")
+
+            def stop(_self) -> None:
+                calls.append("stack-stop")
+
+        server = DashboardServer(("127.0.0.1", 0), Manager(), self.cfg, self.base,
+                                 body=body)  # type: ignore[arg-type]
+        port = server.server_address[1]
+        thread = threading.Thread(target=server.serve_forever,
+                                  kwargs={"poll_interval": 0.05}, daemon=True)
+        thread.start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+        conn.request("POST", "/api/session/start", b"{}",
+                     {"Content-Type": "application/json"})
+        response = conn.getresponse()
+        raw = response.read()
+        conn.close()
+        return response.status, {"raw": raw.decode(errors="replace")}
+
+    def _get(self, status: int, doc: dict) -> None:
+        if status != 202:
+            self.fail(f"session start answered {status}: {doc}")
+
+    def test_the_session_start_starts_the_body_view(self) -> None:
+        calls: list[str] = []
+
+        class Body:
+            def start(_self) -> str:
+                calls.append("body")
+                return ""
+
+        self._get(*self._serve(Body(), calls))
+        self.assertEqual(calls, ["stack", "body"])
+
+    def test_a_body_view_that_will_not_start_still_gives_a_stack(self) -> None:
+        """A bare stack is still useful: a failed renderer must not refuse it."""
+        calls: list[str] = []
+
+        class Body:
+            def start(_self) -> str:
+                calls.append("body")
+                return "body python not found"
+
+        status, doc = self._serve(Body(), calls)
+        self._get(status, doc)
+        self.assertEqual(calls, ["stack", "body"])
+
+    def test_shutting_down_stops_the_body_with_the_stack(self) -> None:
+        calls: list[str] = []
+
+        class Body:
+            def start(_self) -> str:
+                calls.append("body-start")
+                return ""
+
+            def stop(_self) -> None:
+                calls.append("body-stop")
+
+        class Manager:
+            def start(_self) -> None:
+                calls.append("stack")
+
+            def stop(_self) -> None:
+                calls.append("stack-stop")
+
+        server = DashboardServer(("127.0.0.1", 0), Manager(), self.cfg, self.base,
+                                 body=Body())  # type: ignore[arg-type]
+        port = server.server_address[1]
+        thread = threading.Thread(target=server.serve_forever,
+                                  kwargs={"poll_interval": 0.05}, daemon=True)
+        thread.start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        for path in ("/api/session/start", "/api/session/stop"):
+            conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+            conn.request("POST", path, b"{}", {"Content-Type": "application/json"})
+            conn.getresponse().read()
+            conn.close()
+        # No run in this picture: the viewer the start woke goes down before the
+        # stack it was woken for. (With a run, `ShutdownOrderTests` pins the order.)
+        self.assertEqual(calls, ["stack", "body-start", "body-stop", "stack-stop"])
+
+
 class ShutdownOrderTests(unittest.TestCase):
     def test_the_run_stops_before_the_stack(self) -> None:
         order: list[str] = []
@@ -1301,8 +1424,9 @@ class ShutdownOrderTests(unittest.TestCase):
             Run(),  # type: ignore[arg-type]
             Manager(),
         )
-        # A run that outlives its Steam leaves a brain loop driving nothing.
-        self.assertEqual(order, ["body", "run", "run-wait", "stack"])
+        # A run that outlives its Steam leaves a brain loop driving nothing, and a
+        # loop that outlives its body view leaves a retry against a dead socket.
+        self.assertEqual(order, ["run", "run-wait", "body", "stack"])
 
 
 class RecordingSweepTests(unittest.TestCase):
@@ -1345,12 +1469,35 @@ class RecordingSweepTests(unittest.TestCase):
             def wait_idle(self, timeout: float = 15.0) -> bool:
                 return True
 
+        class FakeBodyPreview:
+            started = 0
+
+            def __init__(self, cfg, out_dir=None, log_path=None) -> None:
+                self.cfg = cfg
+
+            def start(self) -> str:
+                FakeBodyPreview.started += 1
+                return ""
+
+            def stop(self) -> None:
+                pass
+
+            def running(self) -> bool:
+                return False
+
+        self.body_starts = lambda: FakeBodyPreview.started
+
         with tempfile.TemporaryDirectory() as temp:
             self.sessions_root = temp
             cfg = load_config(None, env={})
             cfg = replace(cfg, paths=replace(cfg.paths, session_root=temp))
+            # A renderer that *would* have been started by the old boot code: the
+            # point of these tests is that a dashboard start wakes the HTTP server
+            # and nothing else.
+            cfg = replace(cfg, body=replace(cfg.body, enabled=True, autostart=True))
             with contextlib.redirect_stdout(stdout), \
                     patch.object(dashboard, "SessionManager", FakeManager), \
+                    patch.object(dashboard, "BodyPreview", FakeBodyPreview), \
                     patch.object(dashboard, "RunManager", FakeRun), \
                     patch.object(dashboard, "DashboardServer", server), \
                     patch.object(dashboard, "signal"), \
@@ -1368,6 +1515,13 @@ class RecordingSweepTests(unittest.TestCase):
                 self.pending_calls = [call.args[0] for call in pending.call_args_list]
                 self.composed = [call.args[0].name for call in compose.call_args_list]
             return [call.args[0] for call in sweep.call_args_list]
+
+    def test_the_dashboard_boot_does_not_start_the_body_view(self):
+        """The body belongs to the session. Booting it with the HTTP server woke
+        MuJoCo and the weights before monado, Weston or the game existed, and Shut
+        down never put it back down."""
+        self.run_dashboard_with([], io.StringIO())
+        self.assertEqual(self.body_starts(), 0)
 
     def test_the_sweep_runs_before_the_page_is_served(self):
         order: list[str] = []

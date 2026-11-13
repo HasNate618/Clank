@@ -654,11 +654,32 @@ class RunManager:
         The order is the measured one (`auto.ready`): reset the process first, then
         ask for the rest pose repeatedly, because a restart alone leaves the arms in
         whatever pose the last command pinned.
+
+        Two things make it a *reset* rather than a request to stand up. The process
+        is killed and respawned, so the sim, the policy state and the clip all start
+        at frame 0 - the `rest` verbs are a settle, not the reset. And the previous
+        run's `body_state.json` is deleted before the new process exists: the relay
+        holds the last state through a quiet body on purpose, buttons included, so
+        without that it would spend the restart holding the previous run's final
+        pose - and a closed hand with it. The relay is switched last, once there is
+        a fresh body to relay.
         """
         if self._body is None:
             return
-        self._manager.set_mode("body")
         self._body.stop()
+        forget = getattr(self._body, "forget_state", None)
+        if forget is not None:
+            forget()
+        # A socket answered by a process this dashboard never spawned cannot be
+        # replaced by `stop()`, and the retry below would either lose every start
+        # to the busy socket or drive a body on its way out.
+        foreign = getattr(self._body, "owner_elsewhere", None)
+        if foreign is not None and foreign():
+            raise RuntimeError(
+                f"another body view is already listening on "
+                f"{self._body.control_path()}; stop it (`pkill -f body_view.py`) "
+                f"and start the run again"
+            )
         problem = self._body.start()
         if problem:
             raise RuntimeError(f"body view did not start: {problem}")
@@ -709,6 +730,9 @@ class RunManager:
             resting += 1
             if resting < self._cfg.run.rest_ticks:
                 time.sleep(0.25)
+        # The relay last: it reads `body_state.json` as it starts, and by now the
+        # file is the new process's or absent, never the previous run's.
+        self._manager.set_mode("body")
 
     def _start_brain(self, run_dir: Path) -> Any:
         return self._spawn(

@@ -785,9 +785,13 @@ function applyControls(state) {
   // No `running` here: Start run boots the stack itself now, and refusing an
   // idle dashboard is exactly the third step this button was given to remove.
   $("start-run").disabled = actionInFlight || runActive || modelDown;
+  // What the press will cost. A run boots the stack itself now, and on a cold
+  // machine that is a couple of minutes of otherwise-unexplained waiting - the
+  // same reason the stack's own boot has a phrase of its own in the topbar.
+  const stackDown = !running && ["stopped", "failed"].includes(state.state);
   $("start-run").title = modelDown
     ? `the model server is ${model.status || "down"}${model.model ? ` (${model.model})` : ""}`
-    : "";
+    : (stackDown ? "boots the stack first (about two minutes)" : "");
   $("stop-run").disabled = actionInFlight || !runActive;
   // What is loading, in words, while the ring turns: the game restart is 40 s of
   // otherwise-silent waiting, and "restarting the game…" is the whole answer.

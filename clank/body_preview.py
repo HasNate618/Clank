@@ -93,6 +93,52 @@ class BodyPreview:
     def control_path(self) -> Path:
         return self.out_dir / "control.sock"
 
+    def state_path(self) -> Path:
+        """Where `body_view.py` publishes what it achieved, and the relay reads it."""
+        return self.out_dir / "body_state.json"
+
+    def forget_state(self) -> None:
+        """Delete the last run's achieved state, so nothing can latch it.
+
+        `pose_relay.py` holds the last state it read through a quiet body, buttons
+        included - deliberately, because a dead body must not release a grab. That
+        is right mid-run and wrong between runs: for the seconds a reset takes, the
+        relay would keep sending the previous run's final pose, and if that run
+        ended with a closed hand, a held squeeze at the start of the next one. With
+        no file at all the relay sends `wire.REST_POSES` and both buttons up, which
+        is the only honest thing to send while the new sim loads.
+        """
+        for name in ("body_state.json", "body_latest.jpg"):
+            with contextlib.suppress(OSError):
+                (self.out_dir / name).unlink()
+
+    def owner_elsewhere(self) -> bool:
+        """True when a process this object did not spawn is serving the socket.
+
+        `stop()` cannot touch a viewer it never started (`pick_pixel.py`, a gate, a
+        `body_view.py` an operator left running, one that outlived a dashboard
+        restart), so a run that carries on either loses a start to the busy socket
+        or - worse - has its `rest` answered by a stranger. Ask once, and say what
+        to do instead of retrying a race.
+        """
+        if self.running():
+            return False
+        path = self.control_path()
+        try:
+            if not path.exists():
+                return False
+        except OSError:
+            return False
+        probe = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        probe.settimeout(0.5)
+        try:
+            probe.connect(str(path))
+        except OSError:
+            return False
+        finally:
+            probe.close()
+        return True
+
     def preflight(self) -> str:
         """Empty string when the sidecar can start, else why it cannot."""
         if not Path(self.cfg.python).exists():

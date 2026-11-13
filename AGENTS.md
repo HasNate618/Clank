@@ -35,18 +35,27 @@ stream, drives pose modes, and exposes the logs.
 # frozen black window for Job Simulator (it renders only to the OpenXR views).
 ./run.sh --no-depth --replace
 
-# Stack control: once per boot. The UI calls the same endpoints.
-curl -s -X POST -H 'Content-Type: application/json' -d '{}' \
-  http://127.0.0.1:8765/api/session/start
-curl -s -X POST -H 'Content-Type: application/json' -d '{}' \
-  http://127.0.0.1:8765/api/session/stop        # "Shut down" in the UI
-
-# Run control: what you repeat. The stack stays up between runs.
+# Start a run. THIS IS THE ONE CALL: it boots the stack when it is down (~2 min)
+# and starts the body view with it. Do NOT call /api/session/start first - that
+# boots a stack and starts no run, which is a two-minute wait that cannot produce
+# a run. (An agent has already done exactly that; hence this paragraph.)
 curl -s -X POST -H 'Content-Type: application/json' -d '{}' \
   http://127.0.0.1:8765/api/run/start
 curl -s -X POST -H 'Content-Type: application/json' -d '{}' \
-  http://127.0.0.1:8765/api/run/stop
-curl -s http://127.0.0.1:8765/api/state          # state.run walks the phases
+  http://127.0.0.1:8765/api/run/stop            # ends the attempt, keeps the stack
+
+# What the run is doing, and where it put its evidence. `run` is null when runs
+# are disabled or none has started; `run.phase` walks checking -> preparing ->
+# game -> body -> brain -> running, and `run.dir` is the run's directory.
+curl -s http://127.0.0.1:8765/api/state | python3 -c \
+  'import json,sys; r=json.load(sys.stdin).get("run") or {}; print(r.get("state"), r.get("phase"), (r.get("detail") or "")[:60], r.get("dir"))'
+
+# A bare stack, no run: only for poking the pose clients or the depth layer by
+# hand. "Shut down" is the same call, and ends the body view with it.
+curl -s -X POST -H 'Content-Type: application/json' -d '{}' \
+  http://127.0.0.1:8765/api/session/start
+curl -s -X POST -H 'Content-Type: application/json' -d '{}' \
+  http://127.0.0.1:8765/api/session/stop
 
 # One capture. The reader is stdlib-only: no nix develop, ~0.4 s total.
 python3 spike/e5/depth_stream.py --once --verify --out research/evidence/depth-stream
@@ -99,8 +108,8 @@ renderdoc-layer/vulkan/implicit_layer.d/  # e4 manifest
 ## Stack and runs, 2026-11-12
 
 **Start run** is one press and the only start the page offers. It boots the stack
-(Monado → Weston → websockify → pose relay → Steam → game) when it is down and never
-touches one that is up: the model gate, then a `stack` phase bounded by
+(Monado → Weston → websockify → pose relay → Steam → game, plus the body view) when it is
+down and never touches one that is up: the model gate, then a `stack` phase bounded by
 `run.session_start_sec` (180 s), then a new directory, a new diary, the overlay
 cleared, the game's saved job wiped and the game relaunched, the body stood up, then
 `spike/wbc_game/auto.py` under `spike/e3/.venv`. The directory is claimed as soon as a
@@ -157,9 +166,24 @@ sessions/<session-id>/runs/<HHMMSS>-<6 hex>/
   and the run phases (`run.detail`: "restarting the game…", "waiting for the model to
   load…"), on the preview while the transport comes up, and in the Robot panel. Under
   `prefers-reduced-motion` the ring stops turning but stays visible.
-- The body reset is `BodyPreview.stop/start` + `rest` × `run.rest_ticks`, not a session
-  concern: the body view is deliberately outside the session manager. A run works with
-  the body disabled.
+- The body reset is `BodyPreview.stop/start` + `rest` × `run.rest_ticks`. The verbs are a
+  **settle, not the reset**: `stop()` SIGTERMs the sidecar's process group, so the respawn
+  is a new MuJoCo model at clip frame 0 with fresh policy state, and `rest` only holds the
+  clip's own equilibrium until the loop takes over. A run works with the body disabled.
+- **The reset also clears the previous run's `body_state.json`.** The relay holds the last
+  state it read through a quiet body on purpose ("a dead body must not release a grab"),
+  buttons included, so without the delete the restart is spent holding the last run's final
+  pose - and a closed hand with it. With no file the relay sends `wire.REST_POSES` and both
+  buttons up. The relay is switched (`set_mode("body")`) **last**, once a fresh body exists.
+- **A viewer this dashboard did not spawn is a named failure, not a race.** `stop()` cannot
+  touch one - `pick_pixel.py`, a gate, an operator's `body_view.py`, one that outlived a
+  dashboard restart - so `BodyPreview.owner_elsewhere()` probes the socket first and the run
+  fails with "another body view is already listening ... `pkill -f body_view.py`".
+- **The body view is a member of the session, not of the dashboard process.** It starts on
+  `/api/session/start` (`[body] autostart` now means exactly that), stops on
+  `/api/session/stop` with the stack, and `./run.sh` no longer wakes MuJoCo and the weights
+  before there is a stack to belong to. A renderer that refuses to start does not refuse the
+  stack; the Robot panel says why.
 - **The body view's control socket is the fragile part of a run, and it cost two live
   runs.** `BodyPreview.start()` returns as soon as the process spawns; MuJoCo and the
   weights load after that. Worse, a spawn that finds the *dying* viewer still holding
@@ -192,6 +216,27 @@ reason, and none of it fails, delays or blocks the run.
   `clank-game.monitor` through `ears.capture()`. The composite is **detached** into its own
   thread after the run goes idle: `wait_idle` is 15 s and a 20-minute encode is not, and the
   next Start run must not queue behind a video.
+**Checking one without the page** — the whole API an agent needs:
+
+```bash
+curl -s http://127.0.0.1:8765/api/recordings   # {"recordings": [...], "recording_available": bool}
+# One row per run, newest first: run_id, session_id, dir, state, started_at, ended_at,
+# duration_s, bytes, width, height, fps, audio_peak, error, has_file, has_diary.
+# state: recording | composing | ready | failed | pruned | null (a run that predates this
+# feature, or one recorded on a machine with recording off - its diary is still listed).
+```
+
+- `has_file` is whether the video is really on disk and `has_diary` whether the run left
+  `brain.jsonl`. `state: composing` for minutes after a run is **normal**: the composite is
+  detached into its own thread precisely so the next Start run does not queue behind it, and
+  a 20-minute encode is not 15 s of `wait_idle`. Report "still composing", not "failed".
+- The row does **not** carry `sources`, `part_seconds` or `notes` — read `<dir>/recording.json`
+  for those: `sources` is `{game, robot, audio}` valued `ok`/`missing`/`failed`, `notes` says
+  why, `part_seconds` how long each part really is. `audio_peak: 0` means a silent track with
+  the recorder working (the game was muted) — that is the one an agent will otherwise miss.
+- The video is `GET /api/recordings/<run_id>/video` and honours `Range` (206/416/200), so
+  `curl -r 0-1023` is a cheap way to prove the file is real.
+
 - **`recording.json` states**: `recording` → `composing` → `ready` | `failed`, plus `pruned`
   when the 20 GB cap took its video. `sources` is `{game, robot, audio}` valued exactly
   `ok`/`missing`/`failed`, `notes` carries the reason, `parts` names the parts that wrote

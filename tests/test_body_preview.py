@@ -1,6 +1,8 @@
 import os
+import socket
 import sys
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -84,6 +86,57 @@ class BodyPreviewTestCase(unittest.TestCase):
             self.assertIn("python not found", problem)
             self.assertFalse(view.running())
             self.assertTrue(view.status()["error"])
+
+    def test_forget_state_deletes_the_last_runs_pose(self) -> None:
+        """The relay holds what it last read through a quiet body, buttons
+        included; the file must not survive a reset."""
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            (out / "body_state.json").write_text("{}")
+            (out / "body_latest.jpg").write_bytes(b"\xff\xd8\xff\xd9")
+            (out / "run.json").write_text("{}")
+            BodyPreview(make_cfg(), out_dir=out).forget_state()
+            self.assertFalse((out / "body_state.json").exists())
+            self.assertFalse((out / "body_latest.jpg").exists())
+            self.assertTrue((out / "run.json").exists())  # nothing else is touched
+
+    def test_owner_elsewhere_is_false_when_the_socket_is_ours(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            view = BodyPreview(make_cfg(), out_dir=Path(tmp))
+            view._proc = type("Proc", (), {"poll": staticmethod(lambda: None)})()  # type: ignore[assignment]
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as srv:
+                srv.bind(str(view.control_path()))
+                srv.listen(1)
+                self.assertFalse(view.owner_elsewhere())
+
+    def test_owner_elsewhere_sees_a_viewer_it_never_spawned(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            view = BodyPreview(make_cfg(), out_dir=Path(tmp))
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as srv:
+                srv.bind(str(view.control_path()))
+                srv.listen(1)
+                accepted: list = []
+
+                def accept() -> None:
+                    try:
+                        conn, _ = srv.accept()
+                    except OSError:
+                        return
+                    accepted.append(conn)
+                    conn.close()
+
+                thread = threading.Thread(target=accept, daemon=True)
+                thread.start()
+                self.assertTrue(view.owner_elsewhere())
+                thread.join(2)
+
+    def test_a_stale_socket_file_is_not_an_owner(self) -> None:
+        """A file left by a viewer that died: connect refuses, so a reset may
+        unlink it and bind."""
+        with tempfile.TemporaryDirectory() as tmp:
+            view = BodyPreview(make_cfg(), out_dir=Path(tmp))
+            view.control_path().write_text("")
+            self.assertFalse(view.owner_elsewhere())
 
     def test_status_before_any_frame(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

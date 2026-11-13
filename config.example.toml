@@ -147,7 +147,9 @@ game_restart_timeout_sec = 180
 # Start run on a stopped dashboard waits this long for the stack to say running.
 session_start_sec = 180
 stop_timeout_sec = 10
-# `rest` commands sent while resetting the body before the run starts.
+# `rest` commands sent while resetting the body before the run starts. A settle,
+# not the reset: the reset is the sidecar being killed and respawned, and the
+# previous run's body_state.json being deleted so the relay cannot latch it.
 rest_ticks = 8
 # How long the body reset waits for the sidecar's control socket. start() returns
 # as soon as the process spawns; MuJoCo and the weights take seconds after that.
@@ -183,7 +185,9 @@ max_total_mb = 20480
 
 [body]
 # Third-person MuJoCo view beside the game cam. Needs the SONIC venv + weights,
-# so it is off in a bare checkout. `autostart` starts it with the dashboard.
+# so it is off in a bare checkout. `autostart` starts it with the *session*
+# (`POST /api/session/start`, or `/api/run/start`, which boots the session): the
+# dashboard process alone starts nothing but its HTTP server and the sweep.
 enabled = true
 autostart = true
 python = "spike/e3/.venv/bin/python"
