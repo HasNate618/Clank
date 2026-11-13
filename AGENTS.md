@@ -103,7 +103,9 @@ renderdoc-layer/vulkan/implicit_layer.d/  # e4 manifest
 touches one that is up: the model gate, then a `stack` phase bounded by
 `run.session_start_sec` (180 s), then a new directory, a new diary, the overlay
 cleared, the game's saved job wiped and the game relaunched, the body stood up, then
-`spike/wbc_game/auto.py` under `spike/e3/.venv`. A boot it started it does not shut
+`spike/wbc_game/auto.py` under `spike/e3/.venv`. The directory is claimed as soon as a
+session exists to name it after: when the stack is already up it is claimed before the
+gate, so a gate refusal keeps its `run.json`; a cold start claims it after the boot. A boot it started it does not shut
 down, and a cancel during the boot tears nothing down. **Stop run** ends the attempt
 and leaves the stack up; **Shut down** (still `POST /api/session/stop`) is the old
 Stop, and `POST /api/session/start` still exists for scripting and `run.sh`.

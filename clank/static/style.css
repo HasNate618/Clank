@@ -938,8 +938,9 @@ body.manual-active .manual-panel { border-color: var(--warm); }
 .col-rail .body-actions { flex: 1 1 100%; margin-left: 0; }
 #body-tiles {
   display: grid;
-  /* One tile per view, each at the render's own 4:3, so nothing is cropped or
-     stretched and the panel height follows the width instead of the window. */
+  /* One tile per view, each at the render's own shape (9:16 now, set by app.js
+     from the frame itself), so nothing is cropped or stretched and the panel
+     height follows the width instead of the window. */
   grid-template-columns: repeat(auto-fit, minmax(0, 420px));
   /* Packed and centred: spreading the tiles across a wide panel left them
      marooned at opposite ends of the row. */
@@ -1122,9 +1123,6 @@ body.manual-active .manual-panel { border-color: var(--warm); }
 }
 
 /* ---- Recordings page ------------------------------------------------ */
-/* One page, three columns: the runs choose, the video shows, the diary
-   explains. Same cards and same shadows as the console, because it is the
-   same tool seen from the past rather than the present. */
 /* The picture is the page: one column, the run strip above it, the diary
    beneath. Widened rather than stretched, because a recording wider than this
    is a sight line nobody has. */
@@ -1162,7 +1160,6 @@ body.manual-active .manual-panel { border-color: var(--warm); }
   gap: 8px;
   min-width: 0;
 }
-.rec-empty { font: 400 12px/1.5 var(--sans); color: var(--muted); }
 .rec-row {
   display: grid;
   gap: 4px;
@@ -1209,9 +1206,10 @@ body.manual-active .manual-panel { border-color: var(--warm); }
 .rec-chip-quiet { color: var(--muted); }
 .rec-empty { color: var(--muted); font: 400 13px/1.5 var(--sans); max-width: 44ch; }
 
-/* The composite is 3.1:1, so it is wide and short by nature. The stage takes
-   its own height instead of stretching to the window, and the leftover space
-   belongs to the page rather than to an empty black card. */
+/* The composite is 2.34:1 (960x540 beside a 304x540 tile), so it is wide and
+   short by nature. The stage takes its own height instead of stretching to the
+   window, and the leftover space belongs to the page rather than to an empty
+   black card. */
 .rec-stage { align-self: start; }
 .rec-player {
   background: var(--screen);

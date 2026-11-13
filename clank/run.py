@@ -3,12 +3,14 @@
 A **run** is what a person repeats: a fresh directory, a fresh diary, the game's saved
 job wiped and the game relaunched, the body reset, and then the brain loop. The
 **stack** — monado-service, Weston, websockify, the pose relay, Steam — is what costs a
-cold boot, and a run never touches it.
+cold boot. A run **boots it when it is down and never touches one that is up**: that is
+why Start run is one press, and why Stop run leaves a stack standing.
 
 The split is deliberate. `SessionManager` owns the stack and can only restart the game
-(`restart_game`); this module owns everything that accumulates across attempts. A run's
-failure leaves the stack running, because the alternative — one bad attempt costing a
-boot — is the thing this replaces.
+(`restart_game`), so booting it is a request this module makes (`_stack`) and waits on,
+not something it does itself. This module owns everything that accumulates across
+attempts. A run's failure leaves the stack running, because the alternative — one bad
+attempt costing a boot — is the thing this replaces.
 
 Design: `docs/superpowers/specs/2026-11-12-runs-design.md`.
 """
@@ -86,7 +88,7 @@ def _short_model(status: brain.ServerStatus) -> str:
 
 
 class RunManager:
-    """A run state machine over a stack that stays up.
+    """A run state machine over a stack it boots when it has to.
 
     Collaborators are injected so the machine is testable without a game:
     `manager` needs `snapshot()`, `restart_game()` and `set_mode()`; `body` is a
