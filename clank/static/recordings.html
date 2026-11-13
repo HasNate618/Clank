@@ -46,16 +46,16 @@
       </div>
     </header>
 
-    <!-- Three columns, and the reason for each: the runs are how you choose,
-         the video is what the run looked like, and the diary is why it did
-         what it did. A run without its diary is a clip; the pair is evidence. -->
+    <!-- One column, and the order is the argument: pick a run from the strip,
+         watch it at its own size, then read why it did what it did. The picture
+         is the page; the list and the diary are the margins of it. -->
     <main class="rec-deck">
-      <section class="panel rec-list-panel">
-        <h2>Runs <span id="recording-hint" class="rec-hint"></span></h2>
+      <section class="rec-strip" id="run-strip" aria-label="Runs">
+        <span id="recording-hint" class="rec-hint"></span>
         <div id="recording-list" class="rec-list" aria-live="polite"></div>
       </section>
 
-      <section class="panel rec-stage">
+      <section class="rec-stage">
         <h2 id="recording-title">Pick a run</h2>
         <!-- Our own controls, not the browser's: the rail carries a tick per
              diary event, so the two panels share one clock and the operator can
@@ -84,12 +84,12 @@
         <div id="recording-meta" class="rec-meta"></div>
       </section>
 
-      <aside class="panel rec-diary-panel">
+      <section class="panel rec-diary-panel">
         <h2>Diary <span id="diary-count" class="rec-hint"></span></h2>
         <!-- The diary arrives with the picture: a row shows when the video
              reaches its moment, so what you read is what you are watching. -->
         <div id="run-diary" class="brain-messages"></div>
-      </aside>
+      </section>
     </main>
   </div>
   <script src="/recordings.js"></script>

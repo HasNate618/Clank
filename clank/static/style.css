@@ -1123,36 +1123,50 @@ body.manual-active .manual-panel { border-color: var(--warm); }
 /* One page, three columns: the runs choose, the video shows, the diary
    explains. Same cards and same shadows as the console, because it is the
    same tool seen from the past rather than the present. */
+/* The picture is the page: one column, the run strip above it, the diary
+   beneath. Widened rather than stretched, because a recording wider than this
+   is a sight line nobody has. */
 .rec-deck {
   display: grid;
-  grid-template-columns: 320px minmax(0, 1fr) 360px;
+  /* Rows size to their content and the deck scrolls: a 1680x540 picture at full
+     width is taller than the window, and clipping the transport under it was the
+     first thing this layout did. */
+  grid-auto-rows: max-content;
+  align-content: start;
   gap: 12px;
   min-height: 0;
+  overflow-y: auto;
+  width: 100%;
+  max-width: 1680px;
+  margin: 0 auto;
 }
 .rec-deck .panel { min-height: 0; }
 .rec-hint { font: 600 12px/1 var(--sans); color: var(--muted); }
 
-/* Narrower windows drop the diary under the player rather than squeezing
-   three columns until the video is a stripe. */
-@media (max-width: 1280px) {
-  .rec-deck { grid-template-columns: 260px minmax(0, 1fr); }
-  .rec-diary-panel { grid-column: 1 / -1; }
-}
-@media (max-width: 860px) {
-  .rec-deck { grid-template-columns: minmax(0, 1fr); }
+/* The runs, as chips on one scrolling line: choosing a run must not cost the
+   video its width, which is exactly what a sidebar did. */
+.rec-strip {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  overflow-x: auto;
+  padding-bottom: 2px;
 }
 
 .rec-list {
-  display: grid;
+  display: flex;
+  flex: 1 1 auto;
   gap: 8px;
-  align-content: start;
-  overflow-y: auto;
-  min-height: 0;
+  min-width: 0;
 }
+.rec-empty { font: 400 12px/1.5 var(--sans); color: var(--muted); }
 .rec-row {
   display: grid;
-  gap: 6px;
-  width: 100%;
+  gap: 4px;
+  flex: 0 0 auto;
+  min-width: 200px;
+  max-width: 260px;
   text-align: left;
   padding: 10px 12px;
   border-radius: var(--r-md);
@@ -1206,16 +1220,24 @@ body.manual-active .manual-panel { border-color: var(--warm); }
 .rec-player video {
   display: block;
   width: 100%;
-  /* The composite is 1680x540: two 16:9 pictures side by side. Holding that
-     ratio here means the page reserves the right height before the file
-     loads, so nothing jumps under the operator's cursor. */
-  aspect-ratio: 1680 / 540;
+  height: auto;
+  /* The ratio comes from the run's own manifest (`--rec-aspect`, set by
+     recordings.js), so a 1680x540 recording from before 2026-11-13 and a
+     1264x540 one after it both fill the stage without a re-encode. The default
+     is the current geometry, for the moment before a run is picked. */
+  aspect-ratio: var(--rec-aspect, 1264 / 540);
   background: var(--screen);
 }
 .rec-note { margin: 0; min-height: 1.2em; font: 400 12px/1.4 var(--sans); color: var(--muted); }
 .rec-meta { font: 400 12px/1.4 var(--mono); color: var(--muted); }
 
-.rec-diary-panel .brain-messages { overflow-y: auto; max-height: 60vh; }
+/* The diary under the video. One column, not three: the rows are a transcript
+   (JobBot left, Clank right) and they arrive one at a time as playback reaches
+   them, so a multi-column flow would re-shuffle a row while you are reading it. */
+.rec-diary-panel .brain-messages {
+  overflow-y: auto;
+  max-height: 46vh;
+}
 .rec-diary-row { cursor: pointer; }
 .rec-diary-row:hover { outline: 1px solid var(--accent); }
 .rec-diary-at {

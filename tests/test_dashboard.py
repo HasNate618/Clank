@@ -689,6 +689,18 @@ class ShippedStaticAssetsTests(unittest.TestCase):
             self.assertIn(f'id="{control}"', robot, control)
         self.assertIn("data-verb=", robot)
 
+    def test_the_recordings_page_puts_the_video_first(self) -> None:
+        _, body = self.request("/recordings")
+        page = body.decode()
+        self.assertIn('id="run-strip"', page)
+        # The video comes before the diary in document order: the picture is the page.
+        self.assertLess(page.index('id="recording-video"'), page.index('id="run-diary"'))
+        self.assertNotIn('class="panel rec-list-panel"', page)
+        _, js = self.request("/recordings.js")
+        code = js.decode()
+        # Old 1680x540 recordings must keep playing: the aspect comes from the file.
+        self.assertIn("--rec-aspect", code)
+
     def test_the_topbar_can_say_what_happened_to_the_video(self) -> None:
         _, body = self.request("/")
         page = body.decode()

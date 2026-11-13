@@ -138,6 +138,22 @@ function rowElement(row) {
   return button;
 }
 
+// The picture keeps the aspect it was recorded at: the composite was 1680x540
+// until 2026-11-13 and is 1264x540 after it, and both have to play without a
+// re-encode. The row carries the manifest's own numbers, so the page never
+// guesses from the current build.
+function applyAspect(row) {
+  const player = document.querySelector(".rec-player");
+  if (!player) return;
+  const width = Number(row && row.width);
+  const height = Number(row && row.height);
+  if (!width || !height) {
+    player.style.removeProperty("--rec-aspect");
+    return;
+  }
+  player.style.setProperty("--rec-aspect", `${width} / ${height}`);
+}
+
 function renderList(payload) {
   list.replaceChildren();
   const available = Boolean(payload.recording_available);
@@ -362,6 +378,7 @@ async function select(row) {
   meta.textContent = [clock(row.started_at), mmss(row.duration_s), mb(row.bytes)]
     .filter(Boolean).join(" · ");
 
+  applyAspect(row);
   if (row.has_file) {
     // Setting `src` is what makes the browser ask with Range; the route answers
     // 206 so a scrub does not download the run again from the start.
