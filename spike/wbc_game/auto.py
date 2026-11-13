@@ -54,11 +54,12 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "wbc"))
 import ardy_client  # noqa: E402  # pyright: ignore[reportMissingImports]
 import do_task  # noqa: E402
 import locate  # noqa: E402
+import place  # noqa: E402
 import reach_vr  # noqa: E402
 
 import math  # noqa: E402
 
-from clank import brain, brainlog, ears, pose_relay  # noqa: E402
+from clank import brain, brainlog, ears, pose_relay, workspace  # noqa: E402
 from clank.body import Pose  # noqa: E402
 from clank.brain import BrainConfig, Frame  # noqa: E402
 from clank.depth_stream import Stream  # noqa: E402
@@ -381,12 +382,15 @@ def sense(target: str, memory: brain.WorkingMemory, stamp: str):
     but on this model it will not choose it when asked and re-issues a refused reach instead of
     correcting itself (3 of 3), so the loop cannot depend on the choice. `research/brain-tools.md`.
 
-    Returns the sighting and, when it is usable, `(pixel, png, camera, side)` for the motor.
+    Returns the sighting and, when it is usable, `(pixel, png, camera, side, point)` for the
+    motor. The point is the destination's own 3-D position, which is what `place` hovers above -
+    a reach to the pixel would put the hand inside the console.
     """
     jpeg, size, png, depth_frame, camera = frame_and_jpeg()
     found = locate.locate(BrainConfig(), Frame(0, 0.0, jpeg, "live"), target, size)
     pixel = found.get("pixel_px")
     metres = 0.0
+    point = None
     side = "right"
     if pixel:
         # Two questions, two samples. The *median* around the pixel says whether this is an
@@ -432,7 +436,7 @@ def sense(target: str, memory: brain.WorkingMemory, stamp: str):
         return sighting, None
     assert pixel is not None      # "present" means locate gave a pixel and the gate passed it
     mark(png, pixel, STATE / f"marked-{stamp}.png")
-    return sighting, ((_number(pixel[0]), _number(pixel[1])), png, camera, side)
+    return sighting, ((_number(pixel[0]), _number(pixel[1])), png, camera, side, point)
 
 
 def hands_holding() -> tuple[str, str]:
@@ -440,6 +444,55 @@ def hands_holding() -> tuple[str, str]:
     closure = reach_vr.state().get("closure") or [0.0, 0.0]
     held = ["holding" if _number(c) >= 0.5 else "empty" for c in closure][:2]
     return (held + ["empty", "empty"])[:2]  # type: ignore[return-value]
+
+
+def _place(thought, seen, memory: brain.WorkingMemory, stamp: str,
+           spoken: str, session: brain.SessionMemory | None) -> Turn:
+    """`place` is a reach to a point that has nothing under it, then an open hand.
+
+    Not a new motion: `research/reach-placement.md` measured a hover in free air landing 15-65 mm
+    from the goal, and the release itself. The destination is located the same way the object is,
+    because the model names it in words and the body still has to find it.
+
+    A `place` with nothing in the hand is refused before it moves. That refusal is the one worth
+    writing down: a place that quietly does nothing looks exactly like a place that worked.
+    """
+    plan = thought.plan
+    held = [side for side, state in zip(("left", "right"), hands_holding()) if state == "holding"]
+    if not held:
+        brainlog.log("result", "place refused: hands empty", ok=False)
+        if session is not None:
+            session.note_result("place refused: hands empty")
+        return Turn(spoken=spoken)
+    destination = (plan.destination or plan.target or "").strip()
+    if not destination:
+        brainlog.log("result", "place refused: no destination", ok=False)
+        if session is not None:
+            session.note_result("place refused: no destination")
+        return Turn(spoken=spoken)
+    if seen is None or seen[4] is None:
+        found, seen = sense(destination, memory, stamp)
+        if session is not None:
+            session.note_result(f"locate({destination}) {found.outcome}")
+        if seen is None or seen[4] is None:
+            brainlog.log("result", f"place refused: {destination} not found", ok=False)
+            if session is not None:
+                session.note_result(f"place refused: {destination} not found")
+            return Turn(spoken=spoken)
+    _pixel, _png, camera, _side, point = seen
+    assert point is not None     # the guard above refuses a destination with no depth point
+    side = held[0]          # the hand that is actually holding something
+    goal = (point[0], point[1], point[2] + workspace.APPROACH_M)
+    started = time.monotonic()
+    wrist, gap = place.hover(goal, side, camera)
+    reach_vr.send(verb=f"open_{side}")
+    brainlog.log("result", f"place({destination}) above it, hand open", ok=True,
+                 gap_m=round(gap, 3), seconds=round(time.monotonic() - started, 1),
+                 hand=side, wrist=[round(v, 3) for v in wrist],
+                 marked=f"marked-{stamp}.png")
+    if session is not None:
+        session.note_result(f"place({destination}) released above it, gap {gap:.3f} m")
+    return Turn(spoken=spoken)
 
 
 def one_turn(say: str = "", pattern: str = ears.DEFAULT_PATTERN,
@@ -587,6 +640,8 @@ def one_turn(say: str = "", pattern: str = ears.DEFAULT_PATTERN,
         brainlog.log("act", f"release({intent.side})",
                      closed=reach_vr.state().get("closure"))
         return Turn(spoken=spoken)
+    if skill == "place":
+        return _place(thought, seen, memory, stamp, spoken, session)
     if skill not in ("reach", "grab"):
         brainlog.log("think", f"{skill} is not wired yet")
         return Turn(spoken=spoken)
@@ -595,7 +650,7 @@ def one_turn(say: str = "", pattern: str = ears.DEFAULT_PATTERN,
                                "nothing was found", ok=False)
         return Turn(spoken=spoken)
 
-    pixel, png, camera, side = seen
+    pixel, png, camera, side, _point = seen
     started = time.monotonic()
     code = grab_pixel(pixel[0], pixel[1], side, camera, grab=skill == "grab")
     seconds = round(time.monotonic() - started, 1)

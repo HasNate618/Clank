@@ -144,6 +144,25 @@ class TheActUsesTheGeneratedPath(unittest.TestCase):
         self.assertIn('log("result", f"refused ', self.source)
         self.assertNotIn('hold ({thought.decision.reason})', self.source)
 
+    def test_place_is_wired(self) -> None:
+        # `place` was in the skill vocabulary and refused by assemble, so a model that asked for
+        # it got a hold and the diary said "not wired yet" - a working vocabulary entry with no
+        # implementation behind it.
+        turn = self.source[self.source.index("def one_turn("):self.source.index("def main(")]
+        self.assertIn('skill == "place"', turn)
+        # and the branch runs BEFORE the "not wired yet" line, which no longer covers place
+        self.assertLess(turn.index('skill == "place"'), turn.index("is not wired yet"))
+
+    def test_place_hovers_above_the_destination_and_opens(self) -> None:
+        body = self.source[self.source.index("def _place("):self.source.index("def one_turn(")]
+        self.assertIn("workspace.APPROACH_M", body, "a reach to the pixel puts the hand inside it")
+        self.assertIn("place.hover(", body)
+        self.assertIn('send(verb=f"open_{side}")', body)
+        # An empty hand cannot place, and saying so is the whole difference from a silent no-op.
+        self.assertIn("hands empty", body)
+        self.assertIn("no destination", body)
+        self.assertNotIn("sequence(", body)
+
     def test_results_reach_the_session(self) -> None:
         self.assertIn("session.note_result(", self.source)
         self.assertIn("session.cap()", self.source)
