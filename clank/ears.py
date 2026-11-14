@@ -420,6 +420,28 @@ def has_voice(pcm: bytes, threshold: float = GATE_MIN_RMS, rate: int = RATE) -> 
                for i in range(0, len(pcm) - block + 1, block))
 
 
+def has_speech(pcm: bytes, gate_ratio: float = 4.0, floor_percentile: float = 0.2,
+               rate: int = RATE) -> bool:
+    """Whether `pcm` holds speech rather than a room.
+
+    The same rule `Hearing` uses, applied to a window that has already been recorded: the floor
+    is the quiet fifth of its blocks, and speech is a block well above it. An absolute threshold
+    alone is not enough - MEASURED 2026-11-14, run 033328-c90c9b: after the greeting this
+    capture's room tone sat at rms 300-800 and never fell below the 250 floor, so 20 s of hum
+    read as an event and the model described it: "A machine is running continuously in the
+    background." It was right about the hum and wrong about the game talking.
+    """
+    block = int(BLOCK_S * rate) * 2
+    blocks = [level(pcm[i:i + block])[1]
+              for i in range(0, len(pcm) - block + 1, block)]
+    if not blocks:
+        return False
+    ordered = sorted(blocks)
+    floor = ordered[max(0, min(len(ordered) - 1, int(len(ordered) * floor_percentile)))]
+    gate = max(GATE_MIN_RMS, gate_ratio * floor)
+    return any(value > gate for value in blocks)
+
+
 def wav_bytes(pcm: bytes, rate: int = RATE, channels: int = 1) -> bytes:
     """Wrap raw s16le PCM in a WAV container the model accepts."""
     buf = io.BytesIO()

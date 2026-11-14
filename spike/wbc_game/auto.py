@@ -334,6 +334,15 @@ def confirm(pattern: str, max_s: float = 20.0, after: int | None = None) -> str:
         if not pcm:
             brainlog.log("result", "nothing in the ring across the act", ok=False)
             return ""
+        # The window is recorded, not gated: `confirm` reads whatever the act played over. That
+        # is right for speech and wrong for a room, and this game's room tone sits above the
+        # absolute floor. MEASURED 2026-11-14, run 033328-c90c9b: 20 s of hum came back as
+        # "A machine is running continuously in the background" and the loop planned `hold` on
+        # it. No speech above the room means there was no answer to confirm.
+        if not ears.has_speech(pcm):
+            brainlog.log("result", "nothing in the ring across the act: no speech above the room",
+                         ok=False)
+            return ""
         wav = ears.wav_bytes(pcm)
         heard = brain.transcribe(BrainConfig(), wav)
         if heard.error:
