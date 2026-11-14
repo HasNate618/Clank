@@ -239,6 +239,32 @@ def _grow(box: tuple[float, float, float, float], pad: float) -> tuple[float, fl
     )
 
 
+def _overlaps(box: tuple[float, float, float, float],
+              avoid: "tuple[tuple[float, float, float, float], ...] | list") -> bool:
+    """Does `box` share its middle with anything already refused?
+
+    The *middle*, not any overlap: a refused box and its neighbour in the same quadrant touch at
+    the edges constantly, and counting that as a repeat would send the search to the ceiling.
+    """
+    cx, cy = (box[0] + box[2]) / 2, (box[1] + box[3]) / 2
+    for other in avoid:
+        if other[0] <= cx <= other[2] and other[1] <= cy <= other[3]:
+            return True
+    return False
+
+
+def _beside(quadrant: str) -> str:
+    """The quadrant across the middle of the frame, at the same height.
+
+    A refused candidate is nearly always *in front of the robot* - the console it is standing at,
+    measured at 0.19 m - and the thing it wants is beside it. Mirroring left/right keeps the row
+    the model chose (so its judgement about height still counts) and changes the side, which is
+    the one thing it got wrong.
+    """
+    return {"BOTTOM-LEFT": "BOTTOM-RIGHT", "BOTTOM-RIGHT": "BOTTOM-LEFT",
+            "TOP-LEFT": "TOP-RIGHT", "TOP-RIGHT": "TOP-LEFT"}.get(quadrant, quadrant)
+
+
 def quadrant_box(quadrant: str, margin: float = MARGIN) -> tuple[float, float, float, float]:
     """The quadrant as `(u0, v0, u1, v1)`, grown by `margin` and clipped to the frame."""
     u0 = 0.0 if "LEFT" in quadrant else 0.5
@@ -465,8 +491,14 @@ def locate(
     reads: int = 5,
     verify_mode: str = "describe",
     parallel: int = 4,
+    avoid: "tuple[tuple[float, float, float, float], ...]" = (),
 ) -> dict:
     """Quadrant, then box reads. Returns a dict with a full-frame pixel in px.
+
+    `avoid` is what earlier attempts already found and were refused: a candidate whose middle
+    lands inside one of those boxes sends stage 2 to the quadrant beside it, once. MEASURED, run
+    193516-ca1fde: seven identical attempts all pointed at the console the robot was standing at,
+    because the question and the frame were identical and nothing carried the refusal forward.
 
     `timings` reports where the wall clock went, in ms, and how many model calls were made.
     It is emitted rather than estimated because the cost moved by more than 2x between the
@@ -539,6 +571,20 @@ def locate(
     reads_started = time.perf_counter()
     median, boxes, raws, refused = read_box(config, frame, noun, box, plan,
                                             times=per_read, parallel=parallel)
+    if median is not None and avoid and _overlaps(median, avoid):
+        # The model answered where it answered last time, because the question was the same
+        # question. Ask the quadrant beside it instead of reporting the same refusal again.
+        beside = _beside(stage1.quadrant)
+        if beside != stage1.quadrant:
+            out["avoided"] = [round(v, 4) for v in median]
+            stage1b_started = time.perf_counter()
+            box = quadrant_box(beside)
+            out["quadrant"] = beside
+            out["box"] = [round(v, 4) for v in box]
+            median, boxes, raws, refused = read_box(config, frame, noun, box, plan,
+                                                    times=per_read, parallel=parallel)
+            timings["quadrant_ms"] = round(timings["quadrant_ms"]
+                                           + (time.perf_counter() - stage1b_started) * 1000, 1)
     timings["reads_ms"] = round((time.perf_counter() - reads_started) * 1000, 1)
     # Per-read wall time. Under `parallel` these overlap, so they sum to more than
     # `reads_ms` - that is contention, not double counting.

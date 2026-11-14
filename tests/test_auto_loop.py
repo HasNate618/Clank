@@ -284,3 +284,45 @@ class TheRingIsConsumedOnce(unittest.TestCase):
         start = turn.index("elif pending_heard:")
         carried = turn[start:turn.index("    else:", start)]
         self.assertNotIn('brainlog.log("heard"', carried)
+
+
+class ARefusalEndsTheTurn(unittest.TestCase):
+    """The retry loop must not re-ask a question the frame has already answered.
+
+    MEASURED, run 193516-ca1fde: three `continue`s per turn and three turns, seven identical
+    attempts at the console the robot was standing at, each one ~3 s of model calls.
+    """
+
+    def setUp(self) -> None:
+        self.source = (pathlib.Path(__file__).resolve().parents[1]
+                       / "spike" / "wbc_game" / "auto.py").read_text()
+
+    def test_a_refused_locate_does_not_continue_the_search_loop(self) -> None:
+        turn = self.source[self.source.index("def one_turn("):self.source.index("def main(")]
+        for marker in ('if found.outcome != "present":',):
+            parts = turn.split(marker)
+            self.assertGreaterEqual(len(parts), 3, "both sense call sites check the outcome")
+            for after in parts[1:]:
+                head = after[:1000]
+                self.assertIn("return Turn(", head,
+                              "a refusal must end the turn, not re-plan the same question")
+                self.assertNotIn("\n                    continue", head)
+
+    def test_the_refused_place_is_carried_into_the_next_search(self) -> None:
+        self.assertIn("REFUSED.setdefault(target, []).append", self.source)
+        self.assertEqual(self.source.count("avoid=tuple(REFUSED.get(target, ()))"), 2)
+
+    def test_a_thing_too_close_is_named_as_such(self) -> None:
+        # "not visible at 0.19 m" read like a grounding failure. It was the console the robot
+        # was standing at, and stage 3 had named it correctly off its own INSERT CARTRIDGE panel.
+        sense = self.source[self.source.index("def sense("):self.source.index("def _place(")]
+        self.assertIn('outcome = "too_close"', sense)
+
+    def test_the_cartridge_label_is_code_and_not_prompt(self) -> None:
+        # Asked for in the prompt, twice; it broke the card step both times, because a prop named
+        # in the prompt outranks the sentence the model was told to obey. The loop applies it in
+        # code instead, on the way to the grounder.
+        from clank import brain
+        self.assertNotIn("STORE CLERK", brain.NEXT_STEP_PROMPT)
+        self.assertEqual(brain.refine_target("job cartridge"), "STORE CLERK cartridge")
+        self.assertIn("brain.refine_target(", self.source)

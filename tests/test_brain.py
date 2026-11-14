@@ -25,6 +25,11 @@ def not_none(value, message: str = ""):
     return value
 
 
+def _still():
+    """A one-pixel still: `next_step` only needs a frame object, not a picture."""
+    return brain.Frame(index=0, t_s=0.0, jpeg=b"\xff\xd8\xff\xd9", source="test")
+
+
 class ChatPatchMixin:
     reply: str = ""
     reply_error: str = ""
@@ -537,6 +542,14 @@ class PromptText(unittest.TestCase):
         # Spec 3.2: a prop menu in the prompt is what made a greeting become `place(console)`.
         # The model names the noun and `locate` is the only place that says whether it can be
         # confirmed, so naming a prop here is the prompt inventing the choreography.
+        #
+        # "cartridge" was TRIED here on the operator's instruction, twice, and removed twice:
+        # unconditional ("when you choose a job cartridge, choose the one with the green label
+        # that reads STORE CLERK") and then conditional ("if the newest thing heard asks for a
+        # job cartridge, ..."). Both made the model answer object="Job Cartridge" to "Here's my
+        # card." 3/3 - a prop named in the prompt outranks the sentence the model was told to
+        # obey, which is this comment's own lesson repeating. The label now lives in
+        # `brain.refine_target`, in code, where `APPROACH_M` lives.
         prompt = brain.NEXT_STEP_PROMPT.lower()
         for banned in ("card", "cartridge", "lever", "knob", "console",
                        "glow", "ghost", "jobbot said"):
@@ -1557,8 +1570,8 @@ class GateAndWording(unittest.TestCase):
         self.assertNotIn("jobbot said", brain.NEXT_STEP_PROMPT.lower())
         self.assertNotIn("glow", brain.CONSTITUTION.lower())
         self.assertNotIn("ghost", brain.CONSTITUTION.lower())
-        self.assertNotIn("cartridge", brain.NEXT_STEP_PROMPT.lower())
         self.assertNotIn("console", brain.NEXT_STEP_PROMPT.lower())
+        self.assertNotIn("cartridge", brain.NEXT_STEP_PROMPT.lower())
 
     def test_the_token_budget_binds_before_the_pair_count(self) -> None:
         # 80 pairs of a real planner prompt is ~59k tokens of prefill, which is 11 s per call at
@@ -1566,7 +1579,7 @@ class GateAndWording(unittest.TestCase):
         # lines survive it - that is the whole point of remembering.
         session = brain.SessionMemory()
         session.note_heard("here's my card")
-        for i in range(40):
+        for _ in range(40):
             session.remember_turn("x" * 2000, '{"goal": "hold"}')
             session.note_result("grab(card) reached")
             session.cap()
@@ -1719,3 +1732,51 @@ class ATravelIsThePullsSkillTest(ChatPatchMixin, unittest.TestCase):
                       '"destination": "slot", "side": "right"}')
         thought = self.run_think("insert the cartridge into the slot", right="holding")
         self.assertIsNone(thought.decision.intent.offset)
+
+
+class AnOfferOutranksTheStill(ChatPatchMixin, unittest.TestCase):
+    """JobBot holding something out is a sentence about that thing, not a picture question.
+
+    MEASURED 2026-11-14, one live frame: the model answered `"Job Bot card"` in one run and
+    `"Job Simulator game console (center foreground, labeled ...)"` 3/3 in the next, because a
+    still with a big console in it is what it sees. The sentence says what it is, so code wins.
+    """
+
+    reply = ('{"goal": "reach for the Job Simulator console in the foreground", '
+             '"object": "Job Simulator game console", "destination": "", "side": "right"}')
+
+    def test_heres_my_card_names_the_card(self) -> None:
+        step = brain.next_step(brain.BrainConfig(), _still(), "Here's my card.",
+                               heard="Here's my card.")
+        self.assertEqual(step.target, "card")
+        self.assertEqual(step.skill, "grab")
+        self.assertEqual(step.object, "Job Simulator game console",
+                         "the model's own words stay in the record")
+
+    def test_an_ordinary_order_still_uses_the_model(self) -> None:
+        step = brain.next_step(brain.BrainConfig(), _still(), "look at the poster",
+                               heard="look at the poster")
+        self.assertEqual(step.target, "Job Simulator game console")
+
+
+class TheCartridgeLabelIsInCode(unittest.TestCase):
+    """The green STORE CLERK cartridge is named in code, never in the planner prompt.
+
+    MEASURED twice on 2026-11-14: with the label in NEXT_STEP_PROMPT (unconditional, then
+    conditional) the model answered object="Job Cartridge" to "Here's my card." 3/3 - a prop in
+    the prompt outranks the sentence it was told to obey. So the prompt keeps no props.
+    """
+
+    def test_the_prompt_has_no_cartridge(self) -> None:
+        self.assertNotIn("cartridge", brain.NEXT_STEP_PROMPT.lower())
+        self.assertNotIn("store clerk", brain.NEXT_STEP_PROMPT.lower())
+
+    def test_the_noun_is_refined_in_code(self) -> None:
+        self.assertEqual(brain.refine_target("job cartridge"), "STORE CLERK cartridge")
+        self.assertEqual(brain.refine_target("Job Cartridges"), "STORE CLERK cartridge")
+
+    def test_refining_is_idempotent_and_leaves_other_nouns_alone(self) -> None:
+        once = brain.refine_target("job cartridge")
+        self.assertEqual(brain.refine_target(once), once)
+        self.assertEqual(brain.refine_target("card"), "card")
+        self.assertEqual(brain.refine_target(""), "")

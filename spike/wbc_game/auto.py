@@ -123,6 +123,11 @@ ROUTE_WAIT_S = 1.0
 #: question falls back to opening its own window, as it used to.
 RING: "ears.Ring | None" = None
 
+#: Where a noun was looked for and refused, per run. The next search for the same noun skips
+#: those places. MEASURED, run 193516-ca1fde: seven attempts, one picture, one question, the same
+#: console every time - because nothing carried the refusal forward.
+REFUSED: dict[str, list[tuple[float, float, float, float]]] = {}
+
 SENSE_BUDGET = 2
 #: A grounded point outside this distance from the *resting hand* is not the object being
 #: reached for. The bound is reach_vr's own: it refuses past MAX_PLAUSIBLE_M from the hand,
@@ -499,7 +504,8 @@ def _number(value: object, default: float = 0.0) -> float:
     return out if math.isfinite(out) else default
 
 
-def sense(target: str, memory: brain.WorkingMemory, stamp: str):
+def sense(target: str, memory: brain.WorkingMemory, stamp: str,
+          avoid: "tuple[tuple[float, float, float, float], ...]" = ()):
     """Run locate on a fresh still, gate it against depth, and remember what it found.
 
     This is the body's own sense step, and it runs when a motor needs a pixel - design A. The
@@ -517,7 +523,7 @@ def sense(target: str, memory: brain.WorkingMemory, stamp: str):
     # png stays raw so the marked image is what the game actually drew.
     found = locate.locate(BrainConfig(),
                           Frame(0, 0.0, faded_for_grounding(png, depth_frame), "live"),
-                          target, size)
+                          target, size, avoid=avoid)
     pixel = found.get("pixel_px")
     metres = 0.0
     point = None
@@ -545,7 +551,10 @@ def sense(target: str, memory: brain.WorkingMemory, stamp: str):
         # code, so `present: False` means the box described itself as something else.
         outcome = "not_visible"
     elif metres < reach_vr.MIN_SURFACE_M:
-        outcome = "not_visible"          # the robot's own glove sits at about 0.2 m
+        # Its own name, because "not visible at 0.19 m" reads like a grounding failure and is
+        # not one: measured, the thing at 0.19 m was the console the robot was standing at,
+        # named correctly by stage 3 as "Job cartridge" off its INSERT CARTRIDGE panel.
+        outcome = "too_close"
     elif metres > MAX_OBJ_M:
         outcome = "too_far"
     sighting = brain.Sighting(
@@ -557,6 +566,10 @@ def sense(target: str, memory: brain.WorkingMemory, stamp: str):
         outcome=outcome,
     )
     memory.remember(target, sighting)
+    if outcome != "present":
+        refused_box = found.get("found_box")
+        if refused_box:
+            REFUSED.setdefault(target, []).append(tuple(refused_box))
     brainlog.log("act", f"locate({target})", pixel=sighting.pixel_px, outcome=outcome,
                  metres=round(metres, 2), side=side,
                  quadrant=found.get("quadrant"), error=found.get("error") or "")
@@ -709,17 +722,34 @@ def one_turn(say: str = "", pattern: str = ears.DEFAULT_PATTERN,
         if thought.plan.error:
             brainlog.log("error", f"the model did not answer: {thought.plan.error}")
             return Turn(spoken=spoken)
-        target = thought.plan.target or ""
+        # Disambiguate in code before the body looks: "job cartridge" names both the rack and
+        # the INSERT CARTRIDGE panel on the console 0.19 m in front of the robot. The planner
+        # prompt cannot carry the label - measured 3/3, any prop named there outranks the
+        # sentence the model was told to obey - so `clank.brain.refine_target` does it.
+        planned_target = thought.plan.target or ""
+        target = brain.refine_target(planned_target)
+        if target != planned_target:
+            brainlog.log("think", f"{planned_target} -> {target} (the label is in code)")
         brainlog.log("think", f"plan: {thought.plan.skill}({target or '-'})",
                      side=thought.plan.side, frame=sight.name, note=thought.plan.note)
         if plan_only:
             return Turn(spoken=spoken)
         if thought.sense == "locate":
-            found, seen = sense(target, memory, stamp)
+            found, seen = sense(target, memory, stamp, avoid=tuple(REFUSED.get(target, ())))
             last = brain.last_line("locate", "none", target, found.outcome)
             if session is not None:
                 session.note_result(f"locate({target}) {found.outcome}"
                                     + (f" at {found.metres:.2f} m" if found.metres else ""))
+            if found.outcome != "present":
+                # A refusal is an answer. The old loop retried the identical question on an
+                # identical frame at temperature 0 and got the identical answer, three times a
+                # turn and again every turn: measured, seven attempts at one console. The
+                # refusal is now in the session, where the planner reads it, and the place it
+                # was found is in `REFUSED`, so the next search asks a different question.
+                brainlog.log("result", f"{target} is not there: {found.outcome}"
+                                       + (f" at {found.metres:.2f} m" if found.metres else ""),
+                             ok=False)
+                return Turn(spoken=spoken)
             continue
         intent = thought.decision.intent
         # What the model ASKED for, not what the refusal handed back: a plan for an unlocated
@@ -733,7 +763,8 @@ def one_turn(say: str = "", pattern: str = ears.DEFAULT_PATTERN,
                 # This is not a hidden skill: `locate` here is what "reach the card" means when
                 # nothing has measured where the card is.
                 brainlog.log("think", f"the {target} is not found yet - finding it")
-                found, seen = sense(target, memory, stamp)
+                found, seen = sense(target, memory, stamp,
+                                    avoid=tuple(REFUSED.get(target, ())))
                 last = brain.last_line("locate", "none", target, found.outcome)
                 if session is not None:
                     session.note_result(f"locate({target}) {found.outcome}"
@@ -742,7 +773,15 @@ def one_turn(say: str = "", pattern: str = ears.DEFAULT_PATTERN,
                     thought.plan, None, 0, 0, memory=memory, left=left, right=right)
                 intent = thought.decision.intent
                 if found.outcome != "present":
-                    continue
+                    # This `continue` was the repeat: it re-planned, re-located the same noun on
+                    # the same picture and got the same answer, three times a turn, and then the
+                    # next turn did it again. Measured, run 193516-ca1fde: seven attempts, one
+                    # console. The refusal ends the turn; the place it was refused is remembered
+                    # in `REFUSED`, so the next turn's search excludes it.
+                    brainlog.log("result", f"{target} is not there: {found.outcome}"
+                                           + (f" at {found.metres:.2f} m" if found.metres else ""),
+                                 ok=False)
+                    return Turn(spoken=spoken)
         if not thought.decision.accepted:
             brainlog.log("think", f"holding: {thought.decision.reason}")
         break

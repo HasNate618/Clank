@@ -770,13 +770,33 @@ NEXT_STEP_PROMPT = (
     "You are a robot playing a VR game. {situation}\n"
     "Obey the newest thing that was heard. Earlier speech is context, not an order.\n"
     "Decide what you are trying to do next, and where, from what you can see.\n"
+
     'Reply with JSON only: {{"goal": "...", "object": "...", "destination": "...", '
     '"side": "left|right"}}'
 )
-#: No prop list, no cue, no skill enum in the line above, and that is the measurement: a prompt
-#: that named the props and the console turned JobBot's greeting into `place(console)` on a still
-#: where nothing had been asked for (spec §3.2). The model names the noun in its own words and
-#: `locate.py` - not this prompt - decides whether a noun can be confirmed.
+#: No skill enum and no cue in the line above, and that is the measurement: a prompt that named
+#: the console turned JobBot's greeting into `place(console)` on a still where nothing had been
+#: asked for (spec §3.2). The model names the noun in its own words and `locate.py` - not this
+#: prompt - decides whether a noun can be confirmed.
+#:
+#: **The cartridge label is NOT in this prompt, and that is measured twice.** The operator asked
+#: for the green STORE CLERK cartridge to be named here. Unconditional - "when you choose a job
+#: cartridge, choose the one with the green label that reads STORE CLERK" - JobBot said "Here's
+#: my card." and the model answered {"goal": "pick up the Job Cartridge with the green 'STORE
+#: CLERK' label"}. Made conditional - "if the newest thing heard asks for a job cartridge, ..." -
+#: it still answered object="Job Cartridge" to "Here's my card." and to "take my card", 3/3 each.
+#: A prop named in the prompt outranks the sentence this model was told to obey, which is spec
+#: 3.2's measurement repeating itself. So the prompt keeps no props and the disambiguation lives
+#: in `refine_target` below, where labels already live beside `APPROACH_M`.
+#:
+#: "grab one of the job cartridges" is
+#: ambiguous in this scene: the terminal the robot stands at is panel-labelled INSERT CARTRIDGE
+#: at 0.19 m, and the rack of three cartridges is a metre away. The grounder is text-driven, so
+#: it reads the nearest big text and points at the console - measured, seven attempts, all the
+#: same console (research/brain-tools.md). Naming the green STORE CLERK label turns an ambiguous
+#: noun into one whose words are printed on the object we want, which is the one thing this
+#: grounder is good at. It is a selection rule for this job, not a prop inventory: nothing else
+#: in the scene is named, and the model still chooses the act.
 
 
 #: Words that name the act, and the filler that sits between the verb and the noun. The
@@ -969,6 +989,26 @@ def move_from_goal(goal: str) -> tuple[float, float, float] | None:
     return (forward * MOVE_M, up * MOVE_M, lateral * MOVE_M)
 
 
+#: The job cartridge this run wants, and the reason it is code: the terminal the robot stands at
+#: is panel-labelled INSERT CARTRIDGE at 0.19 m while the rack of three cartridges is a metre
+#: away, so "job cartridge" alone is ambiguous to a text-driven grounder. Naming the label here
+#: makes the search noun the words printed on the object we want. MEASURED, run 193516-ca1fde:
+#: seven attempts, one console, because the noun was ambiguous.
+CARTRIDGE_LABEL = "STORE CLERK"
+
+
+def refine_target(noun: str) -> str:
+    """Disambiguate a noun against this scene, in code, before the body looks for it.
+
+    Only the cartridge needs it: everything else the voice names is the only thing of its kind
+    in view. Idempotent, so a noun that already carries the label is left alone.
+    """
+    text = (noun or "").strip()
+    if "cartridge" in text.lower() and CARTRIDGE_LABEL.lower() not in text.lower():
+        return f"{CARTRIDGE_LABEL} cartridge"
+    return text
+
+
 def skill_from_goal(goal: str) -> str:
     """The intent skill a goal in words implies. `reach` when nothing matches."""
     words = goal.lower()
@@ -1091,6 +1131,16 @@ def next_step(
         target = dest
     else:
         target = obj or dest
+    if heard and _TASK_OFFER.search(heard.lower()):
+        # "Here's my card." is JobBot holding it out, and the sentence already says what it is.
+        # MEASURED 2026-11-14, same live frame: the model answered "Job Bot card" in one run and
+        # "Job Simulator game console (center foreground...)" 3/3 in the next, because a still
+        # with a big console in it is what it sees. `task_intent` has had this rule since the
+        # first offer; the planner path just never asked it. Code decides, as it does for order.
+        offer_skill, offer_noun = task_intent(heard)
+        if offer_noun:
+            target = offer_noun
+            skill = offer_skill or skill
     if not target:
         return NextStep(goal=goal, skill=None, side=side,
                         raw=reply.text, error="no target named",

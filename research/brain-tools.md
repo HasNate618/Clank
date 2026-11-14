@@ -352,3 +352,58 @@ Caveat on all of it: `temperature 0.0` is not reproducible across the server's f
 3/3 is a congruent run, not a guarantee — case 5's B2 arm flipped between two runs of the same
 script. n=6 cases. This is enough to say tool calling is not a free win and to name the two
 defects worth fixing; it is not enough to declare A or C the winner.
+
+## 2026-11-14 — the cartridge, and why the label is not in the prompt
+
+Run `193516-ca1fde` grabbed the card and then made **seven** attempts at the job cartridge. All
+seven pointed at the same object, and it was not a cartridge:
+
+| # | quadrant | box centre (full frame) | stage 3 | depth | outcome |
+| --- | --- | --- | --- | --- | --- |
+| 1 | BOTTOM-RIGHT | x 597-613, y 312-468 | `Card` 3/3 | 0.19 m | refused |
+| 2 | BOTTOM-LEFT | x 437-570, y 250-429 | `Job cartridge` 3/3 | 0.19 m | identity accepted, depth refused |
+| 3 | BOTTOM-LEFT | x 456-519, y 270-401 | `Job cartridge` 3/3 | 0.21 m | identity accepted, depth refused |
+| 4-7 | BOTTOM-LEFT | x ~450-570, y ~275-405 | `Sign` 3/3 | 0.20-0.21 m | refused |
+
+Mapping the boxes back to the frame shows what they are on: the **terminal's card slot**, whose
+front panel reads **INSERT CARTRIDGE** in 40 px letters, 20 cm from the robot's hand. The rack of
+three cartridges - `AUTO MECHANIC`, `STORE CLERK`, `GOURMET CHEF` - is on the other side of the
+frame. "job cartridge" names both, and the grounder is text-driven, so it reads the nearest big
+text.
+
+**Why they repeated.** `one_turn` retries `sense` up to `SENSE_BUDGET + 1` times, and each retry
+asked the identical question of an almost identical frame at temperature 0: same quadrant, same
+box, same answer. Then the next turn re-planned the same goal, because `memory.find(target)` was
+`present: False` and that was read as "not found yet" rather than "I looked and it is not there".
+Nothing carried the refusal forward: `sense()` took a noun and nothing else.
+
+**Fixed three ways.** A refusal now ends the turn (the `continue` that re-asked is gone, both call
+sites). The refused box goes into `auto.REFUSED` and the next search passes it as `locate(avoid=)`,
+which sends stage 2 to the quadrant *beside* the refused one - mirroring left/right keeps the row
+the model chose and changes the one thing it got wrong. And a candidate nearer than
+`MIN_SURFACE_M` is now `too_close`, not `not_visible`: it was visible, it was the console the robot
+was standing at, and stage 3 had named it correctly off its own panel.
+
+**The label, in code.** The operator asked for the green `STORE CLERK` cartridge to be named in
+the planner prompt. Tried twice:
+
+- unconditional - "when you choose a job cartridge, choose the one with the green label that reads
+  STORE CLERK": JobBot said "Here's my card." and the model answered
+  `{"goal": "pick up the Job Cartridge with the green 'STORE CLERK' label"}`
+- conditional - "if the newest thing heard asks for a job cartridge, ...": still
+  `object="Job Cartridge"` to "Here's my card." and to "take my card", 3/3 each
+
+A prop named in the prompt outranks the sentence this model was told to obey - spec 3.2's lesson,
+repeating. So `brain.refine_target` does it instead: `"job cartridge"` -> `"STORE CLERK cartridge"`
+on the way to the grounder, where `APPROACH_M` already lives. Measured after the change, 3/3 each:
+`"Here's my card."` -> `card`, `"take my card"` -> `Job Bot card`,
+`"grab one of the job cartridges"` -> `STORE CLERK cartridge`.
+
+**And the offer rule, which the planner path never asked.** The same frame produced
+`"Job Bot card"` in one run and `"Job Simulator game console (center foreground, labeled ...)"`
+3/3 in the next for the same sentence. `task_intent` has read offers since the first day
+("JobBot does not only give orders - he holds the thing out and says what it is") but `next_step`
+took the noun from the model's `object` field. An offer now names the noun in code.
+
+**[OPERATOR] The cartridges are not on the table until the card is taken.** A cartridge search
+before the card grab is a search of an empty table, and its refusal says nothing about grounding.

@@ -265,3 +265,59 @@ class StageThreeVoteTests(unittest.TestCase):
         out = self._locate(["JobBot", "JobBot", "JobBot"])
         self.assertIsNone(out["present"])
         self.assertEqual(out["match"], "the reads did not name it")
+
+
+class TheRefusalChangesTheQuestion(unittest.TestCase):
+    """A refused candidate must not be looked at again.
+
+    MEASURED, run 193516-ca1fde: seven attempts, one picture, one question, and the same console
+    every time - the terminal the robot stands at, panel-labelled INSERT CARTRIDGE at 0.19 m.
+    The rack of cartridges was a metre to the right the whole time.
+    """
+
+    def test_a_box_in_a_refused_place_sends_stage_two_beside_it(self) -> None:
+        console = (0.45, 0.46, 0.59, 0.80)          # the box the model kept returning
+        calls: list[tuple[float, float, float, float]] = []
+
+        def fake_read(config, frame, noun, box, plan, times=None, parallel=4):
+            calls.append(box)
+            # The model answers with the console box again, whatever crop it is given: that is
+            # what temperature 0 on an unchanged picture does.
+            return console, [console], ["{}"], False
+
+        with patch.object(locate, "ask_quadrant") as quadrant, \
+                patch.object(locate, "read_box", side_effect=fake_read), \
+                patch.object(locate, "describe_crop", return_value="Job cartridge"):
+            quadrant.return_value = locate.brain.Ground(
+                noun="job cartridge", box=(0.0, 0.5, 0.5, 1.0), quadrant="BOTTOM-LEFT",
+                raw="BOTTOM-LEFT")
+            out = locate.locate(None, None, "job cartridge", (960, 540), avoid=(console,))
+
+        self.assertEqual(out["quadrant"], "BOTTOM-RIGHT", "the search must move beside the refusal")
+        self.assertEqual(len(calls), 2, "one re-ask, not a loop")
+        # Quadrants overlap by MARGIN, so compare where each crop is centred, not its edges.
+        self.assertLess((calls[0][0] + calls[0][2]) / 2, 0.35, "the first crop is the left")
+        self.assertGreater((calls[1][0] + calls[1][2]) / 2, 0.65, "the second crop is the right")
+
+    def test_nothing_is_re_asked_when_the_box_is_new(self) -> None:
+        fresh = (0.80, 0.20, 0.95, 0.40)
+        with patch.object(locate, "ask_quadrant") as quadrant, \
+                patch.object(locate, "read_box") as read_box, \
+                patch.object(locate, "describe_crop", return_value="Job cartridge"):
+            quadrant.return_value = locate.brain.Ground(
+                noun="job cartridge", box=(0.5, 0.0, 1.0, 0.5), quadrant="TOP-RIGHT",
+                raw="TOP-RIGHT")
+            read_box.return_value = (fresh, [fresh], ["{}"], False)
+            out = locate.locate(None, None, "job cartridge", (960, 540),
+                                avoid=((0.45, 0.46, 0.59, 0.80),))
+        self.assertEqual(out["quadrant"], "TOP-RIGHT")
+        self.assertEqual(read_box.call_count, 1)
+
+    def test_a_box_touching_the_refusal_at_its_edge_is_not_a_repeat(self) -> None:
+        # Neighbours in one quadrant share an edge constantly; only the middle decides.
+        self.assertFalse(locate._overlaps((0.59, 0.46, 0.70, 0.60), ((0.45, 0.46, 0.59, 0.80),)))
+        self.assertTrue(locate._overlaps((0.50, 0.50, 0.60, 0.60), ((0.45, 0.46, 0.59, 0.80),)))
+
+    def test_beside_mirrors_and_keeps_the_row(self) -> None:
+        self.assertEqual(locate._beside("BOTTOM-LEFT"), "BOTTOM-RIGHT")
+        self.assertEqual(locate._beside("TOP-RIGHT"), "TOP-LEFT")
