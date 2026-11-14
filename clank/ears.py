@@ -65,6 +65,9 @@ SINK_NAME = "clank-game"
 #: The node class that carries an application's output.
 PLAYBACK_CLASS = "Stream/Output/Audio"
 BLOCK_S = 0.05
+#: How long a recorder is watched before `Ring.start` calls it up. A parecord that cannot open
+#: its device exits in milliseconds; one that works is still running.
+START_CHECK_S = 0.3
 #: Legal-looking speech gate for a quiet mix: four times the floor, never below this.
 GATE_MIN_RMS = 250.0
 #: `pactl` and `parecord` are both PulseAudio-compatible front ends; the native
@@ -276,6 +279,23 @@ def capture_device(pattern: str = DEFAULT_PATTERN, sink: str = SINK_NAME) -> str
     return f"{sink}.monitor"
 
 
+def ensure_route(pattern: str = DEFAULT_PATTERN, sink: str = SINK_NAME) -> dict[str, Any]:
+    """Create the capture sink and its loopback, and move the game if it is playing.
+
+    Unlike `route` this does not require the game to be there, because the run opens its
+    recorder *before* it relaunches the game - and the relaunch is what makes the game talk.
+    A sink with no game behind it is a recorder listening to silence, which is exactly right
+    for the seconds before the first line.
+    """
+    created = ensure_sink(sink)
+    looped = ensure_loopback(sink)
+    playing = bool(game_streams(pattern))
+    moved = move_game_streams(pattern, sink) if playing else []
+    unmuted = unmute_game_streams(pattern) if playing else []
+    return {"sink": sink, "created": created, "loopback": looped,
+            "moved": moved, "unmuted": unmuted, "device": capture_device(pattern, sink)}
+
+
 def route(pattern: str = DEFAULT_PATTERN, sink: str = SINK_NAME) -> dict[str, Any]:
     """Put the game behind the capture sink and report what had to change.
 
@@ -285,14 +305,9 @@ def route(pattern: str = DEFAULT_PATTERN, sink: str = SINK_NAME) -> dict[str, An
     if not game_streams(pattern):
         raise EarsError(f"no playback stream matching {pattern!r} "
                         f"(playing: {_playing()})")
-    created = ensure_sink(sink)
-    looped = ensure_loopback(sink)
-    moved = move_game_streams(pattern, sink)
     # A muted stream is silence that looks like a quiet game, so it is cleared here: measured,
     # `module-stream-restore` re-mutes every new sink-input the game opens.
-    unmuted = unmute_game_streams(pattern)
-    return {"sink": sink, "created": created, "loopback": looped,
-            "moved": moved, "unmuted": unmuted, "device": capture_device(pattern, sink)}
+    return ensure_route(pattern, sink)
 
 
 def _playing() -> str:
@@ -594,6 +609,19 @@ class Ring:
             return False
         except OSError as exc:
             self.error = str(exc)
+            return False
+        # A parecord whose device does not exist yet exits in milliseconds, and Popen does not
+        # care: MEASURED 2026-11-14, run 031829-b1a009 - `start()` returned True before the sink
+        # existed, the recorder was already gone, and the run recorded nothing for 12 s while
+        # believing it had a ring. A recorder that died at birth is not a recorder.
+        time.sleep(START_CHECK_S)
+        if self._proc.poll() is not None:
+            detail = ""
+            with contextlib.suppress(Exception):
+                if self._proc.stderr is not None:
+                    detail = self._proc.stderr.read().decode("utf-8", "replace").strip()
+            self.error = detail or f"parecord exited with {self._proc.returncode}"
+            self._proc = None
             return False
         return True
 

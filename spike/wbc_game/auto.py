@@ -212,7 +212,9 @@ def ready(mode: str = "body") -> bool:
     for _ in range(REST_TICKS):
         reach_vr.send(verb="rest")
         time.sleep(REST_PERIOD_S)
-    brainlog.log("act", "reset body", seconds=round(time.monotonic() - started, 1))
+    # "done", because this is the same reset the row above announced: two rows reading
+    # "reset body" five seconds apart look like two resets, and were read as two.
+    brainlog.log("act", "reset body done", seconds=round(time.monotonic() - started, 1))
     return True
 
 
@@ -431,7 +433,11 @@ def _start_ring(pattern: str) -> "ears.Ring | None":
         brainlog.log("act", f"audio ring {attached.path.name} from the run "
                             f"({attached.available_s():.0f} s already)")
         return attached
-    path = STATE.parent / "audio-ring.raw"
+    # A second recorder must not open the run's file: parecord truncates, and MEASURED
+    # 2026-11-14, run 031829-b1a009, that is how the greeting lost its first two words a second
+    # time - the run's ring was opened, then this one opened the same path over it.
+    path = (STATE.parent / "audio-ring-loop.raw" if given
+            else STATE.parent / "audio-ring.raw")
     ring = ears.Ring(path, pattern=pattern)
     if not ring.start():
         brainlog.log("error", f"no audio ring: {ring.error}; each window records its own")

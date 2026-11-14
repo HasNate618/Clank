@@ -43,6 +43,12 @@ from .recording import Recorder, read_manifest, run_composite
 #: `<HHMMSS>-<6 hex>`, the directory name and the id the dashboard shows.
 RUN_ID_RE = re.compile(r"^\d{6}-[0-9a-f]{6}$")
 
+#: How hard the run tries to get its audio recorder up before it gives up and lets the brain
+#: loop record per window instead. The sink is created first, but PulseAudio registers it
+#: asynchronously, and a parecord that cannot see it exits in milliseconds.
+RING_TRIES = 5
+RING_WAIT_S = 1.0
+
 #: What every phase is waiting for, in words. The topbar shows the phase's phrase
 #: while the spinner turns; nothing parses these.
 PHASE_DETAILS: dict[str, str] = {
@@ -479,12 +485,19 @@ class RunManager:
         if self._ring is not None:
             return
         try:
-            ears.route()
+            # `ensure_route`, not `route`: the game is not playing yet - this runs before the
+            # relaunch that makes it talk - and `route` refuses without a game stream.
+            ears.ensure_route()
             ring = ears.Ring(run_dir / "audio-ring.raw")
-            if not ring.start():
-                self._set_detail(f"no audio ring: {ring.error}")
-                return
-            self._ring = ring
+            # The sink is created above, but the first attempt can still lose a race with
+            # PulseAudio registering it, and a parecord that dies at birth now says so.
+            for _ in range(RING_TRIES):
+                if ring.start():
+                    self._ring = ring
+                    return
+                time.sleep(RING_WAIT_S)
+                ears.ensure_route()
+            self._set_detail(f"no audio ring: {ring.error}")
         except Exception as exc:  # noqa: BLE001 - a recorder never fails a run
             self._set_detail(f"no audio ring: {exc}")
 
