@@ -68,8 +68,15 @@ BLOCK_S = 0.05
 #: How long a recorder is watched before `Ring.start` calls it up. A parecord that cannot open
 #: its device exits in milliseconds; one that works is still running.
 START_CHECK_S = 0.3
-#: Legal-looking speech gate for a quiet mix: four times the floor, never below this.
-GATE_MIN_RMS = 250.0
+#: Speech gate for a quiet mix: four times the floor, never below this.
+#:
+#: MEASURED 2026-11-14, run 033328-c90c9b, on the run's own ring: this game's room tone sits at
+#: p20 238-347, median 315-419, and never exceeds 783, while JobBot's speech runs to p95 3791 and
+#: max 5413. At 250 the room was above the gate, so it counted as speech, the hang never fired
+#: and every utterance could only end at `listen`'s deadline - the greeting ended at 23 s in the
+#: recording and the diary row appeared at 38 s, 25 s after the listen began. 1000 sits in the
+#: gap with 1.3x margin under the room's loudest block and 3.8x under the speech's p95.
+GATE_MIN_RMS = 1000.0
 #: `pactl` and `parecord` are both PulseAudio-compatible front ends; the native
 #: `pw-record --target` does not link on this machine, measured above.
 PACTL = "pactl"
@@ -692,7 +699,7 @@ class Ring:
         except OSError:
             return b""
 
-    def read_utterance(self, start: int, hang_s: float = 2.0, max_s: float = 25.0,
+    def read_utterance(self, start: int, hang_s: float = 3.0, max_s: float = 25.0,
                        grace_s: float = 6.0) -> bytes:
         """Bytes from `start` through the end of whatever is being said there.
 
@@ -855,7 +862,7 @@ def listen(
     max_s: float = 25.0,
     pre_roll_s: float = 0.45,
     floor_s: float = 0.5,
-    hang_s: float = 2.0,
+    hang_s: float = 3.0,
     tail_s: float = 0.2,
     gate_ratio: float = 4.0,
     gate_min: float = GATE_MIN_RMS,
@@ -867,9 +874,13 @@ def listen(
     `hang_s` is the quiet that ends an utterance. MEASURED 2026-11-13 on the audio of run
     190131-679de2: the pause *inside* JobBot's opening is 0.60 s ("...fine job museum." to
     "Here's my card."), while the gap between two separate turns is 6.3-6.9 s (the opening to
-    his nag, the card line to the cartridge line). 2.0 s sits between the two with a 3x margin
-    on the turn gap. Note that 0.60 s is *below* the old 0.8 s, so a split at 0.8 s means the
-    capture dropped out rather than that the pause was long - `Hearing.ended_by` now says which.
+    his nag, the card line to the cartridge line).
+
+    3.0 since 2026-11-14: the ring of run 033328-c90c9b shows the game's own sting (1.5 s, loud,
+    transcribes to nothing) followed by 2.5 s of room tone before JobBot's first word, so 2.0 s
+    split the greeting into a piece that transcribed to "" and the rest of it. 3.0 bridges that
+    gap and still sits 2.1x below the turn gap. A split at 2.0 s is this game's sound effect,
+    not a long pause in speech.
 
     `reader` replaces the capture entirely and is how the tests drive the gate without an
     audio device.

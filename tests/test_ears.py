@@ -236,7 +236,7 @@ class ListenTest(unittest.TestCase):
         blocks = (
             [silence(ears.BLOCK_S)] * 12
             + [pcm(8000, ears.BLOCK_S)] * 10
-            + [silence(ears.BLOCK_S)] * 60
+            + [silence(ears.BLOCK_S)] * 100
         )
         stream = FakeStream(blocks)
         hearing = ears.listen(reader=stream, max_s=10.0)
@@ -265,8 +265,12 @@ class ListenTest(unittest.TestCase):
         self.assertGreater(hearing.speech_s, 0.6)
         self.assertEqual(hearing.ended_by, "hang")
 
-    def test_a_2_5s_pause_is_two_utterances(self):
-        gap = int(2.5 / ears.BLOCK_S)
+    def test_the_turn_gap_is_two_utterances(self):
+        # 6.3-6.9 s between JobBot's turns (MEASURED 2026-11-13). The 2.5 s pause inside the
+        # opening is NOT a turn gap - since 2026-11-14 it is the game's own sting followed by
+        # room tone before his first word, and splitting there produced a piece that
+        # transcribed to "". See TheRoomIsNotPartOfTheUtterance.
+        gap = int(6.5 / ears.BLOCK_S)
         stream = FakeStream(
             [silence(ears.BLOCK_S)] * 12
             + [pcm(8000, ears.BLOCK_S)] * 8
@@ -644,3 +648,41 @@ class AnUtteranceEndsWhereTheSpeechEnds(unittest.TestCase):
         started = time.monotonic()
         self.assertEqual(ring.read_utterance(0, hang_s=2.0, max_s=30.0, grace_s=0.2), b"")
         self.assertLess(time.monotonic() - started, 5.0)
+
+
+class TheRoomIsNotPartOfTheUtterance(unittest.TestCase):
+    """The game's room tone sits above the old floor, so it counted as speech.
+
+    MEASURED 2026-11-14, run 033328-c90c9b, on the run's own ring: room tone p20 238-347,
+    median 315-419, never above 783; JobBot's speech p95 3791, max 5413. With the gate at 250
+    the room kept the gate open after every line, the hang could never fire, and the greeting -
+    which ends at 23 s in the recording - only reached the diary at 38 s, 25 s after `listen`
+    began: the deadline, not a hang.
+
+    The same ring holds the game's own sting (1.5 s, loud, transcribes to nothing) and then
+    2.5 s of room before JobBot speaks, which is why the hang is 3.0 s and not 2.0 s.
+    """
+
+    def ring(self) -> "FakeStream":
+        return FakeStream(
+            [silence(ears.BLOCK_S)] * 10            # digital silence before the game loads
+            + [pcm(3000, ears.BLOCK_S)] * 30        # the game's sting
+            + [pcm(400, ears.BLOCK_S)] * 50         # room tone, 2.5 s
+            + [pcm(2000, ears.BLOCK_S)] * 60        # JobBot
+            + [pcm(400, ears.BLOCK_S)] * 120        # room tone after him
+        )
+
+    def test_the_gate_sits_above_the_room_and_below_the_speech(self) -> None:
+        self.assertGreater(ears.GATE_MIN_RMS, 783, "the room's loudest measured block")
+        self.assertLess(ears.GATE_MIN_RMS, 3791, "the speech's measured p95")
+
+    def test_one_utterance_across_the_sting_and_the_room(self) -> None:
+        hearing = ears.listen(reader=self.ring(), max_s=30.0)
+        self.assertTrue(hearing.ok, hearing.error)
+        self.assertEqual(hearing.ended_by, "hang", "a hang ended it, not the deadline")
+        self.assertGreater(hearing.speech_s, 4.0, "the sting and JobBot are one utterance")
+
+    def test_it_does_not_read_to_the_deadline(self) -> None:
+        stream = self.ring()
+        ears.listen(reader=stream, max_s=30.0)
+        self.assertLess(len(stream.read_sizes), 270, "the trailing room was never read")
