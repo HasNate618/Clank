@@ -66,3 +66,6 @@ research/evidence/**/*.ppm
 research/evidence/**/*.pgm
 *.mp4
 *.mp3
+
+# One exception: the README's hero clip, re-encoded from the recordings page to 1.2 MB.
+!docs/media/grab-clip.mp4
