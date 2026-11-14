@@ -831,6 +831,30 @@ class ShippedStaticAssetsTests(unittest.TestCase):
         self.assertIn("silent", js)  # audio_peak 0 is said out loud
         self.assertIn("recording_available", js)  # "recording off" is not an empty list
 
+    def test_a_recording_can_be_kept_and_thrown_away(self) -> None:
+        static = Path(__file__).resolve().parents[1] / "clank" / "static"
+        html = (static / "recordings.html").read_text(encoding="utf-8")
+        js = (static / "recordings.js").read_text(encoding="utf-8")
+        css = (static / "style.css").read_text(encoding="utf-8")
+        # Both surfaces: the row is where you scan, the stage is where you look.
+        for element in ("hearted-only", "heart-run", "delete-run"):
+            with self.subTest(element=element):
+                self.assertIn(f'id="{element}"', html)
+        self.assertIn("aria-pressed", html.split('id="hearted-only"', 1)[1].split(">", 1)[0])
+        # One behaviour behind both surfaces, and the arm is shared so a heart and a
+        # delete press cannot disagree about which run they mean.
+        for needle in ("setHeart", "deleteRun", "pendingDelete", "/heart",
+                       "hearted=1", "run_error", "run_live", "video file is missing",
+                       'method: "DELETE"'):
+            with self.subTest(needle=needle):
+                self.assertIn(needle, js)
+        # A row carries controls, so it cannot be a <button> around them: a nested
+        # button is invalid HTML and the browser moves it out from under the click.
+        self.assertIn("rec-row-main", js)
+        self.assertIn(".rec-row-main", css)
+        self.assertIn(".rec-icon", css)
+        self.assertIn('id="recording-list" class="rec-list"', html)
+
     def test_the_main_page_links_to_the_recordings(self) -> None:
         _, index = self.request("/")
         self.assertIn(b'href="/recordings"', index)
@@ -1670,6 +1694,87 @@ class RecordingRouteTests(unittest.TestCase):
         # The id must be the pinned shape, and the leaf must be `video`.
         self.assertEqual(self.get("/api/recordings/..%2F..%2Fetc/video")[0], 404)
         self.assertEqual(self.get("/api/recordings/100000-aaaaaa/brain.jsonl")[0], 404)
+
+    def call(self, method: str, path: str, body: dict | None = None):
+        data = None if body is None else json.dumps(body).encode()
+        request = urllib.request.Request(
+            f"http://127.0.0.1:{self.port}{path}", data=data, method=method,
+            headers={"Content-Type": "application/json"} if data else {},
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=5) as response:  # noqa: S310
+                return response.status, json.loads(response.read() or b"null")
+        except urllib.error.HTTPError as exc:
+            try:
+                return exc.code, json.loads(exc.read() or b"null")
+            finally:
+                exc.close()
+
+    def listed(self) -> dict:
+        _, payload = self.call("GET", "/api/recordings")
+        return {row["run_id"]: row for row in payload["recordings"]}
+
+    def test_hearting_a_run_writes_the_marker_and_the_listing_says_so(self) -> None:
+        status, payload = self.call("POST", "/api/recordings/100000-aaaaaa/heart",
+                                    {"on": True})
+        self.assertEqual(status, 200)
+        self.assertTrue(payload["hearted"])
+        run_dir = self.root / "20261112T100000Z-abc123" / "runs" / "100000-aaaaaa"
+        self.assertTrue((run_dir / "hearted").is_file())
+        self.assertTrue(self.listed()["100000-aaaaaa"]["hearted"])
+        # Idempotent: the page may re-send a state it already believes.
+        self.assertEqual(self.call("POST", "/api/recordings/100000-aaaaaa/heart",
+                                   {"on": True})[0], 200)
+        status, payload = self.call("POST", "/api/recordings/100000-aaaaaa/heart",
+                                    {"on": False})
+        self.assertEqual(status, 200)
+        self.assertFalse(payload["hearted"])
+        self.assertFalse((run_dir / "hearted").exists())
+
+    def test_a_heart_is_a_run_id_not_a_path(self) -> None:
+        self.assertEqual(self.call("POST", "/api/recordings/nope/heart", {"on": True})[0], 404)
+        self.assertEqual(
+            self.call("POST", "/api/recordings/..%2F..%2Fetc/heart", {"on": True})[0], 404)
+
+    def test_the_hearted_filter_returns_only_the_hearted_runs(self) -> None:
+        self.call("POST", "/api/recordings/100000-aaaaaa/heart", {"on": True})
+        _, payload = self.call("GET", "/api/recordings?hearted=1")
+        self.assertEqual([row["run_id"] for row in payload["recordings"]],
+                         ["100000-aaaaaa"])
+        _, whole = self.call("GET", "/api/recordings")
+        self.assertEqual(len(whole["recordings"]), 2)
+
+    def test_deleting_a_run_takes_it_out_of_the_listing(self) -> None:
+        run_dir = self.root / "20261112T100000Z-abc123" / "runs" / "100000-aaaaaa"
+        status, payload = self.call("DELETE", "/api/recordings/100000-aaaaaa")
+        self.assertEqual(status, 200)
+        self.assertIn("recording.mp4", payload["removed"])
+        self.assertFalse(run_dir.exists())
+        self.assertNotIn("100000-aaaaaa", self.listed())
+
+    def test_a_run_that_is_still_being_recorded_cannot_be_deleted(self) -> None:
+        run_dir = self.write_run("120000-cccccc", "recording", "2026-11-12T12:00:00Z",
+                                 video=False)
+        status, payload = self.call("DELETE", "/api/recordings/120000-cccccc")
+        self.assertEqual(status, 409)
+        self.assertIn("still being recorded", payload["error"])
+        self.assertTrue(run_dir.exists())
+
+    def test_an_unfinished_run_needs_the_operator_to_say_force(self) -> None:
+        run_dir = self.write_run("130000-dddddd", "composing", "2026-11-12T13:00:00Z",
+                                 video=False)
+        (run_dir / "run.json").write_text(json.dumps({"run_id": "130000-dddddd",
+                                                      "ended_at": None}))
+        status, payload = self.call("DELETE", "/api/recordings/130000-dddddd")
+        self.assertEqual(status, 409)
+        self.assertIn("still running", payload["error"])
+        self.assertTrue(run_dir.exists())
+        status, _ = self.call("DELETE", "/api/recordings/130000-dddddd?force=1")
+        self.assertEqual(status, 200)
+        self.assertFalse(run_dir.exists())
+
+    def test_deleting_an_unknown_run_is_a_404(self) -> None:
+        self.assertEqual(self.call("DELETE", "/api/recordings/nope")[0], 404)
 
     def test_recording_off_is_reported_not_an_empty_list(self) -> None:
         off = replace(self.cfg, recording=replace(self.cfg.recording, enabled=False))

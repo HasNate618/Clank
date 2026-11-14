@@ -236,6 +236,35 @@ curl -s http://127.0.0.1:8765/api/recordings   # {"recordings": [...], "recordin
   the recorder working (the game was muted) — that is the one an agent will otherwise miss.
 - The video is `GET /api/recordings/<run_id>/video` and honours `Range` (206/416/200), so
   `curl -r 0-1023` is a cheap way to prove the file is real.
+- Keeping and throwing away are two calls, and both take a run id (never a path):
+
+```bash
+# Keep a run out of the size prune, or stop keeping it.
+curl -s -X POST -H 'Content-Type: application/json' -d '{"on": true}' \
+  http://127.0.0.1:8765/api/recordings/<run_id>/heart
+# Delete the whole run: video, parts, manifest, diary, frames, the heart.
+curl -s -X DELETE http://127.0.0.1:8765/api/recordings/<run_id>   # ?force=1, see below
+curl -s 'http://127.0.0.1:8765/api/recordings?hearted=1'          # only the kept ones
+```
+
+- **A heart outranks the size cap.** It is a `hearted` file beside the diary (not a manifest
+  field: `recording.json` is rewritten by the recorder, the sweep and `prune`). `prune()`
+  takes unhearted runs first and a hearted one only when nothing else is left, logging
+  `recording pruned (hearted): <run> <bytes>`. The cap still wins in the end: a disk cannot
+  be promised.
+- **Delete refuses three ways, and each is a live writer.** 409 while the manifest is
+  `recording`; 409 while a `composing` run's encoder pid is alive (`composite.pid`); 409 when
+  `run.json` never ended — that one is often a dashboard that died mid-run, so `?force=1`
+  clears it. A symlinked run directory is refused outright, as `_runs` already treats one as
+  not ours. The page arms on the first press and spends the second; there is no undo.
+- **The page filters in the browser, the API honours the same query.** `Kept` writes
+  `?hearted=1` into the URL and the count reads "2 of 13"; `GET /api/recordings?hearted=1`
+  is for whoever asks without a browser.
+- **A row with no video says why.** `run_error` and `run_live` come from the run's own
+  `run.json`, so a row reads "no video · the brain loop exited with code 1" instead of
+  "no recording". Those rows are runs that died before `RUNNING` — the recorder only starts
+  there — so the gate, the game restart, the body reset and the brain spawn are all in that
+  set, and the diary is the only evidence they left.
 
 - **`recording.json` states**: `recording` → `composing` → `ready` | `failed`, plus `pruned`
   when the 20 GB cap took its video. `sources` is `{game, robot, audio}` valued exactly

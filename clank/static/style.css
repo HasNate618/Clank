@@ -1130,7 +1130,7 @@ body.manual-active .manual-panel { border-color: var(--warm); }
    a fixed slot to fill instead of a `max-height` it can push against. */
 .rec-deck {
   display: grid;
-  grid-template-columns: minmax(220px, 300px) minmax(0, 1fr);
+  grid-template-columns: minmax(230px, 320px) minmax(0, 1fr);
   grid-template-rows: auto minmax(0, 1fr);
   gap: 12px;
   min-height: 0;
@@ -1160,34 +1160,128 @@ body.manual-active .manual-panel { border-color: var(--warm); }
   min-height: 0;
   overflow-y: auto;
 }
+/* A row is a box holding a click target and two controls. The box draws the
+   border and the highlight; `.rec-row-main` is the run itself and carries the
+   text, so the heart and the bin are not nested inside the button that selects
+   the run (invalid HTML, and the browser moves them). */
 .rec-row {
   display: grid;
-  gap: 6px;
-  width: 100%;
-  text-align: left;
-  padding: 10px 12px;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: start;
+  gap: 5px;
+  padding: 8px 6px 8px 12px;
   border-radius: var(--r-md);
   border: 1px solid var(--edge);
   background: var(--card);
   color: var(--text);
-  font: inherit;
-  cursor: pointer;
+  transition: border-color 0.15s ease;
 }
 .rec-row:hover { border-color: var(--accent); }
-.rec-row[aria-pressed="true"] {
+.rec-row-main {
+  display: grid;
+  gap: 6px;
+  width: 100%;
+  padding: 2px 0;
+  text-align: left;
+  background: none;
+  border: 0;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+  border-radius: var(--r-sm);
+  /* The page's buttons are physical keys (inset lip + a 3px drop). Inside a row
+     that reads as a card inside a card, so these carry no face of their own. */
+  box-shadow: none;
+}
+.rec-row-main:active:not(:disabled) { transform: none; box-shadow: none; }
+.rec-row.is-selected {
   border-color: var(--accent);
   box-shadow: inset 0 0 0 1px var(--accent);
 }
-.rec-row-nofile { opacity: 0.78; }
+.rec-row.is-selected .rec-row-main { cursor: default; }
+.rec-row-nofile .rec-row-main { opacity: 0.82; }
+
+/* The two controls. 26px is a real target at this row height without turning the
+   list into a toolbar; the bin is the only control that changes colour on hover,
+   so the one that costs something is the one that looks like it. */
+.rec-icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  min-width: 24px;
+  height: 26px;
+  padding: 0 4px;
+  border: 1px solid transparent;
+  border-radius: var(--r-sm);
+  background: none;
+  color: var(--muted);
+  cursor: pointer;
+  font: 600 11px/1 var(--sans);
+  box-shadow: none;
+}
+.rec-icon-btn:active:not(:disabled) { transform: none; box-shadow: none; }
+.rec-icon-btn:hover:not(:disabled) { color: var(--text); border-color: var(--edge); }
+.rec-icon-btn:disabled { opacity: 0.4; cursor: default; }
+.rec-icon-btn-danger:hover:not(:disabled) { color: var(--halt-ink); background: var(--halt); border-color: transparent; }
+.rec-icon {
+  width: 15px;
+  height: 15px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.6;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+}
+.rec-icon-btn.is-hearted { color: var(--accent); }
+.rec-icon-btn.is-hearted .rec-icon { fill: currentColor; }
+.rec-icon-btn.is-armed {
+  color: var(--halt-ink);
+  background: var(--halt);
+  border-color: transparent;
+}
+.rec-icon-label { letter-spacing: 0.01em; }
+
+/* The Kept filter: a chip, not a second heading, and its pressed state is the
+   only thing that says the list is shortened. */
+.rec-filter {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin-left: 8px;
+  padding: 3px 9px 3px 7px;
+  border-radius: 999px;
+  border: 1px solid var(--edge);
+  background: none;
+  color: var(--muted);
+  cursor: pointer;
+  font: 600 11px/1.5 var(--sans);
+  vertical-align: 0.08em;
+  box-shadow: none;
+}
+.rec-filter:active:not(:disabled) { transform: none; box-shadow: none; }
+.rec-filter:hover { color: var(--text); border-color: var(--accent); }
+.rec-filter.is-on {
+  color: var(--accent);
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+.rec-filter.is-on .rec-icon { fill: currentColor; }
+.rec-filter .rec-icon { width: 13px; height: 13px; }
 .rec-row-head {
   display: flex;
+  flex-wrap: wrap;
   justify-content: space-between;
-  gap: 8px;
+  gap: 2px 8px;
   align-items: baseline;
   font: 600 12px/1.2 var(--mono);
   color: var(--muted);
 }
-.rec-row-id { color: var(--text); }
+/* The id is the row's identity and never breaks mid-token; the clock is what
+   gives way, dropping under it when the column is narrow. Two controls took
+   ~70px of a 300px column, and "105633-\nc6dbfd" is not a run id anyone reads. */
+.rec-row-id { color: var(--text); white-space: nowrap; }
+.rec-row-head > :last-child { white-space: nowrap; }
 .rec-row-facts { font: 400 12px/1.35 var(--sans); color: var(--muted); }
 .rec-row-chips { display: flex; flex-wrap: wrap; gap: 6px; }
 .rec-chip {
@@ -1209,6 +1303,14 @@ body.manual-active .manual-panel { border-color: var(--warm); }
    window, and the leftover space belongs to the page rather than to an empty
    black card. */
 .rec-stage { align-self: start; }
+.rec-stage-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.rec-stage-head h2 { margin: 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rec-run-actions { display: flex; align-items: center; gap: 2px; flex: none; }
 .rec-player {
   background: var(--screen);
   border-radius: var(--r-md);
@@ -1264,6 +1366,12 @@ body.manual-active .manual-panel { border-color: var(--warm); }
 
 @media (prefers-reduced-motion: reduce) {
   .rec-row { transition: none; }
+}
+/* A narrow window has no room for a label beside the bin; the icon and its
+   aria-label carry it. */
+@media (max-width: 900px) {
+  .rec-icon-label { display: none; }
+  .rec-filter span { display: none; }
 }
 .rec-watch {
   margin-left: auto;

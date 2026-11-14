@@ -29,6 +29,9 @@ const ticks = $("rec-ticks");
 const timeLabel = $("rec-time");
 const durationLabel = $("rec-duration");
 const speedButton = $("speed");
+const heartButton = $("heart-run");
+const deleteButton = $("delete-run");
+const heartedToggle = $("hearted-only");
 
 // How far behind the playhead a row is still "why am I seeing this": a decision
 // lands a moment before its effect, so the row is allowed to arrive slightly
@@ -38,7 +41,13 @@ const SPEEDS = [1, 2, 4, 0.5];
 const COMPOSING_POLL_MS = 5000;
 
 let rows = [];
+let available = true;     // the config switch, not a guess: ffmpeg may be absent
 let selected = null;
+let onlyHearted = false;  // the `Kept` filter, and `?hearted=1` when it is on
+// One arm, shared by the rows and the stage, so two surfaces cannot disagree
+// about which run the second press means.
+let pendingDelete = null; // {runId, timer}
+const ARM_MS = 4000;
 let startedAt = 0;      // epoch seconds of the recorder's clock, for the diary
 let diary = [];         // every row of the selected run, sorted by time
 let diaryNodes = [];    // the same rows as elements, revealed as time passes
@@ -82,16 +91,65 @@ function chip(text, cls) {
   return span;
 }
 
+// ---- icons, hearts and the delete arm ---------------------------------
+
+const SVG_NS = "http://www.w3.org/2000/svg";
+const HEART_PATH = "M12 20.1 4.9 13a4.5 4.5 0 0 1 6.4-6.4l.7.7.7-.7A4.5 4.5 0 1 1 19.1 13z";
+const TRASH_PATH = "M4.5 7h15M9.5 7V4.6h5V7M6.8 7l.9 12.4h8.6L17.2 7M10.4 10.6v5.8M13.6 10.6v5.8";
+
+function svgIcon(pathData) {
+  const svg = document.createElementNS(SVG_NS, "svg");
+  svg.setAttribute("viewBox", "0 0 24 24");
+  svg.setAttribute("aria-hidden", "true");
+  svg.setAttribute("class", "rec-icon");
+  const path = document.createElementNS(SVG_NS, "path");
+  path.setAttribute("d", pathData);
+  svg.appendChild(path);
+  return svg;
+}
+
+// Filled when kept, outlined when not: the CSS does the fill, this decides which.
+function paintHeart(button, hearted, subject) {
+  button.setAttribute("aria-pressed", String(hearted));
+  button.classList.toggle("is-hearted", hearted);
+  button.title = `${hearted ? "Stop keeping" : "Keep"} ${subject}`;
+  button.setAttribute("aria-label", button.title);
+}
+
+// What a run's `run.json` said, for the runs that never reached a picture. The
+// error is a multi-line crash tail; the row has one line to spend.
+function firstLine(text, limit = 76) {
+  const line = String(text || "").split("\n")[0].trim();
+  return line.length > limit ? `${line.slice(0, limit - 1)}…` : line;
+}
+
+function noVideoReason(row) {
+  if (row.run_live) return "no video · still running";
+  if (row.run_error) return `no video · ${firstLine(row.run_error)}`;
+  if (row.state === "pruned") return "pruned to make room";
+  if (row.state === "failed") return row.error ? firstLine(row.error) : "the recording failed";
+  return "no video · the run ended before it recorded";
+}
+
 // ---- the run list -----------------------------------------------------
 
 // One row per run. A run that cannot be played is still listed: "this run has
 // no video" is information, and hiding it makes the list lie about the run.
+//
+// The row is a div, not a button: it carries two buttons of its own now, and a
+// button inside a button is invalid HTML that the browser silently re-parents.
+// `.rec-row-main` is the click target and holds everything the row shows.
 function rowElement(row) {
-  const button = document.createElement("button");
-  button.type = "button";
-  button.className = "rec-row";
-  button.dataset.runId = row.run_id;
-  button.setAttribute("aria-pressed", String(row.run_id === selected));
+  const item = document.createElement("div");
+  item.className = "rec-row";
+  item.dataset.runId = row.run_id;
+  item.classList.toggle("is-selected", row.run_id === selected);
+  if (!row.has_file) item.classList.add("rec-row-nofile");
+
+  const main = document.createElement("button");
+  main.type = "button";
+  main.className = "rec-row-main";
+  main.setAttribute("aria-pressed", String(row.run_id === selected));
 
   const head = document.createElement("span");
   head.className = "rec-row-head";
@@ -100,7 +158,7 @@ function rowElement(row) {
   id.textContent = row.run_id;
   head.appendChild(id);
   head.appendChild(document.createTextNode(clock(row.started_at)));
-  button.appendChild(head);
+  main.appendChild(head);
 
   const facts = document.createElement("span");
   facts.className = "rec-row-facts";
@@ -109,15 +167,19 @@ function rowElement(row) {
   if (row.state === "pruned") {
     facts.textContent = "pruned to make room";
   } else if (row.state === "failed") {
-    facts.textContent = row.error || "the recording failed";
+    facts.textContent = row.error ? firstLine(row.error) : "the recording failed";
   } else if (row.state === "recording" || row.state === "composing") {
     facts.textContent = row.state === "recording" ? "recording now…" : "composing…";
+  } else if (row.state === "ready" && !row.has_file) {
+    // A manifest that says ready over a file somebody removed: without this the
+    // row reads "12.5 s" with no size and no reason, which looks like a bug.
+    facts.textContent = "ready · the video file is missing";
   } else if (row.state === "ready") {
     facts.textContent = [mmss(row.duration_s), mb(row.bytes)].filter(Boolean).join(" · ");
   } else {
-    facts.textContent = "no recording";
+    facts.textContent = noVideoReason(row);
   }
-  button.appendChild(facts);
+  main.appendChild(facts);
 
   const chips = document.createElement("span");
   chips.className = "rec-row-chips";
@@ -131,11 +193,32 @@ function rowElement(row) {
   if (row.state === "failed" && row.error) chips.appendChild(chip("failed", "rec-chip-bad"));
   if (row.state === "pruned") chips.appendChild(chip("pruned", "rec-chip-bad"));
   if (row.has_diary) chips.appendChild(chip("diary", "rec-chip-quiet"));
-  if (chips.childElementCount) button.appendChild(chips);
+  if (chips.childElementCount) main.appendChild(chips);
+  main.onclick = () => select(row);
+  item.appendChild(main);
 
-  if (!row.has_file) button.classList.add("rec-row-nofile");
-  button.onclick = () => select(row);
-  return button;
+  // Keeping and throwing away, on the row you found it on. The keyboard order is
+  // the reading order: the run, then what you can do to it.
+  const heart = document.createElement("button");
+  heart.type = "button";
+  heart.className = "rec-icon-btn rec-row-heart";
+  heart.dataset.runId = row.run_id;
+  heart.appendChild(svgIcon(HEART_PATH));
+  paintHeart(heart, Boolean(row.hearted), `run ${row.run_id}`);
+  heart.onclick = () => setHeart(row);
+  item.appendChild(heart);
+
+  const remove = document.createElement("button");
+  remove.type = "button";
+  remove.className = "rec-icon-btn rec-icon-btn-danger rec-row-delete";
+  remove.dataset.runId = row.run_id;
+  remove.appendChild(svgIcon(TRASH_PATH));
+  remove.title = "Delete this run and its diary";
+  remove.setAttribute("aria-label", `Delete run ${row.run_id}`);
+  remove.onclick = () => deleteRun(row);
+  item.appendChild(remove);
+
+  return item;
 }
 
 // The picture keeps the aspect it was recorded at: the composite was 1680x540
@@ -154,25 +237,138 @@ function applyAspect(row) {
   player.style.setProperty("--rec-aspect", `${width} / ${height}`);
 }
 
-function renderList(payload) {
-  list.replaceChildren();
-  const available = Boolean(payload.recording_available);
+function visibleRows() {
+  return onlyHearted ? rows.filter((row) => row.hearted) : rows;
+}
 
-  if (!rows.length) {
+function renderList() {
+  list.replaceChildren();
+  const shown = visibleRows();
+
+  if (!shown.length) {
     const empty = document.createElement("div");
     empty.className = "rec-empty";
-    // Recording off and "no runs yet" are different facts, and the operator
-    // needs to know which one they are looking at.
-    empty.textContent = available
-      ? "No runs recorded yet. Start a run on the console and it will appear here."
-      : "Recording is off on this machine, so there is no video to watch. Every run still leaves its diary, and the runs below are the ones that have one.";
+    // Recording off, nothing kept and "no runs yet" are three different facts,
+    // and the operator needs to know which one they are looking at.
+    if (onlyHearted && rows.length) {
+      empty.textContent = "Nothing kept yet. Press the heart on a run to keep it here, and it stays out of the size prune.";
+    } else {
+      empty.textContent = available
+        ? "No runs recorded yet. Start a run on the console and it will appear here."
+        : "Recording is off on this machine, so there is no video to watch. Every run still leaves its diary, and the runs below are the ones that have one.";
+    }
     list.appendChild(empty);
+    count.textContent = "";
+    hint.textContent = available ? "" : "recording off";
     return;
   }
 
-  for (const row of rows) list.appendChild(rowElement(row));
-  count.textContent = `${rows.length} run${rows.length === 1 ? "" : "s"}`;
+  for (const row of shown) list.appendChild(rowElement(row));
+  paintCount();
   hint.textContent = available ? "" : "recording off";
+  paintDeleteButtons();
+}
+
+// ---- keeping and throwing away ----------------------------------------
+
+async function setHeart(row) {
+  const on = !row.hearted;
+  try {
+    const response = await fetch(`/api/recordings/${encodeURIComponent(row.run_id)}/heart`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ on }),
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(payload.error || String(response.status));
+    row.hearted = Boolean(payload.hearted);
+  } catch (error) {
+    say(`Could not ${on ? "keep" : "unkeep"} this run: ${error}`);
+    return;
+  }
+  for (const button of list.querySelectorAll(".rec-row-heart")) {
+    if (button.dataset.runId === row.run_id) {
+      paintHeart(button, Boolean(row.hearted), `run ${row.run_id}`);
+    }
+  }
+  if (selected === row.run_id) paintHeart(heartButton, Boolean(row.hearted), "this run");
+  // One path out of a heart press, taken by the function that owns the filter:
+  // unkeeping the run you are watching while `Kept` is on has to move the
+  // selection on, and the count has to be rebuilt either way.
+  setFilter(onlyHearted);
+}
+
+function paintCount() {
+  const kept = rows.filter((row) => row.hearted).length;
+  const shown = visibleRows().length;
+  count.textContent = onlyHearted
+    ? `${shown} of ${rows.length} kept`
+    : `${rows.length} run${rows.length === 1 ? "" : "s"}${kept ? ` · ${kept} kept` : ""}`;
+}
+
+// Arming is shared and singular: the second press means the run the first press
+// named, wherever it is pressed. Four seconds is the whole memory it has.
+function paintDeleteButtons() {
+  const armed = pendingDelete ? pendingDelete.runId : null;
+  for (const button of list.querySelectorAll(".rec-row-delete")) {
+    const on = button.dataset.runId === armed;
+    button.classList.toggle("is-armed", on);
+    button.title = on
+      ? "Press again to delete this run and its diary"
+      : "Delete this run and its diary";
+    button.setAttribute("aria-label", on
+      ? `Press again to delete run ${button.dataset.runId}`
+      : `Delete run ${button.dataset.runId}`);
+  }
+  const on = armed !== null && armed === selected;
+  deleteButton.classList.toggle("is-armed", on);
+  deleteButton.title = on
+    ? "Press again to delete this run and its diary"
+    : "Delete this run and its diary";
+  deleteButton.querySelector(".rec-icon-label").textContent = on ? "Sure?" : "Delete";
+}
+
+function disarm() {
+  if (!pendingDelete) return;
+  clearTimeout(pendingDelete.timer);
+  pendingDelete = null;
+  paintDeleteButtons();
+}
+
+async function deleteRun(row) {
+  if (pendingDelete && pendingDelete.runId === row.run_id) {
+    clearTimeout(pendingDelete.timer);
+    pendingDelete = null;
+    paintDeleteButtons();
+    await reallyDelete(row);
+    return;
+  }
+  disarm();
+  pendingDelete = {
+    runId: row.run_id,
+    timer: setTimeout(() => { pendingDelete = null; paintDeleteButtons(); }, ARM_MS),
+  };
+  paintDeleteButtons();
+  // The second press is the one that costs something, so it names the loss.
+  say(`Press Delete again to remove run ${row.run_id} and its diary.`);
+}
+
+async function reallyDelete(row) {
+  try {
+    const response = await fetch(`/api/recordings/${encodeURIComponent(row.run_id)}`, {
+      method: "DELETE",
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(payload.error || String(response.status));
+  } catch (error) {
+    // A 409 here is the answer, not a failure: the run is still being recorded
+    // or encoded, and the server's sentence says which.
+    say(`Could not delete this run: ${error}`);
+    return;
+  }
+  say(`Deleted run ${row.run_id}.`);
+  if (selected === row.run_id) clearSelection();
+  await load();
 }
 
 // ---- the diary, as a clock -------------------------------------------
@@ -366,14 +562,54 @@ function say(text) {
 
 // ---- selecting a run --------------------------------------------------
 
+function paintStageActions(row) {
+  const has = Boolean(row);
+  heartButton.disabled = !has;
+  deleteButton.disabled = !has;
+  if (has) paintHeart(heartButton, Boolean(row.hearted), "this run");
+  paintDeleteButtons();
+}
+
+function clearSelection() {
+  selected = null;
+  video.pause();
+  video.removeAttribute("src");
+  video.load();
+  title.textContent = "Pick a run";
+  meta.textContent = "";
+  applyAspect(null);
+  diaryBox.replaceChildren();
+  ticks.replaceChildren();
+  diaryCount.textContent = "";
+  playToggle.disabled = true;
+  say("");
+  paintStageActions(null);
+  writeUrl();
+}
+
+// One place writes the URL, so the filter and the selection cannot erase each
+// other; `?t=` is a one-shot deep link and is consumed by the seek.
+function writeUrl() {
+  const params = new URLSearchParams();
+  if (onlyHearted) params.set("hearted", "1");
+  if (selected) params.set("run", selected);
+  const query = params.toString();
+  history.replaceState(null, "", query ? `/recordings?${query}` : "/recordings");
+}
+
 async function select(row) {
   selected = row.run_id;
-  for (const button of list.querySelectorAll(".rec-row")) {
-    button.setAttribute("aria-pressed", String(button.dataset.runId === row.run_id));
+  disarm();
+  for (const item of list.querySelectorAll(".rec-row")) {
+    const mine = item.dataset.runId === row.run_id;
+    item.classList.toggle("is-selected", mine);
+    const main = item.querySelector(".rec-row-main");
+    if (main) main.setAttribute("aria-pressed", String(mine));
   }
   title.textContent = `Run ${row.run_id}`;
   startedAt = row.started_at ? new Date(row.started_at).getTime() / 1000 : 0;
-  history.replaceState(null, "", `/recordings?run=${encodeURIComponent(row.run_id)}`);
+  paintStageActions(row);
+  writeUrl();
 
   meta.textContent = [clock(row.started_at), mmss(row.duration_s), mb(row.bytes)]
     .filter(Boolean).join(" · ");
@@ -417,14 +653,17 @@ async function load() {
     if (!response.ok) throw new Error(String(response.status));
     const payload = await response.json();
     rows = payload.recordings || [];
-    renderList(payload);
+    available = Boolean(payload.recording_available);
+    renderList();
     const params = new URLSearchParams(location.search);
     const moment = Number.parseFloat(params.get("t") || "");
     if (Number.isFinite(moment)) pendingSeek = moment;
     const wanted = params.get("run");
-    const first = rows.find((row) => row.run_id === wanted) ||
-      rows.find((row) => row.has_file) || rows[0];
+    const shown = visibleRows();
+    const first = shown.find((row) => row.run_id === wanted) ||
+      shown.find((row) => row.has_file) || shown[0];
     if (first && !selected) await select(first);
+    else if (!first && selected) clearSelection();
     schedulePoll(payload);
   } catch (error) {
     say(`Could not read the recordings: ${error}`);
@@ -443,13 +682,54 @@ function schedulePoll(payload) {
   pollTimer = setTimeout(() => { load(); }, COMPOSING_POLL_MS);
 }
 
+// ---- the Kept filter --------------------------------------------------
+
+function paintFilter() {
+  heartedToggle.setAttribute("aria-pressed", String(onlyHearted));
+  heartedToggle.classList.toggle("is-on", onlyHearted);
+  heartedToggle.title = onlyHearted
+    ? "Show every run again"
+    : "Show only the runs you kept";
+}
+
+function setFilter(on) {
+  onlyHearted = on;
+  paintFilter();
+  writeUrl();
+  renderList();
+  // A filter that removed the run being watched has to say so by moving on,
+  // rather than leaving the picture of a run the list no longer offers.
+  const shown = visibleRows();
+  if (selected && !shown.some((row) => row.run_id === selected)) {
+    const next = shown.find((row) => row.has_file) || shown[0];
+    if (next) select(next);
+    else clearSelection();
+  }
+}
+
+heartedToggle.onclick = () => setFilter(!onlyHearted);
+
 // ---- theme ------------------------------------------------------------
 
 const themeButton = $("theme-toggle");
 themeButton.onclick = () => {
   const next = document.documentElement.dataset.theme === "dark" ? "light" : "dark";
   document.documentElement.dataset.theme = next;
-  try { localStorage.setItem("clank-theme", next); } catch (e) { /* private mode */ }
+  try { localStorage.setItem("clank-theme", next); } catch { /* private mode */ }
 };
 
+// The stage's own pair, acting on the selected run. They are the same functions
+// the rows call, so there is one behaviour and two places to reach it.
+heartButton.onclick = () => {
+  const row = rows.find((candidate) => candidate.run_id === selected);
+  if (row) setHeart(row);
+};
+
+deleteButton.onclick = () => {
+  const row = rows.find((candidate) => candidate.run_id === selected);
+  if (row) deleteRun(row);
+};
+
+onlyHearted = new URLSearchParams(location.search).get("hearted") === "1";
+paintFilter();
 load();

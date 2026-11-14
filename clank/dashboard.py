@@ -24,10 +24,13 @@ from .pose_relay import request_click
 from .processes import tail_stream
 from .recording import (
     RECORDING_NAME,
+    CannotDelete,
+    delete_run,
     list_recordings,
     parse_range,
     pending_composites,
     run_composite,
+    set_hearted,
     sweep_stale,
 )
 from .run import RUN_ID_RE, RunError, RunManager
@@ -286,6 +289,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
             except Exception:
                 return self._error(500, "internal server error")
             return self._json({"accepted": True}, status=202)
+        if path.startswith("/api/recordings/"):
+            return self._recording_heart(path)
         if path == "/api/run/start" or path == "/api/run/stop":
             run = self.server.run
             if run is None:
@@ -436,6 +441,12 @@ class DashboardHandler(BaseHTTPRequestHandler):
             raise ValueError("JSON object required")
         return data
 
+    def do_DELETE(self) -> None:
+        path = urlparse(self.path).path
+        if path.startswith("/api/recordings/"):
+            return self._recording_delete(path)
+        return self._error(404, "not found")
+
     def _json(self, payload, status: int = 200) -> None:
         self._bytes(status, json.dumps(payload, ensure_ascii=False).encode(), "application/json; charset=utf-8")
 
@@ -550,6 +561,12 @@ class DashboardHandler(BaseHTTPRequestHandler):
             rows = list_recordings(Path(self.server.config.paths.session_root))
         except OSError:
             rows = []
+        query = parse_qs(urlparse(self.path).query)
+        # The page filters in the browser (it already has every row, and the count
+        # reads "3 of 13"); this is for whoever asks the API instead, who should not
+        # have to filter `hearted` by hand to answer "what did I keep".
+        if (query.get("hearted") or [""])[0] in ("1", "true", "yes"):
+            rows = [row for row in rows if row.get("hearted")]
         return self._json({
             "recordings": rows,
             "recording_available": bool(self.server.config.recording.enabled),
@@ -571,6 +588,59 @@ class DashboardHandler(BaseHTTPRequestHandler):
             ):
                 return row
         return None
+
+    def _listed_row(self, run_id: str) -> dict | None:
+        """Any row the page would show, playable or not: hearts and deletes apply
+        to the runs without a video too, which is most of what a heart is for."""
+        if not RUN_ID_RE.fullmatch(str(run_id)):
+            return None
+        try:
+            rows = list_recordings(Path(self.server.config.paths.session_root))
+        except OSError:
+            return None
+        return next((row for row in rows if row.get("run_id") == run_id), None)
+
+    def _recording_heart(self, path: str) -> None:
+        """`POST /api/recordings/<run_id>/heart {"on": true|false}`.
+
+        The heart is the operator's mark on a run worth keeping, and it is exempt
+        from the size prune; a `POST` with the state it should end in rather than a
+        toggle, so a retry cannot invert it.
+        """
+        run_id, _, leaf = path[len("/api/recordings/"):].partition("/")
+        if leaf != "heart":
+            return self._error(404, "not found")
+        row = self._listed_row(run_id)
+        if row is None:
+            return self._error(404, "no such run")
+        try:
+            payload = self._read_body()
+        except PayloadTooLarge:
+            return self._error(413, "request body too large")
+        except ValueError:
+            return self._error(400, "expected a JSON body")
+        on = True if "on" not in payload else bool(payload.get("on"))
+        try:
+            hearted = set_hearted(Path(row["dir"]), on)
+        except OSError as exc:
+            return self._error(500, f"could not write the heart: {exc}")
+        return self._json({"run_id": run_id, "hearted": hearted})
+
+    def _recording_delete(self, path: str) -> None:
+        """`DELETE /api/recordings/<run_id>[?force=1]`, and the whole run goes."""
+        run_id = path[len("/api/recordings/"):].strip("/")
+        row = self._listed_row(run_id)
+        if row is None:
+            return self._error(404, "no such run")
+        force = (parse_qs(urlparse(self.path).query).get("force") or [""])[0] in (
+            "1", "true", "yes")
+        try:
+            removed = delete_run(Path(row["dir"]), force=force)
+        except CannotDelete as exc:
+            return self._error(409, str(exc))
+        except OSError as exc:
+            return self._error(500, f"could not delete the run: {exc}")
+        return self._json({"run_id": run_id, "removed": removed})
 
     def _recording_video(self, path: str) -> None:
         """One recording's bytes, seekable.

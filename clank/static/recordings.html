@@ -51,12 +51,42 @@
          is the page; the list and the diary are the margins of it. -->
     <main class="rec-deck">
       <section class="panel rec-list-panel" id="run-strip" aria-label="Runs">
-        <h2>Runs <span id="recording-hint" class="rec-hint"></span></h2>
+        <h2>Runs <span id="recording-hint" class="rec-hint"></span>
+          <!-- A filter, not a folder: the kept runs are the same runs, and the
+               count reads "2 of 13" rather than pretending the rest are gone. -->
+          <button id="hearted-only" class="rec-filter" type="button" aria-pressed="false"
+                  title="Show only the runs you kept">
+            <svg class="rec-icon" viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M12 20.1 4.9 13a4.5 4.5 0 0 1 6.4-6.4l.7.7.7-.7A4.5 4.5 0 1 1 19.1 13z"/>
+            </svg>
+            <span>Kept</span>
+          </button>
+        </h2>
         <div id="recording-list" class="rec-list" aria-live="polite"></div>
       </section>
 
       <section class="rec-stage">
-        <h2 id="recording-title">Pick a run</h2>
+        <div class="rec-stage-head">
+          <h2 id="recording-title">Pick a run</h2>
+          <!-- The same two controls the rows carry, for the run you are looking
+               at: keeping and throwing away are decisions about a run you have
+               already chosen to watch. -->
+          <div class="rec-run-actions">
+            <button id="heart-run" class="rec-icon-btn" type="button" aria-pressed="false"
+                    aria-label="Keep this run" title="Keep this run" disabled>
+              <svg class="rec-icon" viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M12 20.1 4.9 13a4.5 4.5 0 0 1 6.4-6.4l.7.7.7-.7A4.5 4.5 0 1 1 19.1 13z"/>
+              </svg>
+            </button>
+            <button id="delete-run" class="rec-icon-btn rec-icon-btn-danger" type="button"
+                    aria-label="Delete this run" title="Delete this run and its diary" disabled>
+              <svg class="rec-icon" viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M4.5 7h15M9.5 7V4.6h5V7M6.8 7l.9 12.4h8.6L17.2 7M10.4 10.6v5.8M13.6 10.6v5.8"/>
+              </svg>
+              <span class="rec-icon-label">Delete</span>
+            </button>
+          </div>
+        </div>
         <!-- Our own controls, not the browser's: the rail carries a tick per
              diary event, so the two panels share one clock and the operator can
              see an event coming before it lands. -->

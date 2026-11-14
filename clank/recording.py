@@ -70,6 +70,11 @@ SOURCES = ("game", "robot", "audio")
 RECORDING_NAME = "recording.mp4"
 #: A manifest in either state belongs to a dashboard that died mid-run.
 STALE_STATES = ("recording", "composing")
+#: The operator's mark on a run worth keeping, as a file beside its diary. Not a
+#: manifest field on purpose: `recording.json` is rewritten by the recorder, by
+#: `sweep_stale` and by `prune` (all `dict(manifest)`), and a heart must not be
+#: something else reconstructs. Its content is the moment it was given.
+HEART_NAME = "hearted"
 #: The composite's own bound: a re-encode that outlasts this is a wedged encoder.
 COMPOSITE_TIMEOUT_S = 1800.0
 #: Who is composing a run, as a pid. A live one means the work is in flight
@@ -1241,6 +1246,10 @@ def pending_composites(sessions_root: Path) -> list[Path]:
 def prune(sessions_root: Path, max_total_mb: int, keep: Path | None = None) -> list[Path]:
     """Reclaim the oldest finished recordings' video until the total fits the cap.
 
+    A hearted run is exempt: the unhearted ones go first, and a hearted one only
+    when nothing else is left to take. A heart cannot raise the cap -- a disk
+    still fills -- but it is honoured while there is anything else to spend.
+
     Only a ``ready`` recording counts and only a ``ready`` recording is pruned:
     a run whose composite has not finished has no size to count yet, and one
     that failed has no video. ``keep`` is the run that just composed and is
@@ -1274,30 +1283,105 @@ def prune(sessions_root: Path, max_total_mb: int, keep: Path | None = None) -> l
                       manifest))
     total = sum(size for *_rest, size, _manifest in ready)
     removed: list[Path] = []
-    for _started, run_dir, session_dir, size, manifest in sorted(
-        ready, key=lambda row: (row[0], row[1].name)
-    ):
+    ordered = sorted(ready, key=lambda row: (row[0], row[1].name))
+    # Two passes: the unhearted runs go first, and a hearted one is taken only
+    # once nothing else is left. A heart is the operator saying keep this, but
+    # not an unlimited promise -- if the hearted runs alone cannot fit the cap,
+    # the oldest of them goes and the log says which. Without the second pass the
+    # cap would be unmet and the disk would fill while prune reported success.
+    for want_hearted in (False, True):
         if total <= cap:
             break
-        if keep_dir is not None and run_dir.resolve() == keep_dir:
-            continue
-        _remove_tree(run_dir / RECORDING_NAME)
-        _remove_tree(run_dir / PARTS_DIR)
-        doc = dict(manifest)
-        doc.update({
-            "state": "pruned",
-            "available": False,
-            "file": None,
-            "error": "pruned to make room",
-            "bytes": 0,
-            "parts": {},
-            "part_seconds": {},
-        })
-        _save_manifest(run_dir, doc)
-        total -= size
-        _append_session_log(session_dir, f"recording pruned: {run_dir.name} {size} bytes")
-        removed.append(run_dir)
+        for _started, run_dir, session_dir, size, manifest in ordered:
+            if total <= cap:
+                break
+            if (keep_dir is not None and run_dir.resolve() == keep_dir):
+                continue
+            hearted = is_hearted(run_dir)
+            if hearted != want_hearted:
+                continue
+            _remove_tree(run_dir / RECORDING_NAME)
+            _remove_tree(run_dir / PARTS_DIR)
+            doc = dict(manifest)
+            doc.update({
+                "state": "pruned",
+                "available": False,
+                "file": None,
+                "error": "pruned to make room",
+                "bytes": 0,
+                "parts": {},
+                "part_seconds": {},
+            })
+            _save_manifest(run_dir, doc)
+            total -= size
+            tag = " (hearted)" if hearted else ""
+            _append_session_log(
+                session_dir, f"recording pruned{tag}: {run_dir.name} {size} bytes")
+            removed.append(run_dir)
     return removed
+
+
+def is_hearted(run_dir: Path) -> bool:
+    """Whether the operator marked this run as one to keep."""
+    return (Path(run_dir) / HEART_NAME).is_file()
+
+
+def set_hearted(run_dir: Path, on: bool) -> bool:
+    """Mark a run, or clear the mark. Returns what it now is, so a caller that
+    re-sends a state it already believes gets the same answer twice."""
+    path = Path(run_dir) / HEART_NAME
+    if on:
+        if not path.is_file():
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(_utc_now() + "\n", encoding="utf-8")
+        return True
+    with contextlib.suppress(OSError):
+        path.unlink(missing_ok=True)
+    return False
+
+
+class CannotDelete(Exception):
+    """A run the operator asked to delete that something is still using.
+
+    Raised rather than deleting on a guess: an encoder writing into a deleted
+    directory recreates it, and a live run whose evidence vanished mid-flight is
+    worse than a run that stays until the operator stops it.
+    """
+
+
+def delete_run(run_dir: Path, *, force: bool = False) -> list[str]:
+    """Delete one run directory and everything in it; return what was there.
+
+    The whole run goes -- video, parts, manifest, diary, frames, the heart -- so
+    the page stops offering a run the operator has given up on. Three refusals,
+    because each is a way to lose a run that is still being written:
+
+    * a manifest in ``recording`` (a recorder is writing into it right now);
+    * a manifest in ``composing`` with a live pid (the encoder is mid-file);
+    * a ``run.json`` that never ended. That one is usually a dashboard that died
+      mid-run and left the field null forever, so ``force`` clears it: the
+      operator can say they know.
+
+    A symlinked run directory is refused outright. `_runs` already treats one as
+    not ours, and this is the function that removes things.
+    """
+    run_dir = Path(run_dir)
+    if run_dir.is_symlink() or not run_dir.is_dir():
+        raise CannotDelete(f"{run_dir.name} is not a run directory of ours")
+    state = (read_manifest(run_dir) or {}).get("state")
+    if state == "recording":
+        raise CannotDelete("this run is still being recorded; stop it first")
+    if state == "composing" and composite_is_live(run_dir):
+        raise CannotDelete("this run's video is being encoded right now")
+    if _run_verdict(run_dir)["run_live"] and not force:
+        raise CannotDelete(
+            "this run is still running; stop it first, or force the delete if "
+            "the dashboard that ran it is gone")
+    names = sorted(path.name for path in run_dir.iterdir())
+    _remove_tree(run_dir)
+    if run_dir.exists():
+        raise CannotDelete(f"{run_dir.name} could not be removed")
+    return names
 
 
 def list_recordings(sessions_root: Path) -> list[dict]:
@@ -1333,6 +1417,8 @@ def list_recordings(sessions_root: Path) -> list[dict]:
                 "error": None,
                 "has_file": False,
                 "has_diary": True,
+                "hearted": is_hearted(run_dir),
+                **_run_verdict(run_dir),
             })
             continue
         name = manifest.get("file")
@@ -1352,10 +1438,33 @@ def list_recordings(sessions_root: Path) -> list[dict]:
             "error": manifest.get("error"),
             "has_file": bool(name) and (run_dir / str(name)).is_file(),
             "has_diary": (run_dir / "brain.jsonl").is_file(),
+            "hearted": is_hearted(run_dir),
+            **_run_verdict(run_dir),
         })
     rows.sort(key=lambda row: (str(row.get("started_at") or ""), str(row.get("run_id"))),
               reverse=True)
     return rows
+
+
+def _run_verdict(run_dir: Path) -> dict[str, object]:
+    """What the run itself said about how it went, for a row with no video.
+
+    A row that reads "no recording" is a fact the operator cannot act on. The
+    run's `run.json` is one field away and says which failure it was, or that it
+    is still going: every run that dies before it reaches `RUNNING` -- the gate,
+    the game restart, the body reset, the brain spawn -- leaves a diary and no
+    manifest, and this is the only place that knows why.
+    """
+    try:
+        doc = json.loads((Path(run_dir) / "run.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {"run_live": False, "run_error": None}
+    if not isinstance(doc, dict):
+        return {"run_live": False, "run_error": None}
+    error = doc.get("error")
+    # An absent key is not a live run: only a written null means "started, never ended".
+    live = "ended_at" in doc and doc.get("ended_at") is None
+    return {"run_live": bool(live), "run_error": str(error) if error else None}
 
 
 def _mtime_iso(path: Path) -> str | None:

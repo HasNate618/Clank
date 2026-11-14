@@ -1128,6 +1128,154 @@ class SessionsRootTests(unittest.TestCase):
         self.assertFalse(row["has_file"])
         self.assertTrue(row["has_diary"])
 
+    # ---- hearts and deletion ------------------------------------------
+
+    def test_a_heart_is_a_file_beside_the_diary(self):
+        run_dir = self.make_run("101010-aaaaaa", state="ready", file="recording.mp4")
+        (run_dir / "brain.jsonl").write_text('{"row": 1}\n')
+        self.assertFalse(recording.is_hearted(run_dir))
+
+        self.assertTrue(recording.set_hearted(run_dir, True))
+        self.assertTrue((run_dir / recording.HEART_NAME).is_file())
+        self.assertTrue(recording.is_hearted(run_dir))
+        # Idempotent: the page may re-send a state it already believes.
+        self.assertTrue(recording.set_hearted(run_dir, True))
+        # The heart is not a manifest field: a rewrite must not lose it.
+        self.assertNotIn("hearted", manifest_of(self, run_dir))
+        self.assertFalse(recording.set_hearted(run_dir, False))
+        self.assertFalse((run_dir / recording.HEART_NAME).exists())
+        self.assertFalse(recording.set_hearted(run_dir, False))
+
+    def test_a_run_with_no_video_at_all_can_be_hearted(self):
+        """The runs most worth keeping are the ones that never made a picture:
+        the diary is all that is left of them, and there is no manifest to hang
+        a heart on."""
+        run_dir = self.dir_of("101010-bbbbbb")
+        run_dir.mkdir(parents=True)
+        (run_dir / "brain.jsonl").write_text('{"row": 1}\n')
+        recording.set_hearted(run_dir, True)
+        row = next(row for row in list_recordings(self.sessions)
+                   if row["run_id"] == "101010-bbbbbb")
+        self.assertTrue(row["hearted"])
+        self.assertIsNone(row["state"])
+
+    def test_the_listing_says_why_a_run_has_no_video(self):
+        """`no recording` is a fact the operator cannot act on. The run's own
+        `run.json` says which failure it was, and it is one field away."""
+        failed = self.dir_of("101010-cccccc")
+        failed.mkdir(parents=True)
+        (failed / "brain.jsonl").write_text("")
+        (failed / "run.json").write_text(json.dumps({
+            "run_id": "101010-cccccc",
+            "started_at": "2026-11-13T19:46:00.834458Z",
+            "ended_at": "2026-11-13T19:46:09.148277Z",
+            "exit_code": None,
+            "error": "the body view kept exiting",
+        }))
+        live = self.dir_of("101010-dddddd")
+        live.mkdir(parents=True)
+        (live / "brain.jsonl").write_text("")
+        (live / "run.json").write_text(json.dumps({
+            "run_id": "101010-dddddd",
+            "started_at": "2026-11-13T19:50:00.000000Z",
+            "ended_at": None,
+            "exit_code": None,
+            "error": None,
+        }))
+        rows = {row["run_id"]: row for row in list_recordings(self.sessions)}
+        self.assertEqual(rows["101010-cccccc"]["run_error"], "the body view kept exiting")
+        self.assertFalse(rows["101010-cccccc"]["run_live"])
+        self.assertTrue(rows["101010-dddddd"]["run_live"])
+        self.assertIsNone(rows["101010-dddddd"]["run_error"])
+
+    def test_a_hearted_recording_is_not_pruned(self):
+        """A heart is the operator saying keep this. The unhearted run goes even
+        though it is the newer one."""
+        hearted = self.make_run("101010-aaaaaa", state="ready", file="recording.mp4",
+                                started_at="2026-11-12T10:00:00.000Z")
+        newer = self.make_run("110000-bbbbbb", state="ready", file="recording.mp4",
+                              started_at="2026-11-12T11:00:00.000Z")
+        self.make_video(hearted, 1024 * 1024)
+        self.make_video(newer, 1024 * 1024)
+        recording.set_hearted(hearted, True)
+
+        removed = prune(self.sessions, 1)
+
+        self.assertEqual([path.name for path in removed], ["110000-bbbbbb"])
+        self.assertTrue((hearted / "recording.mp4").is_file())
+        self.assertEqual(manifest_of(self, hearted)["state"], "ready")
+
+    def test_hearts_that_alone_exceed_the_cap_are_pruned_oldest_first(self):
+        """A promise, not an unlimited one: if the hearted runs cannot fit, the
+        oldest hearted one goes and the log says so."""
+        older = self.make_run("101010-aaaaaa", state="ready", file="recording.mp4",
+                              started_at="2026-11-12T10:00:00.000Z")
+        newer = self.make_run("110000-bbbbbb", state="ready", file="recording.mp4",
+                              started_at="2026-11-12T11:00:00.000Z")
+        for run_dir in (older, newer):
+            self.make_video(run_dir, 1024 * 1024)
+            recording.set_hearted(run_dir, True)
+
+        removed = prune(self.sessions, 1)
+
+        self.assertEqual([path.name for path in removed], ["101010-aaaaaa"])
+        self.assertTrue((newer / "recording.mp4").is_file())
+        log = (self.sessions / self.SESSION / "session.log").read_text()
+        self.assertIn("hearted", log)
+
+    def test_deleting_a_run_takes_the_directory_and_everything_in_it(self):
+        run_dir = self.make_run("101010-aaaaaa", state="ready", file="recording.mp4")
+        self.make_video(run_dir, 64)
+        (run_dir / "brain.jsonl").write_text("")
+        (run_dir / "frames").mkdir()
+        removed = recording.delete_run(run_dir)
+        self.assertEqual(sorted(removed), sorted(["recording.json", "recording.mp4",
+                                                  "brain.jsonl", "frames", "parts"]))
+        self.assertFalse(run_dir.exists())
+        self.assertEqual(list_recordings(self.sessions), [])
+
+    def test_a_run_that_is_still_recording_cannot_be_deleted(self):
+        run_dir = self.make_run("101010-aaaaaa", state="recording")
+        with self.assertRaises(recording.CannotDelete) as caught:
+            recording.delete_run(run_dir)
+        self.assertIn("still being recorded", str(caught.exception))
+        self.assertTrue(run_dir.exists())
+
+    def test_a_run_with_a_live_composite_cannot_be_deleted(self):
+        run_dir = self.make_run("101010-aaaaaa", state="composing")
+        (run_dir / recording.COMPOSITE_LOCK).write_text(str(os.getpid()), encoding="utf-8")
+        with self.assertRaises(recording.CannotDelete) as caught:
+            recording.delete_run(run_dir)
+        self.assertIn("being encoded", str(caught.exception))
+        self.assertTrue(run_dir.exists())
+
+    def test_a_run_that_has_not_ended_cannot_be_deleted(self):
+        run_dir = self.dir_of("101010-aaaaaa")
+        run_dir.mkdir(parents=True)
+        (run_dir / "run.json").write_text(json.dumps({"run_id": "101010-aaaaaa",
+                                                      "ended_at": None}))
+        with self.assertRaises(recording.CannotDelete) as caught:
+            recording.delete_run(run_dir)
+        self.assertIn("still running", str(caught.exception))
+        # A dashboard that died leaves `ended_at` null forever; the operator can
+        # say they know, and nothing else about the run is a reason to refuse.
+        self.assertEqual(recording.delete_run(run_dir, force=True),
+                         ["run.json"])
+        self.assertFalse(run_dir.exists())
+
+    def test_a_symlinked_run_directory_is_refused(self):
+        """The rule `_runs` already keeps: a directory nobody proved is ours is
+        never deleted."""
+        real = self.base / "elsewhere"
+        real.mkdir()
+        (real / "brain.jsonl").write_text("")
+        link = self.dir_of("101010-aaaaaa")
+        link.parent.mkdir(parents=True, exist_ok=True)
+        link.symlink_to(real)
+        with self.assertRaises(recording.CannotDelete):
+            recording.delete_run(link)
+        self.assertTrue((real / "brain.jsonl").is_file())
+
     def test_pruning_logs_each_deletion_to_the_session_log(self):
         old = self.make_run("101010-aaaaaa", state="ready", file="recording.mp4",
                             started_at="2026-11-12T10:00:00.000Z")
