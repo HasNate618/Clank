@@ -385,6 +385,26 @@ def level(pcm: bytes) -> tuple[int, float]:
     return int(peak), math.sqrt(total / len(samples))
 
 
+def quiet_tail_s(pcm: bytes, threshold: float = GATE_MIN_RMS, rate: int = RATE) -> float:
+    """Seconds of silence at the end of `pcm`, in whole 50 ms blocks."""
+    block = int(BLOCK_S * rate) * 2
+    if len(pcm) < block:
+        return 0.0
+    quiet = 0
+    for end in range(len(pcm) - block, -1, -block):
+        if level(pcm[end:end + block])[1] > threshold:
+            break
+        quiet += 1
+    return quiet * BLOCK_S
+
+
+def has_voice(pcm: bytes, threshold: float = GATE_MIN_RMS, rate: int = RATE) -> bool:
+    """Whether any 50 ms block of `pcm` rises above the gate floor."""
+    block = int(BLOCK_S * rate) * 2
+    return any(level(pcm[i:i + block])[1] > threshold
+               for i in range(0, len(pcm) - block + 1, block))
+
+
 def wav_bytes(pcm: bytes, rate: int = RATE, channels: int = 1) -> bytes:
     """Wrap raw s16le PCM in a WAV container the model accepts."""
     buf = io.BytesIO()
@@ -621,6 +641,32 @@ class Ring:
                 return handle.read(want)
         except OSError:
             return b""
+
+    def read_utterance(self, start: int, hang_s: float = 2.0, max_s: float = 25.0,
+                       grace_s: float = 6.0) -> bytes:
+        """Bytes from `start` through the end of whatever is being said there.
+
+        `read_from` stops at the clock, and the clock is not where an utterance ends. MEASURED
+        2026-11-14, run 025412-cf7309: JobBot's post-grab line ran 12.6 s, starting 19.0 s into
+        the ring, while `confirm` read at 24.0 s. The first half became one `heard` row
+        ("...grab one of the job cartridges?") and the tail played on into the next turn's
+        listen, where "off the table and let's get started" was transcribed as "Google and let's
+        get started" and planned as `hold` - the brain took its own missing half for a new order.
+
+        So this waits for `hang_s` of quiet after speech has begun, or `max_s` in total. A ring
+        holding no speech returns b"" after `grace_s` instead of waiting out the deadline.
+        """
+        began = time.monotonic()
+        while True:
+            pcm = self.read_from(start, max_s)
+            waited = time.monotonic() - began
+            if has_voice(pcm) and quiet_tail_s(pcm) >= hang_s:
+                return pcm
+            if not has_voice(pcm) and waited >= grace_s:
+                return b""
+            if waited >= max_s:
+                return pcm
+            time.sleep(BLOCK_S)
 
     def read_back(self, seconds: float) -> bytes:
         start = max(0, self.mark() - int(seconds * self.rate) * 2)

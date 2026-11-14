@@ -115,7 +115,8 @@ class TheActUsesTheGeneratedPath(unittest.TestCase):
         # the old fixed window opened one second after it ended, so the diary said "no word from
         # JobBot" over a line he had just finished saying. The ring holds the act's own seconds.
         confirm = self.source[self.source.index("def confirm("):self.source.index("def grab_pixel(")]
-        self.assertIn("RING.read_from(after", confirm)
+        self.assertIn("RING.read_utterance(after", confirm,
+                      "the read must end where the speech ends, not at the clock")
         self.assertIn('source="act"', confirm)
         # And the old window stays as the fallback, for a run with no ring.
         self.assertIn("ears.record(", confirm)
@@ -266,7 +267,7 @@ class TheRingIsConsumedOnce(unittest.TestCase):
                   / "spike" / "wbc_game" / "auto.py").read_text()
         confirm = source[source.index("def confirm("):source.index("def grab_pixel(")]
         self.assertIn("RING.cursor = RING.mark()", confirm)
-        read_at = confirm.index("RING.read_from(after")
+        read_at = confirm.index("RING.read_utterance(after")
         self.assertLess(read_at, confirm.index("RING.cursor = RING.mark()"),
                         "the cursor moves after the read, so the read is not skipped")
 

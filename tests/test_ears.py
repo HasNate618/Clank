@@ -585,3 +585,62 @@ class RingTests(unittest.TestCase):
         self.assertFalse(hearing.ok)
         self.assertEqual(hearing.ended_by, "never-started")
         self.assertGreater(ring.cursor, 0)
+
+
+def _tone(seconds: float, amp: int = 8000) -> bytes:
+    """A loud block pattern: alternating +amp/-amp at the 50 ms block size."""
+    samples = array.array("h", [amp if i % 2 else -amp
+                                for i in range(int(seconds * ears.RATE))])
+    return samples.tobytes()
+
+
+def _silence(seconds: float) -> bytes:
+    return b"\x00\x00" * int(seconds * ears.RATE)
+
+
+class AnUtteranceEndsWhereTheSpeechEnds(unittest.TestCase):
+    """`read_from` stops at the clock, and the clock is not where a sentence ends.
+
+    MEASURED 2026-11-14, run 025412-cf7309: JobBot's post-grab line ran 12.6 s, starting 19.0 s
+    into the ring, while `confirm` read at 24.0 s. The first half became one `heard` row and the
+    tail played on into the next turn's listen, where "off the table and let's get started" was
+    transcribed as "Google and let's get started" and planned as `hold` - the brain took its own
+    missing half for a new instruction.
+    """
+
+    def test_quiet_tail_counts_whole_blocks(self) -> None:
+        self.assertAlmostEqual(ears.quiet_tail_s(_tone(0.5) + _silence(1.0)), 1.0, places=2)
+        self.assertEqual(ears.quiet_tail_s(_tone(0.5)), 0.0)
+
+    def test_voice_is_any_block_over_the_floor(self) -> None:
+        self.assertTrue(ears.has_voice(_silence(0.5) + _tone(0.2)))
+        self.assertFalse(ears.has_voice(_silence(2.0)))
+
+    def ring(self, pcm: bytes) -> "ears.Ring":
+        with tempfile.NamedTemporaryFile(suffix=".raw", delete=False) as handle:
+            handle.write(pcm)
+            name = handle.name
+        self.addCleanup(pathlib.Path(name).unlink, missing_ok=True)
+        ring = ears.Ring(pathlib.Path(name))
+        self.addCleanup(ring.stop)
+        return ring
+
+    def test_a_finished_utterance_returns_at_once(self) -> None:
+        ring = self.ring(_tone(1.0) + _silence(3.0))
+        started = time.monotonic()
+        pcm = ring.read_utterance(0, hang_s=2.0, max_s=10.0)
+        self.assertGreaterEqual(len(pcm), int(1.0 * ears.RATE) * 2)
+        self.assertLess(time.monotonic() - started, 1.0, "a hang already in the file is not waited for")
+
+    def test_speech_with_no_hang_yet_is_waited_out(self) -> None:
+        ring = self.ring(_tone(0.4))
+        started = time.monotonic()
+        pcm = ring.read_utterance(0, hang_s=2.0, max_s=0.3)
+        self.assertGreater(len(pcm), 0, "the deadline returns what it has")
+        self.assertGreaterEqual(time.monotonic() - started, 0.25)
+
+    def test_a_silent_ring_gives_up_rather_than_waiting_out_the_deadline(self) -> None:
+        ring = self.ring(_silence(2.0))
+        started = time.monotonic()
+        self.assertEqual(ring.read_utterance(0, hang_s=2.0, max_s=30.0, grace_s=0.2), b"")
+        self.assertLess(time.monotonic() - started, 5.0)

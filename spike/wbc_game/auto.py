@@ -320,7 +320,10 @@ def confirm(pattern: str, max_s: float = 20.0, after: int | None = None) -> str:
         # The act's own seconds, read back out of the ring. This is the fix for the measured
         # miss: JobBot's reply ("...grab one of the job cartridges off the table...") ran for
         # 14.9 s *during* a generated reach, and this window opened one second after it ended.
-        pcm = RING.read_from(after, max_s)
+        # Not `read_from`: that stops at the clock, which is mid-sentence. MEASURED 2026-11-14,
+        # run 025412-cf7309: the reply ran 12.6 s and this read at 5 s into it, so the tail
+        # became the next turn's instruction ("Google and let's get started").
+        pcm = RING.read_utterance(after, max_s=max_s)
         # Reading is consuming: the utterance just transcribed must not be heard again by the
         # next `listen`. MEASURED, run 193516-ca1fde: without this the same sentence arrived
         # three times - once as the act's reply, then again whenever a turn resumed listening -
