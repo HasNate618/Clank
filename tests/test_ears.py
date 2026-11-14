@@ -139,17 +139,17 @@ class RoutingTest(unittest.TestCase):
         self.assertFalse(report["created"])
 
     def test_route_refuses_when_the_game_is_not_playing(self):
-        with mock.patch.object(ears, "_pactl", side_effect=self.fake_pactl):
-            with self.assertRaises(ears.EarsError) as caught:
-                ears.route("Factorio")
+        with mock.patch.object(ears, "_pactl", side_effect=self.fake_pactl), \
+                self.assertRaises(ears.EarsError) as caught:
+            ears.route("Factorio")
         self.assertIn("no playback stream", str(caught.exception))
         self.assertIn("Zen", str(caught.exception))
 
     def test_pactl_failure_is_an_ears_error(self):
         boom = mock.Mock(returncode=1, stderr=b"no such sink", stdout=b"")
-        with mock.patch.object(ears.subprocess, "run", return_value=boom):
-            with self.assertRaises(ears.EarsError) as caught:
-                ears._pactl("list", "sinks")
+        with mock.patch.object(ears.subprocess, "run", return_value=boom), \
+                self.assertRaises(ears.EarsError) as caught:
+            ears._pactl("list", "sinks")
         self.assertIn("no such sink", str(caught.exception))
 
     def test_missing_pactl_is_an_ears_error(self):
@@ -507,3 +507,81 @@ class CliTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RingTests(unittest.TestCase):
+    """One recorder for the run, read at any offset.
+
+    The reason this exists is measured, run 181738-ee1d6d: the recording's continuous capture
+    held 12.8 s of JobBot's greeting (spoken while the body was resetting) and 14.9 s of his
+    next instruction (spoken during a generated reach), and the brain heard one line of it,
+    because `listen` records only while it listens and `confirm` opens its window after the act.
+    """
+
+    def setUp(self):
+        self.dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.dir.cleanup)
+        self.path = pathlib.Path(self.dir.name) / "ring.raw"
+
+    def write(self, blocks):
+        with self.path.open("ab") as handle:
+            for block in blocks:
+                handle.write(block)
+        return self.path.stat().st_size
+
+    def ring(self):
+        return ears.Ring(self.path, device="test.monitor")
+
+    def test_a_reader_returns_whole_blocks_from_an_offset(self):
+        size = self.write([silence(0.05)] * 4)
+        reader = self.ring().reader(0)
+        first = reader.read(int(ears.BLOCK_S * ears.RATE) * 2)
+        self.assertEqual(len(first), int(ears.BLOCK_S * ears.RATE) * 2)
+        self.assertEqual(reader.offset, len(first))
+        self.assertLess(reader.offset, size)
+
+    def test_a_partial_block_is_not_handed_out(self):
+        """A read boundary in the middle of a block would misalign every RMS after it."""
+        block = int(ears.BLOCK_S * ears.RATE) * 2
+        with self.path.open("ab") as handle:
+            handle.write(silence(0.05) + b"\x01\x02\x03")
+        reader = self.ring().reader(0)
+        self.assertEqual(len(reader.read(block * 4)), block)
+        self.assertEqual(reader.read(block * 4), b"")
+
+    def test_read_back_is_the_tail_and_read_from_is_the_past(self):
+        self.write([silence(0.05)] * 20 + [pcm(6000, 0.05)] * 10)
+        ring = self.ring()
+        block = int(ears.BLOCK_S * ears.RATE) * 2
+        self.assertEqual(len(ring.read_back(0.5)), 10 * block)
+        self.assertEqual(len(ring.read_from(20 * block)), 10 * block)
+        self.assertEqual(len(ring.read_from(20 * block, max_s=0.25)), 5 * block)
+        self.assertEqual(ring.read_from(10_000_000), b"")
+
+    def test_a_mark_is_block_aligned(self):
+        self.write([silence(0.05)] * 3 + [b"\x01\x02\x03"])
+        ring = self.ring()
+        self.assertEqual(ring.mark() % ring.block, 0)
+
+    def test_listen_replays_from_the_beginning(self):
+        """Turn one asks the ring for the greeting, however long ago it was spoken."""
+        self.write([silence(0.05)] * 20 + [pcm(6000, 0.05)] * 8 + [silence(0.05)] * 60)
+        hearing = self.ring().listen(start=0, max_s=5.0)
+        self.assertTrue(hearing.ok, hearing.error)
+        self.assertEqual(hearing.ended_by, "hang")
+        self.assertGreaterEqual(hearing.speech_s, 0.35)
+
+    def test_a_replayed_utterance_is_not_heard_twice(self):
+        self.write([silence(0.05)] * 20 + [pcm(6000, 0.05)] * 8 + [silence(0.05)] * 60)
+        ring = self.ring()
+        self.assertTrue(ring.listen(start=0, max_s=5.0).ok)
+        self.assertFalse(ring.listen(max_s=1.0).ok, "the cursor must resume after the utterance")
+        self.assertEqual(ring.cursor, ring.mark())
+
+    def test_silence_never_opens_the_gate_and_still_advances(self):
+        self.write([silence(0.05)] * 100)
+        ring = self.ring()
+        hearing = ring.listen(start=0, max_s=1.0)
+        self.assertFalse(hearing.ok)
+        self.assertEqual(hearing.ended_by, "never-started")
+        self.assertGreater(ring.cursor, 0)

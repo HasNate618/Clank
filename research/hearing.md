@@ -129,3 +129,84 @@ spike/e3/.venv/bin/python spike/wbc_game/do_task.py --listen --dry-run
 # read the diary back
 python3 -m clank.brainlog --tail 20
 ```
+
+## 2026-11-14 — the loop was half-duplex, and the recording proved it
+
+Run `181738-ee1d6d` grabbed the card and the diary showed the brain hearing **one** line in 137 s.
+The recording from the same run held far more, so the audio path was never the problem. Mapping
+the recording's clock (t=0 at 18:17:50) onto the run's log:
+
+| recording | wall clock | the game | the brain |
+| --- | --- | --- | --- |
+| 6.8-19.6 s | 18:17:56-18:18:09 | greeting, **12.8 s, peak 11.9k** | `reset body` 18:18:01 and 18:18:07; audio routed 18:18:08 - deaf |
+| 28.3-43.2 s | 18:18:18-18:18:33 | next instruction, **14.9 s, peak 9.5k** | `locate` 18:18:22, generated reach to 18:18:34 - deaf |
+| 55 s onward | 18:18:45+ | ambience, peak ~1500 | gate ~2400+, correctly nothing |
+
+Three structural losses, none of them a gate tuning problem:
+
+1. **The greeting is spent during the body reset.** The game greets within ~6 s of its window;
+   the reset costs ~6 s and routing takes another second. The first `listen` opens after both.
+2. **The loop is half-duplex.** `one_turn` is listen -> think -> sense -> act -> confirm with no
+   capture running while it acts. A reach is 10-15 s of deafness, and that is when JobBot
+   delivers the next instruction.
+3. **`confirm` opens after the act.** Its 8 s window started 18:18:34, one second *after* the
+   14.9 s of speech ended at 18:18:33 - so "no word from JobBot" was literally true and entirely
+   misleading.
+
+### The fix: one recorder for the run
+
+`clank/ears.py` grew `Ring` and `RingReader`: one `parecord` per run writing raw s16le to
+`<run>/audio-ring.raw`, read at any byte offset. `Ring.listen()` runs the *same gate* over the
+ring, so `start=0` replays the run from its first byte and `listen()` reads live; `mark()` is a
+block-aligned "now"; `read_from(mark)` hands the past to `confirm`. Only whole blocks are handed
+out, so RMS blocks never straddle a read boundary.
+
+`auto.py` starts the ring **before** `ready()` (the greeting arrives during the reset), takes
+`act_mark` **before** the act, and `confirm(after=act_mark)` transcribes the act's own seconds
+instead of opening a window after it. `confirm` advances `RING.cursor` as it reads.
+
+**Measured live, run `193516-ca1fde`** - the first run that heard the whole opening:
+
+```text
+19:35:29 act: audio ring audio-ring.raw from clank-game.monitor
+19:35:39 heard: Welcome to the job simulator. My name is JobBot, and I'm the curator of this
+                fine job museum. (ms=272.85)          <- replayed from the ring, spoken during
+                                                          the body reset
+19:35:41 heard: Here's my card. (ms=63.55)
+19:35:59 heard: Hey, Hillman, take my card. All right, why don't you grab one of the job
+                cartridges off the table and let's get started.   <- source="act", the line
+                                                          that was always missed
+19:35:59 result: the card is in my hand - JobBot moved on to the cartridges
+```
+
+### And a bug the ring introduced, which the same run found
+
+The long line arrived **three times** - once as the act's reply, then again whenever a turn
+resumed listening from a cursor `confirm` had not advanced. Every copy went into `SessionMemory`
+and back into the planner's prompt. Fixed: reading is consuming, and `confirm` sets
+`RING.cursor = RING.mark()` after it reads.
+
+### Two other ways the loop went deaf, both fixed the same day
+
+- **Nothing called `ears.route()`.** The `clank-game` sink existed only because an earlier session
+  made it by hand, so a restarted game played to the operator's speakers while the loop recorded
+  the monitor: six minutes of silence that looked exactly like a quiet game. `main()` now routes
+  every run, waiting up to 10 s for the stream to appear.
+- **`module-stream-restore` re-mutes every new sink-input.** Measured twice: `Mute: yes` on
+  `JobSimulator.exe` with the route correct, the loopback running and the monitor reading peak 0.
+  `ears.route()` now clears it.
+
+### The repeated line, 2026-11-14
+
+Watching run `193516-ca1fde`, the post-grab instruction looked like it was said three times. In the
+game it was said once. Three separate causes, and the diary showed all three:
+
+1. **`confirm` read it back out of the ring** - correct, and the line the loop had never heard.
+2. **The carry-forward logged it again as `heard`.** Nothing was heard on that turn: it was the
+   previous turn's reply becoming the next instruction. Now a `think` row.
+3. **A later `listen` replayed it.** `confirm` read audio from `act_mark` but did not advance
+   `RING.cursor`, so the next turn transcribed the same seconds again. Reading is consuming:
+   `confirm` sets `RING.cursor = RING.mark()`.
+
+Cost of all three: one sentence in three `heard` rows, six planner prompts carrying it, and
+`prompt_n` climbing 846 -> 982 -> 1116 -> 1242 -> 1378 -> 1513 across the cartridge attempts.

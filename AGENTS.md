@@ -509,6 +509,19 @@ python3 -m clank.brainlog --tail 20
   for the floor whenever a capture opened mid-line (measured: floor 2445, gate 9781, peak 4415).
   It has a limit: it needs a quiet fifth of the pre-start blocks, so a capture that is loud from
   first block to last never opens.
+- **The run records once, into a ring, and every question is asked of that file.** `clank/ears.py`
+  `Ring` starts **before** `ready()` in `auto.py` (the greeting arrives during the body reset) and
+  writes `<run>/audio-ring.raw`; `Ring.listen(start=0)` replays the run from its first byte through
+  the same gate, `listen()` reads live, and `confirm(after=act_mark)` transcribes the **act's own
+  seconds** instead of opening a window after it. Measured, run `193516-ca1fde`: the greeting, the
+  card line and the post-grab instruction all heard, where run `181738-ee1d6d` heard one of them -
+  the loop was half-duplex, so 12.8 s of greeting (during the reset) and 14.9 s of instruction
+  (during a reach) were never recorded at all. Reading is consuming: `confirm` advances
+  `RING.cursor`, or the same sentence arrives again on the next turn.
+- **`route()` is called by `auto.py`, and it unmutes.** Nothing used to call it, so a restarted
+  game played to the operator's speakers with a remembered `Mute: yes` from
+  `module-stream-restore` (which reapplies it to every new stream) while the loop recorded peak 0
+  for six minutes. Silence that looks like a quiet game is now logged.
 - **`hang_s` is 2.0 s, measured between the two gaps.** Inside JobBot's opening the pause is
   0.60 s ("...fine job museum." to "Here's my card."); between two separate turns it is 6.3-6.9 s.
   `Hearing.ended_by` says which rule stopped the capture (`hang`/`deadline`/`eof`/`never-started`),

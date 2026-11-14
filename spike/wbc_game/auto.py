@@ -117,6 +117,12 @@ FOV = Fov.from_degrees(70.0, 70.0, 57.11, 57.11)
 ROUTE_TRIES = 10
 ROUTE_WAIT_S = 1.0
 
+#: The run's one recorder. Started before the body reset, because that is when JobBot speaks
+#: his opening line: measured, 12.8 s of it played while the body was being reset and the loop
+#: was not listening. None means there is no ring (no parecord, or a plan-only run) and every
+#: question falls back to opening its own window, as it used to.
+RING: "ears.Ring | None" = None
+
 SENSE_BUDGET = 2
 #: A grounded point outside this distance from the *resting hand* is not the object being
 #: reached for. The bound is reach_vr's own: it refuses past MAX_PLAUSIBLE_M from the hand,
@@ -287,7 +293,7 @@ def mark(png: bytes, pixel: tuple[float, float], out: pathlib.Path) -> None:
     image.save(out)
 
 
-def confirm(pattern: str, max_s: float = 8.0) -> str:
+def confirm(pattern: str, max_s: float = 20.0, after: int | None = None) -> str:
     """The game is the oracle, and it is free: when the player takes the card, JobBot stops
     asking for it and tells you to take a cartridge. Exit codes cannot say that - the reach
     closed 82 mm short today and reported SATURATED either way - but the script can.
@@ -299,6 +305,29 @@ def confirm(pattern: str, max_s: float = 8.0) -> str:
     4415, and the diary wrote "no word from JobBot" over an audible
     "You grab one of the job cartridges off the table and let's get started."
     """
+    if after is not None and RING is not None:
+        # The act's own seconds, read back out of the ring. This is the fix for the measured
+        # miss: JobBot's reply ("...grab one of the job cartridges off the table...") ran for
+        # 14.9 s *during* a generated reach, and this window opened one second after it ended.
+        pcm = RING.read_from(after, max_s)
+        # Reading is consuming: the utterance just transcribed must not be heard again by the
+        # next `listen`. MEASURED, run 193516-ca1fde: without this the same sentence arrived
+        # three times - once as the act's reply, then again whenever a turn resumed listening -
+        # and every copy went into the session memory and back into the planner's prompt.
+        RING.cursor = RING.mark()
+        if not pcm:
+            brainlog.log("result", "nothing in the ring across the act", ok=False)
+            return ""
+        wav = ears.wav_bytes(pcm)
+        heard = brain.transcribe(BrainConfig(), wav)
+        if heard.error:
+            brainlog.log("error", f"transcribe failed: {heard.error}")
+            return ""
+        if heard.empty:
+            return ""
+        brainlog.log("heard", heard.text, ms=heard.decode_ms,
+                     seconds=len(pcm) / (ears.RATE * 2), source="act", cut=heard.ellipsis)
+        return heard.text
     try:
         hearing = ears.record(max_s, pattern=pattern)
     except ears.EarsError as exc:
@@ -370,6 +399,21 @@ def warm_generator() -> None:
         brainlog.log("act", "generator resident")
     else:
         brainlog.log("act", "generator not resident; each reach will load it")
+
+
+def _start_ring(pattern: str) -> "ears.Ring | None":
+    """Begin the run's one recorder, or return None so every window falls back to its own.
+
+    A ring that will not start is a degradation, not a failure: the loop then records per
+    question exactly as it did before, which hears less but still hears.
+    """
+    path = STATE.parent / "audio-ring.raw"
+    ring = ears.Ring(path, pattern=pattern)
+    if not ring.start():
+        brainlog.log("error", f"no audio ring: {ring.error}; each window records its own")
+        return None
+    brainlog.log("act", f"audio ring {path.name} from {ring.device}")
+    return ring
 
 
 def _ardy_env() -> dict[str, str]:
@@ -607,10 +651,16 @@ def one_turn(say: str = "", pattern: str = ears.DEFAULT_PATTERN,
         # listened for again. MEASURED 2026-11-13: "Here's my card" fell in a 0.6 s gap inside
         # the opening, so the pause rule cannot be the only way an instruction arrives.
         spoken = pending_heard
-        brainlog.log("heard", spoken, source="confirm")
+        # Not a `heard` row: nothing was heard this turn. `confirm` already wrote the utterance
+        # beside the act it answered, and writing it again says the game spoke twice when it
+        # spoke once. MEASURED, run 193516-ca1fde: one sentence became three `heard` rows.
+        brainlog.log("think", f"carrying JobBot's reply forward: {spoken[:70]}")
     else:
         try:
-            hearing = ears.listen(pattern=pattern, max_s=max_s)
+            if RING is not None:
+                hearing = RING.listen(max_s=max_s)
+            else:
+                hearing = ears.listen(pattern=pattern, max_s=max_s)
         except ears.EarsError as exc:
             return Turn(spoken=f"waiting: {exc}")
         if not hearing.ok:
@@ -631,6 +681,11 @@ def one_turn(say: str = "", pattern: str = ears.DEFAULT_PATTERN,
         spoken = heard.text
         brainlog.log("heard", spoken, ms=heard.decode_ms, speech_s=hearing.speech_s,
                      peak=hearing.peak, cut=heard.ellipsis)
+
+    # Everything from here to the end of the act is JobBot's answer to it, and `confirm` reads
+    # it back out of the ring instead of opening a window once the act is over. MEASURED, run
+    # 181738-ee1d6d: his reply ran 14.9 s during the reach and the old window opened after it.
+    act_mark = RING.mark() if RING is not None else None
 
     if not plan_only and _body_needs_reset(last_code) and not ready():
         return Turn(spoken=spoken)
@@ -773,7 +828,7 @@ def one_turn(say: str = "", pattern: str = ears.DEFAULT_PATTERN,
     # because JobBot reacts to the *game* and not to how the instruction arrived. MEASURED
     # 2026-11-10: with the confirmation skipped under --say, the diary wrote "grab failed
     # (code=2)" for a grab the game had accepted and the operator watched succeed.
-    spoken_after = confirm(pattern)
+    spoken_after = confirm(pattern, after=act_mark)
     if session is not None and spoken_after:
         session.note_result(f"JobBot said: {spoken_after[:120]}")
     if spoken_after:
@@ -814,8 +869,6 @@ def main(argv: list[str] | None = None) -> int:
     session = brain.SessionMemory()
     pending = ""
     last_code: int | None = None
-    if not args.plan_only and not ready():
-        brainlog.log("error", "the body did not come back up; a turn may still find it")
     # Put the game behind the capture sink before listening to it, every run. Measured: nothing
     # else calls `ears.route()`, so a restarted game played to the operator's speakers with a
     # remembered `Mute: yes` on its new stream, and the loop sat deaf for six minutes while the
@@ -832,6 +885,17 @@ def main(argv: list[str] | None = None) -> int:
                 brainlog.log("error", f"could not route the game's audio: {exc}")
             else:
                 time.sleep(ROUTE_WAIT_S)
+
+    # One recorder for the whole run, started here - before the reset, not after it. JobBot's
+    # greeting arrives within seconds of the game's window and the body reset costs ~6 s, so a
+    # recorder that starts when listening starts has already missed the opening line: measured,
+    # 12.8 s of it played during the reset. `Ring` also takes the greeting out of the equation
+    # for turn one, which replays the ring from its first byte.
+    global RING
+    ring = _start_ring(args.pattern)
+    RING = ring
+    if not args.plan_only and not ready():
+        brainlog.log("error", "the body did not come back up; a turn may still find it")
     started = time.monotonic()
     deadline = started + args.duration
     turns = 0
@@ -862,6 +926,10 @@ def main(argv: list[str] | None = None) -> int:
             quiet += 1
         if time.monotonic() + MARGIN_S >= deadline:
             break
+    if ring is not None:
+        detail = ring.stop()
+        if detail:
+            brainlog.log("error", f"the audio ring said: {detail}")
     brainlog.log("result", f"{turns} turn(s), {quiet} quiet window(s), "
                           f"{time.monotonic() - started:.0f}s listening")
     return 0

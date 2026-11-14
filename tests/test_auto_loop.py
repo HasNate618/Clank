@@ -110,14 +110,30 @@ class TheActUsesTheGeneratedPath(unittest.TestCase):
         self.assertIn("--tol", flags["_cruise_argv"], "the cruise keeps its tight band")
         self.assertNotIn("--tol", flags["_generated_argv"])
 
-    def test_confirm_records_a_window_instead_of_listening(self) -> None:
-        # The gate's job is "wait for the next line"; confirm's question is "what did the game
-        # just say", and the game talks over the grab. MEASURED 2026-11-13: a listen that opened
-        # on JobBot measured its floor on the speech and reported silence over an audible line.
+    def test_confirm_reads_the_act_back_out_of_the_ring(self) -> None:
+        # MEASURED, run 181738-ee1d6d: JobBot's reply ran 14.9 s *during* a generated reach and
+        # the old fixed window opened one second after it ended, so the diary said "no word from
+        # JobBot" over a line he had just finished saying. The ring holds the act's own seconds.
         confirm = self.source[self.source.index("def confirm("):self.source.index("def grab_pixel(")]
+        self.assertIn("RING.read_from(after", confirm)
+        self.assertIn('source="act"', confirm)
+        # And the old window stays as the fallback, for a run with no ring.
         self.assertIn("ears.record(", confirm)
-        self.assertNotIn("ears.listen(", confirm)
-        self.assertIn("max_s: float = 8.0", confirm)
+        self.assertNotIn("ears.listen(", confirm, "a listen opens on JobBot and gates itself deaf")
+
+    def test_the_mark_is_taken_before_the_act(self) -> None:
+        turn = self.source[self.source.index("def one_turn("):self.source.index("def main(")]
+        self.assertLess(turn.index("act_mark = RING.mark()"), turn.index("grab_pixel("),
+                        "a mark taken after the act cannot contain the act's speech")
+        self.assertIn("confirm(pattern, after=act_mark)", turn)
+
+    def test_the_ring_starts_before_the_body_is_reset(self) -> None:
+        # The greeting arrives within seconds of the game's window and the reset costs ~6 s:
+        # measured, 12.8 s of JobBot's opening played while the body was being reset.
+        main = self.source[self.source.index("def main("):]
+        self.assertLess(main.index("_start_ring("), main.index("ready()"),
+                        "a ring started after the reset has already missed the opening line")
+        self.assertIn("ring.stop()", main)
 
     def test_one_session_memory_lives_in_main(self) -> None:
         main = self.source[self.source.index("def main("):]
@@ -235,3 +251,36 @@ class ATravelIsItsOwnVerb(unittest.TestCase):
         self.assertIn("reach_vr.py", body)
         self.assertIn('"--move"', body)
         self.assertNotIn("reach_ardy.py", body.replace("(`reach_ardy --move`)", ""))
+
+
+class TheRingIsConsumedOnce(unittest.TestCase):
+    """Audio read back for `confirm` must not be heard again by the next `listen`.
+
+    MEASURED, run 193516-ca1fde: JobBot's "grab one of the job cartridges" arrived three times,
+    once as the act's own reply and twice more when later turns resumed listening from a cursor
+    that `confirm` had not advanced. Every copy went into the session and the planner's prompt.
+    """
+
+    def test_confirm_advances_the_cursor(self) -> None:
+        source = (pathlib.Path(__file__).resolve().parents[1]
+                  / "spike" / "wbc_game" / "auto.py").read_text()
+        confirm = source[source.index("def confirm("):source.index("def grab_pixel(")]
+        self.assertIn("RING.cursor = RING.mark()", confirm)
+        read_at = confirm.index("RING.read_from(after")
+        self.assertLess(read_at, confirm.index("RING.cursor = RING.mark()"),
+                        "the cursor moves after the read, so the read is not skipped")
+
+    def test_the_carried_reply_is_not_written_as_a_second_hearing(self) -> None:
+        """JobBot said it once, so the diary says it once.
+
+        MEASURED, run 193516-ca1fde: "Hey, Hillman, take my card. All right, why don't you grab
+        one of the job cartridges..." produced three `heard` rows - one from `confirm` reading
+        the act back, one from this carry-forward, and one from a `listen` that replayed audio
+        the cursor had not consumed. Only the first was a hearing.
+        """
+        source = (pathlib.Path(__file__).resolve().parents[1]
+                  / "spike" / "wbc_game" / "auto.py").read_text()
+        turn = source[source.index("def one_turn("):source.index("def main(")]
+        start = turn.index("elif pending_heard:")
+        carried = turn[start:turn.index("    else:", start)]
+        self.assertNotIn('brainlog.log("heard"', carried)

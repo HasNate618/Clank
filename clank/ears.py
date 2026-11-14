@@ -472,6 +472,174 @@ class TailReader:
 
 
 # --------------------------------------------------------------------------- #
+# A ring: one recorder for the whole run
+# --------------------------------------------------------------------------- #
+
+
+class RingReader:
+    """Reads a growing raw PCM file from a byte offset, whole blocks at a time.
+
+    `TailReader` tails a WAV from the end; this reads a *raw* file from anywhere, which is what
+    makes the ring useful: the same file can be replayed from the start (the greeting that was
+    spoken while the body was resetting) and read live from the end, and both go through the
+    same gate in `listen`.
+
+    Only whole blocks come back, so RMS blocks never straddle a read boundary and a replay's
+    block boundaries line up with the live capture's.
+    """
+
+    def __init__(self, path: pathlib.Path, start: int = 0, block: int = 0):
+        self.path = path
+        self.offset = start
+        self.block = block
+
+    def available(self) -> int:
+        try:
+            return self.path.stat().st_size
+        except OSError:
+            return 0
+
+    def read(self, size: int) -> bytes:
+        total = self.available()
+        usable = total - (total % self.block) if self.block else total
+        if usable <= self.offset:
+            return b""
+        want = min(size, usable - self.offset)
+        try:
+            with self.path.open("rb") as handle:
+                handle.seek(self.offset)
+                chunk = handle.read(want)
+        except OSError:
+            return b""
+        self.offset += len(chunk)
+        return chunk
+
+
+class Ring:
+    """One `parecord` for the whole run, readable backwards and forwards.
+
+    MEASURED 2026-11-13, run 181738-ee1d6d: the recording's own continuous capture held 12.8 s
+    of JobBot's greeting and 14.9 s of his next instruction, and the brain heard one line of
+    it. The greeting played while the body was resetting; the instruction played during a
+    generated reach. `listen` records only while it is listening and `confirm` opens its window
+    after the act, so both were deaf windows, and no gate tuning can recover speech that was
+    never recorded.
+
+    So the run records once, continuously, and every question is asked of that one file:
+    `listen(start=0)` replays from the beginning, `listen()` reads live, and `read_from(mark)`
+    hands the act's own seconds to `confirm`.
+    """
+
+    def __init__(
+        self,
+        path: pathlib.Path | str,
+        pattern: str = DEFAULT_PATTERN,
+        sink: str = SINK_NAME,
+        rate: int = RATE,
+        device: str = "",
+    ) -> None:
+        self.path = pathlib.Path(path)
+        self.pattern = pattern
+        self.sink = sink
+        self.rate = rate
+        self.device = device or capture_device(pattern, sink)
+        self.block = int(BLOCK_S * rate) * 2
+        self._proc: subprocess.Popen[bytes] | None = None
+        self.error = ""
+        #: Where the last `listen` stopped reading. The next one resumes here, so a turn never
+        #: replays the utterance it just heard.
+        self.cursor = 0
+
+    # -- lifecycle ---------------------------------------------------------- #
+
+    def start(self) -> bool:
+        """Begin recording. False means the run has no ring and must fall back per window."""
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        args = [
+            PARECORD,
+            f"--device={self.device}",
+            f"--rate={self.rate}",
+            "--channels=1",
+            "--format=s16le",
+            "--no-remix",
+            "--file-format=raw",
+            str(self.path),
+        ]
+        try:
+            self._proc = subprocess.Popen(  # noqa: S603 - fixed argv, no shell
+                args, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE
+            )
+        except FileNotFoundError:
+            self.error = "parecord is not installed"
+            return False
+        except OSError as exc:
+            self.error = str(exc)
+            return False
+        return True
+
+    def stop(self) -> str:
+        if self._proc is None:
+            return ""
+        detail = _stop(self._proc)
+        self._proc = None
+        return detail
+
+    @property
+    def alive(self) -> bool:
+        return self._proc is not None and self._proc.poll() is None
+
+    # -- reading ------------------------------------------------------------ #
+
+    def bytes_available(self) -> int:
+        try:
+            return self.path.stat().st_size
+        except OSError:
+            return 0
+
+    def available_s(self) -> float:
+        return self.bytes_available() / (self.rate * 2)
+
+    def mark(self) -> int:
+        """A block-aligned offset at the current end: where "now" is in the ring."""
+        total = self.bytes_available()
+        return total - (total % self.block)
+
+    def reader(self, start: int | None = None) -> RingReader:
+        return RingReader(self.path, self.mark() if start is None else start, self.block)
+
+    def read_from(self, start: int, max_s: float = 0.0) -> bytes:
+        """Bytes from `start` to now, optionally capped. No waiting: this reads the past."""
+        total = self.bytes_available()
+        if total <= start:
+            return b""
+        want = total - start
+        if max_s > 0:
+            want = min(want, int(max_s * self.rate) * 2)
+        try:
+            with self.path.open("rb") as handle:
+                handle.seek(start)
+                return handle.read(want)
+        except OSError:
+            return b""
+
+    def read_back(self, seconds: float) -> bytes:
+        start = max(0, self.mark() - int(seconds * self.rate) * 2)
+        return self.read_from(start)
+
+    def listen(self, start: int | None = None, **kwargs: Any) -> Hearing:
+        """`listen` over the ring, and leave `cursor` where it stopped.
+
+        `start=0` replays the run from its beginning: that is how the greeting spoken while the
+        body was resetting still arrives, through the same gate, a minute late and unhurried.
+        """
+        kwargs.setdefault("rate", self.rate)
+        reader = self.reader(self.cursor if start is None else start)
+        hearing = listen(reader=reader, **kwargs)
+        self.cursor = reader.offset
+        return hearing
+
+
+# --------------------------------------------------------------------------- #
 # Capture
 # --------------------------------------------------------------------------- #
 
