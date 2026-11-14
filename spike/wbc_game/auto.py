@@ -421,6 +421,16 @@ def _start_ring(pattern: str) -> "ears.Ring | None":
     A ring that will not start is a degradation, not a failure: the loop then records per
     question exactly as it did before, which hears less but still hears.
     """
+    # The run opens the recorder before it relaunches the game, because the relaunch is what
+    # makes the game talk: MEASURED 2026-11-14, run 025412-cf7309, a ring started here began at
+    # 02:54:28 and the greeting's first words were never in the file. Reading it is this loop's
+    # whole part in it - one writer, one reader.
+    given = os.environ.get("AUDIO_RING_PATH", "").strip()
+    if given and pathlib.Path(given).exists():
+        attached = ears.Ring(pathlib.Path(given), pattern=pattern)
+        brainlog.log("act", f"audio ring {attached.path.name} from the run "
+                            f"({attached.available_s():.0f} s already)")
+        return attached
     path = STATE.parent / "audio-ring.raw"
     ring = ears.Ring(path, pattern=pattern)
     if not ring.start():

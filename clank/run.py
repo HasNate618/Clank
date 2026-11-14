@@ -119,6 +119,9 @@ class RunManager:
         self._recorder = recorder
         self._composite = composite if composite is not None else run_composite
         self._recording = False
+        #: The run's one audio recorder. It is opened before the game is relaunched, because
+        #: that relaunch is what makes the game talk.
+        self._ring: ears.Ring | None = None
 
         self._lock = threading.Lock()
         self._idle = threading.Event()
@@ -243,6 +246,9 @@ class RunManager:
             env.pop(key, None)
         env["CLANK_BRAIN_LOG"] = str(run_dir / "brain.jsonl")
         env["CLANK_AUTO_STATE"] = str(run_dir / "frames")
+        # Not a CLANK_ name: `clank.config` rejects unknown CLANK_* as a bad override, and this
+        # is not configuration, it is where this run put its recorder.
+        env["AUDIO_RING_PATH"] = str(run_dir / "audio-ring.raw")
         return env
 
     # ---- lifecycle -----------------------------------------------------
@@ -313,6 +319,11 @@ class RunManager:
             run_dir = self._stack(generation)
             self._set_phase(RunState.PREPARING)
             self._open_run(run_dir)
+            # Before the game: the relaunch is what makes it talk, so a recorder opened after it
+            # is a recorder opened too late. MEASURED 2026-11-14, run 025412-cf7309 - the brain
+            # loop's own ring began at 02:54:28 and the greeting's first words, "Hello human!
+            # Welcome to the Job Simulator.", were not in the file at all.
+            self._open_ring(run_dir)
             self._check_cancel(generation)
 
             self._set_phase(RunState.GAME)
@@ -459,6 +470,24 @@ class RunManager:
             self._recorder = None
             self._set_detail(f"recording unavailable: {exc}")
 
+    def _open_ring(self, run_dir: Path) -> None:
+        """Start the run's audio recorder, or say why there is not one.
+
+        A recorder is evidence, like a recording: no parecord, no PulseAudio, no sink - none of
+        it fails a run, and the brain loop falls back to recording each window itself.
+        """
+        if self._ring is not None:
+            return
+        try:
+            ears.route()
+            ring = ears.Ring(run_dir / "audio-ring.raw")
+            if not ring.start():
+                self._set_detail(f"no audio ring: {ring.error}")
+                return
+            self._ring = ring
+        except Exception as exc:  # noqa: BLE001 - a recorder never fails a run
+            self._set_detail(f"no audio ring: {exc}")
+
     def _stop_recording(self) -> None:
         """Stop the recorder, then hand the encode to a thread of its own.
 
@@ -492,6 +521,9 @@ class RunManager:
             print(f"clank: the composite failed: {exc}", file=sys.stderr)
 
     def _finish(self, state: RunState, error: str) -> None:
+        if self._ring is not None:
+            self._ring.stop()
+            self._ring = None
         self._stop_recording()
         with self._lock:
             self._state = state
