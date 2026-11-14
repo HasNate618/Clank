@@ -6,9 +6,7 @@
 
 A simulated humanoid body plays a commercial VR game on its own. It reads the frame the game has just rendered, decides what to do next, and does it. Every decision in the loop comes from one 2B vision-language model running locally, on the same 8 GB card as the game.
 
-[![The recordings page for run 190131-679de2: the game's view, the simulated body, and the diary underneath showing `plan: grab(card)`.](docs/media/grab-still.webp)](docs/media/grab-clip.mp4)
-
-*Twenty seconds of run `190131-679de2`, 13 November 2026, with the game's own audio. JobBot offers his card at 0:18, the diary answers `plan: grab(card)` a second later, and the body starts reaching at 0:21. The clip ends at the reach; the clasp lands at 0:43 of the full recording.*
+https://github.com/user-attachments/assets/1104e3ae-6933-4407-950d-f59b27d6c1d3
 
 ## Where it stands
 
