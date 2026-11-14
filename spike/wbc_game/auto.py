@@ -128,6 +128,12 @@ RING: "ears.Ring | None" = None
 #: console every time - because nothing carried the refusal forward.
 REFUSED: dict[str, list[tuple[float, float, float, float]]] = {}
 
+#: What the last turn failed to find, and the act it was for. The next quiet window spends itself
+#: on one re-search for it instead of doing nothing. MEASURED, run 204320-0213a5: locate refused
+#: the cartridge at 20:44:07 and the run then took no action at all, because `one_turn` returns an
+#: empty Turn whenever the gate is quiet. A refusal is not the end of the initiative.
+PENDING_SEARCH: "tuple[str, str] | None" = None
+
 SENSE_BUDGET = 2
 #: A grounded point outside this distance from the *resting hand* is not the object being
 #: reached for. The bound is reach_vr's own: it refuses past MAX_PLAUSIBLE_M from the hand,
@@ -589,6 +595,38 @@ def hands_holding() -> tuple[str, str]:
     return (held + ["empty", "empty"])[:2]  # type: ignore[return-value]
 
 
+def _proactive_retry(pattern: str, session) -> "Turn | None":
+    """One re-search for a target the last turn was refused, before going back to listening.
+
+    The constitution already says what to do with a refusal - "If find said it is not there, look"
+    - and the body knows where it already looked: `REFUSED` holds the box, so `sense` sends the
+    grounder to the quadrant beside it. One attempt only; `PENDING_SEARCH` is cleared before the
+    search so a refusal here cannot become a loop.
+    """
+    global PENDING_SEARCH
+    if PENDING_SEARCH is None:
+        return None
+    target, skill = PENDING_SEARCH
+    PENDING_SEARCH = None
+    stamp = time.strftime("%H%M%S")
+    found, seen = sense(target, brain.WorkingMemory(), stamp,
+                        avoid=tuple(REFUSED.get(target, ())))
+    if found.outcome != "present" or seen is None:
+        brainlog.log("result", f"{target} is still not there: {found.outcome}", ok=False)
+        return Turn()
+    pixel, _png, camera, side, _point = seen
+    started = time.monotonic()
+    code = grab_pixel(pixel[0], pixel[1], side, camera, grab=skill == "grab")
+    brainlog.log("result", f"{skill}({target}) "
+                           f"{'reached' if code == 0 else 'failed'} (asked again)",
+                 ok=code == 0, code=code, seconds=round(time.monotonic() - started, 1),
+                 pixel=pixel, hand=side)
+    if session is not None:
+        session.note_result(f"{skill}({target}) "
+                            f"{'reached' if code == 0 else 'failed'} (asked again)")
+    return Turn(code=code)
+
+
 def _place(thought, seen, memory: brain.WorkingMemory, stamp: str,
            spoken: str, session: brain.SessionMemory | None) -> Turn:
     """`place` is a reach to a point that has nothing under it, then an open hand.
@@ -664,10 +702,10 @@ def one_turn(say: str = "", pattern: str = ears.DEFAULT_PATTERN,
         # listened for again. MEASURED 2026-11-13: "Here's my card" fell in a 0.6 s gap inside
         # the opening, so the pause rule cannot be the only way an instruction arrives.
         spoken = pending_heard
-        # Not a `heard` row: nothing was heard this turn. `confirm` already wrote the utterance
-        # beside the act it answered, and writing it again says the game spoke twice when it
-        # spoke once. MEASURED, run 193516-ca1fde: one sentence became three `heard` rows.
-        brainlog.log("think", f"carrying JobBot's reply forward: {spoken[:70]}")
+        # Nothing is written here. `confirm` already put this sentence in the diary beside the act
+        # it answered, and a second row for it says the game spoke twice when it spoke once -
+        # MEASURED, run 193516-ca1fde: one sentence, three `heard` rows. The instruction is
+        # already visible; repeating it in another colour is noise.
     else:
         try:
             if RING is not None:
@@ -678,8 +716,10 @@ def one_turn(say: str = "", pattern: str = ears.DEFAULT_PATTERN,
             return Turn(spoken=f"waiting: {exc}")
         if not hearing.ok:
             # The gate never opened: nothing was said, so there is no event to write. The
-            # numbers go to the caller's quiet count, not to the diary.
-            return Turn()
+            # numbers go to the caller's quiet count, not to the diary. But a quiet window after
+            # a refusal is not idle time: it is the only time the body has to look again.
+            retry = _proactive_retry(pattern, session)
+            return Turn() if retry is None else retry
         heard = brain.transcribe(BrainConfig(), hearing.wav)
         if heard.error:
             brainlog.log("error", f"transcribe failed: {heard.error}")
@@ -749,6 +789,8 @@ def one_turn(say: str = "", pattern: str = ears.DEFAULT_PATTERN,
                 brainlog.log("result", f"{target} is not there: {found.outcome}"
                                        + (f" at {found.metres:.2f} m" if found.metres else ""),
                              ok=False)
+                global PENDING_SEARCH
+                PENDING_SEARCH = (target, "grab")
                 return Turn(spoken=spoken)
             continue
         intent = thought.decision.intent
@@ -781,6 +823,7 @@ def one_turn(say: str = "", pattern: str = ears.DEFAULT_PATTERN,
                     brainlog.log("result", f"{target} is not there: {found.outcome}"
                                            + (f" at {found.metres:.2f} m" if found.metres else ""),
                                  ok=False)
+                    PENDING_SEARCH = (target, asked)
                     return Turn(spoken=spoken)
         if not thought.decision.accepted:
             brainlog.log("think", f"holding: {thought.decision.reason}")

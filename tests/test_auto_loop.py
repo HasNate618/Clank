@@ -310,7 +310,8 @@ class ARefusalEndsTheTurn(unittest.TestCase):
 
     def test_the_refused_place_is_carried_into_the_next_search(self) -> None:
         self.assertIn("REFUSED.setdefault(target, []).append", self.source)
-        self.assertEqual(self.source.count("avoid=tuple(REFUSED.get(target, ()))"), 2)
+        self.assertEqual(self.source.count("avoid=tuple(REFUSED.get(target, ()))"), 3,
+                         "both sense call sites and the retry")
 
     def test_a_thing_too_close_is_named_as_such(self) -> None:
         # "not visible at 0.19 m" read like a grounding failure. It was the console the robot
@@ -326,3 +327,44 @@ class ARefusalEndsTheTurn(unittest.TestCase):
         self.assertNotIn("STORE CLERK", brain.NEXT_STEP_PROMPT)
         self.assertEqual(brain.refine_target("job cartridge"), "STORE CLERK cartridge")
         self.assertIn("brain.refine_target(", self.source)
+
+
+class ARefusalIsNotTheEndOfTheInitiative(unittest.TestCase):
+    """A quiet window after a refusal is spent looking again, not idling.
+
+    MEASURED, run 204320-0213a5: locate refused the cartridge at 20:44:07 and the run then took
+    no action at all - `one_turn` returns an empty Turn whenever the gate is quiet, so a refusal
+    ended the initiative. The constitution already says what to do: "If find said it is not
+    there, look." The body knows where it already looked, so it looks beside it.
+
+    Read as source, like the rest of this file: `auto.py` imports numpy, which lives in the
+    spike venv and not in the interpreter the suite runs under.
+    """
+
+    def setUp(self) -> None:
+        self.source = (pathlib.Path(__file__).resolve().parents[1]
+                       / "spike" / "wbc_game" / "auto.py").read_text()
+
+    def retry(self) -> str:
+        return self.source[self.source.index("def _proactive_retry("):
+                           self.source.index("def _place(")]
+
+    def test_the_quiet_window_is_where_the_retry_happens(self) -> None:
+        quiet = self.source[self.source.index("if not hearing.ok:"):]
+        self.assertIn("_proactive_retry(", quiet[:600])
+
+    def test_it_looks_once_and_clears_the_errand_first(self) -> None:
+        body = self.retry()
+        self.assertIn("PENDING_SEARCH = None", body)
+        self.assertLess(body.index("PENDING_SEARCH = None"), body.index("sense("),
+                        "cleared before the search, so a second refusal cannot loop")
+
+    def test_the_refused_place_rides_into_the_retry(self) -> None:
+        self.assertIn("avoid=tuple(REFUSED.get(target, ()))", self.retry())
+
+    def test_a_refusal_arms_the_retry(self) -> None:
+        self.assertEqual(self.source.count("PENDING_SEARCH = (target,"), 2,
+                         "both refusal sites remember what to look for")
+
+    def test_the_retry_acts_rather_than_holding(self) -> None:
+        self.assertIn("grab_pixel(", self.retry())
