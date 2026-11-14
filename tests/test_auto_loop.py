@@ -369,3 +369,14 @@ class ARefusalIsNotTheEndOfTheInitiative(unittest.TestCase):
 
     def test_the_retry_acts_rather_than_holding(self) -> None:
         self.assertIn("grab_pixel(", self.retry())
+
+
+class OneResetIsOneRowPair(unittest.TestCase):
+    """`ready` announces the reset and then reports how long it took; both rows are one reset."""
+
+    def test_the_finish_row_says_it_is_the_finish(self) -> None:
+        source = (pathlib.Path(__file__).resolve().parents[1]
+                  / "spike" / "wbc_game" / "auto.py").read_text()
+        body = source[source.index("def ready("):source.index("def head_pose(")]
+        self.assertIn('"reset body", mode=', body)
+        self.assertIn('"reset body done", seconds=', body)
