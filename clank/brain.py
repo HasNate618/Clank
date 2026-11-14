@@ -832,6 +832,12 @@ _TASK_DIRECTION = frozenset({
 })
 #: "let's get started" is not an object. A thing the game names rarely ends in -ed or -ing.
 _TASK_PARTICIPLE = re.compile(r"^[a-z]{3,}(?:ed|ing)$")
+#: A goal sentence with a relative clause in it is describing, not naming: "pick up the card
+#: JobBot just said" parses to the noun "card jobbot just", because the verb takes three words and
+#: the clause supplies two of them. MEASURED 2026-11-14, run 203119-9aae82: locate then searched
+#: for "card jobbot just". When the sentence carries one of these, its noun is not trusted and the
+#: model's own `object` field - or an offer read out of the utterance - decides.
+_CLAUSE = re.compile(r"\b(?:said|says|saying|told|asked|wants|wanted|gave|shows|mentioned)\b")
 #: JobBot does not only give orders - he holds the thing out and says what it is.
 _TASK_OFFER = re.compile(r"\bhere'?s my ([a-z][a-z'-]*)")
 
@@ -1896,7 +1902,9 @@ def think(
         # keeps the destination, because a cartridge cannot be put into an object.
         _, noun = task_intent(step.goal)
         target = step.target
-        if step.skill != "place" and noun:
+        # Not when the sentence has a relative clause: "the card JobBot just said" is a
+        # description of which card, and reading it as the noun produced "card jobbot just".
+        if step.skill != "place" and noun and not _CLAUSE.search(step.goal.lower()):
             target = noun
         plan_result = Plan(
             skill=step.skill,

@@ -1780,3 +1780,25 @@ class TheCartridgeLabelIsInCode(unittest.TestCase):
         self.assertEqual(brain.refine_target(once), once)
         self.assertEqual(brain.refine_target("card"), "card")
         self.assertEqual(brain.refine_target(""), "")
+
+
+class AGoalSentenceWithAClause(ChatPatchMixin, unittest.TestCase):
+    """"pick up the card JobBot just said" must not become the noun "card jobbot just".
+
+    MEASURED 2026-11-14, run 203119-9aae82: that is exactly what locate searched for, because
+    `think` re-parses the model's goal sentence and the verb takes three words.
+    """
+
+    reply = ('{"goal": "pick up the card JobBot just said", "object": "JobBot card", '
+             '"destination": "", "side": "right"}')
+
+    def test_the_clause_is_not_the_noun(self) -> None:
+        thought = brain.think(brain.BrainConfig(), _still(),
+                              "Hello human. Here's my card.", brain.WorkingMemory())
+        self.assertEqual(thought.plan.target, "card")
+
+    def test_an_offer_still_wins(self) -> None:
+        thought = brain.think(brain.BrainConfig(), _still(),
+                              "Here's my card.", brain.WorkingMemory())
+        self.assertEqual(thought.plan.target, "card")
+        self.assertEqual(thought.plan.skill, "grab")
