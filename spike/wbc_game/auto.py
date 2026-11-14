@@ -43,7 +43,7 @@ import pathlib
 import subprocess
 import sys
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import urllib.error
 import urllib.request
 
@@ -789,6 +789,12 @@ def one_turn(say: str = "", pattern: str = ears.DEFAULT_PATTERN,
         target = brain.refine_target(planned_target)
         if target != planned_target:
             brainlog.log("think", f"{planned_target} -> {target} (the label is in code)")
+        # The plan carries the refined noun too, because `brain.assemble` reads it back out to ask
+        # whether the thing has been seen - and a memory holding "STORE CLERK cartridge" cannot
+        # answer a question about "job cartridge". MEASURED 2026-11-14, run 032621-8fa203: locate
+        # found the cartridge at 0.52 m and the same turn held, refused as
+        # "not_located: 'job cartridge' - never looked at it".
+        thought.plan = replace(thought.plan, target=target)
         brainlog.log("think", f"plan: {thought.plan.skill}({target or '-'})",
                      side=thought.plan.side, frame=sight.name, note=thought.plan.note)
         if plan_only:
